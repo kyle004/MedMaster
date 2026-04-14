@@ -1,0 +1,1487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Med Math Tutor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
+    --accent: #3b82f6; --accent2: #8b5cf6; --green: #22c55e; --red: #ef4444;
+    --orange: #f59e0b; --text: #f1f5f9; --text2: #94a3b8; --text3: #64748b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height:100vh; }
+
+  .app { max-width: 1100px; margin: 0 auto; padding: 16px; }
+
+  /* NAV */
+  .nav { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; align-items:center; }
+  .nav-brand { font-size:1.3rem; font-weight:800; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-right:auto; }
+  .nav-btn { padding:8px 16px; border:none; border-radius:8px; cursor:pointer; font-size:0.85rem; font-weight:600; transition:all 0.2s; background:var(--surface); color:var(--text2); }
+  .nav-btn:hover { background:var(--surface2); color:var(--text); }
+  .nav-btn.active { background:var(--accent); color:white; }
+
+  /* CARDS */
+  .card { background:var(--surface); border-radius:12px; padding:24px; margin-bottom:16px; border:1px solid var(--surface2); }
+  .card h2 { font-size:1.2rem; margin-bottom:12px; }
+  .card h3 { font-size:1rem; margin-bottom:8px; color:var(--accent); }
+
+  /* FORMULA CARDS */
+  .formula-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:16px; }
+  .formula-card { background:var(--surface); border-radius:12px; padding:20px; border:1px solid var(--surface2); cursor:pointer; transition:all 0.2s; }
+  .formula-card:hover { border-color:var(--accent); transform:translateY(-2px); }
+  .formula-card.flipped { border-color:var(--green); }
+  .formula-title { font-weight:700; font-size:1rem; margin-bottom:8px; }
+  .formula-category { font-size:0.75rem; color:var(--accent); text-transform:uppercase; letter-spacing:1px; margin-bottom:12px; }
+  .formula-front { font-size:1.4rem; text-align:center; padding:20px 0; color:var(--orange); font-family: 'Courier New', monospace; font-weight:700; }
+  .formula-back { font-size:0.9rem; color:var(--text2); line-height:1.6; }
+  .formula-back .example { background:var(--bg); padding:12px; border-radius:8px; margin-top:8px; font-size:0.85rem; }
+  .flip-hint { text-align:center; font-size:0.75rem; color:var(--text3); margin-top:8px; }
+
+  /* BUTTONS */
+  .btn { padding:10px 20px; border:none; border-radius:8px; cursor:pointer; font-size:0.9rem; font-weight:600; transition:all 0.2s; }
+  .btn-primary { background:var(--accent); color:white; }
+  .btn-primary:hover { background:#2563eb; }
+  .btn-success { background:var(--green); color:white; }
+  .btn-danger { background:var(--red); color:white; }
+  .btn-outline { background:transparent; border:2px solid var(--surface2); color:var(--text2); }
+  .btn-outline:hover { border-color:var(--accent); color:var(--text); }
+  .btn-sm { padding:6px 12px; font-size:0.8rem; }
+
+  /* INPUTS */
+  input[type="text"], input[type="number"] { background:var(--bg); border:2px solid var(--surface2); border-radius:8px; padding:10px 14px; color:var(--text); font-size:1rem; width:100%; outline:none; transition:border 0.2s; }
+  input:focus { border-color:var(--accent); }
+
+  /* QUESTION */
+  .question-box { background:var(--bg); border-radius:12px; padding:20px; margin-bottom:16px; border-left:4px solid var(--accent); }
+  .question-text { font-size:1.05rem; line-height:1.7; }
+
+  /* HIGHLIGHT SYSTEM */
+  .highlight-key { background:rgba(34,197,94,0.2); padding:1px 4px; border-radius:3px; color:var(--green); font-weight:600; }
+  .highlight-trap { background:rgba(239,68,68,0.15); padding:1px 4px; border-radius:3px; color:var(--red); text-decoration:line-through; opacity:0.7; }
+  .highlight-convert { background:rgba(245,158,11,0.2); padding:1px 4px; border-radius:3px; color:var(--orange); font-weight:600; }
+
+  /* STEPS */
+  .step { background:var(--bg); border-radius:10px; padding:16px; margin-bottom:12px; border:2px solid var(--surface2); transition:border 0.2s; }
+  .step.active { border-color:var(--accent); }
+  .step.completed { border-color:var(--green); }
+  .step.wrong { border-color:var(--red); }
+  .step-header { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  .step-num { width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:0.8rem; font-weight:700; background:var(--surface2); color:var(--text2); flex-shrink:0; }
+  .step.completed .step-num { background:var(--green); color:white; }
+  .step.active .step-num { background:var(--accent); color:white; }
+  .step-label { font-weight:600; font-size:0.95rem; }
+  .step-input-row { display:flex; gap:10px; align-items:center; margin-top:8px; }
+  .step-input-row input { max-width:200px; }
+  .step-hint { font-size:0.8rem; color:var(--text3); margin-top:6px; }
+  .step-feedback { font-size:0.85rem; margin-top:6px; padding:8px 12px; border-radius:6px; }
+  .step-feedback.correct { background:rgba(34,197,94,0.15); color:var(--green); }
+  .step-feedback.incorrect { background:rgba(239,68,68,0.15); color:var(--red); }
+
+  /* MULTIPLE CHOICE */
+  .mc-options { display:grid; gap:10px; margin-top:12px; }
+  .mc-option { padding:14px 18px; border-radius:10px; border:2px solid var(--surface2); cursor:pointer; transition:all 0.2s; display:flex; align-items:center; gap:12px; }
+  .mc-option:hover { border-color:var(--accent); background:rgba(59,130,246,0.05); }
+  .mc-option.selected { border-color:var(--accent); background:rgba(59,130,246,0.1); }
+  .mc-option.correct { border-color:var(--green); background:rgba(34,197,94,0.1); }
+  .mc-option.wrong { border-color:var(--red); background:rgba(239,68,68,0.1); }
+  .mc-letter { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; background:var(--surface2); font-size:0.85rem; flex-shrink:0; }
+
+  /* CALCULATOR */
+  .calc-toggle { position:fixed; bottom:20px; right:20px; width:56px; height:56px; border-radius:50%; background:var(--accent); color:white; border:none; cursor:pointer; font-size:1.4rem; box-shadow:0 4px 20px rgba(59,130,246,0.4); z-index:100; display:flex; align-items:center; justify-content:center; }
+  .calculator { position:fixed; bottom:90px; right:20px; width:280px; background:var(--surface); border-radius:16px; box-shadow:0 8px 32px rgba(0,0,0,0.5); z-index:100; overflow:hidden; border:1px solid var(--surface2); }
+  .calc-display { padding:16px; text-align:right; }
+  .calc-expr { font-size:0.8rem; color:var(--text3); min-height:20px; }
+  .calc-value { font-size:1.8rem; font-weight:700; font-family:'Courier New',monospace; word-break:break-all; }
+  .calc-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:2px; padding:2px; }
+  .calc-btn { padding:14px; border:none; cursor:pointer; font-size:1rem; font-weight:600; background:var(--bg); color:var(--text); transition:background 0.1s; }
+  .calc-btn:hover { background:var(--surface2); }
+  .calc-btn.op { color:var(--accent); }
+  .calc-btn.eq { background:var(--accent); color:white; }
+  .calc-btn.clear { color:var(--red); }
+
+  /* PROGRESS BAR */
+  .progress-bar { height:6px; background:var(--surface2); border-radius:3px; overflow:hidden; margin-bottom:16px; }
+  .progress-fill { height:100%; border-radius:3px; transition:width 0.3s; background:linear-gradient(90deg, var(--accent), var(--green)); }
+
+  /* STATS */
+  .stats-row { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px; }
+  .stat-box { background:var(--bg); border-radius:10px; padding:14px 20px; flex:1; min-width:120px; text-align:center; }
+  .stat-value { font-size:1.5rem; font-weight:800; }
+  .stat-label { font-size:0.75rem; color:var(--text3); text-transform:uppercase; letter-spacing:1px; margin-top:4px; }
+
+  /* TAGS */
+  .tag { display:inline-block; padding:3px 10px; border-radius:20px; font-size:0.75rem; font-weight:600; }
+  .tag-green { background:rgba(34,197,94,0.15); color:var(--green); }
+  .tag-red { background:rgba(239,68,68,0.15); color:var(--red); }
+  .tag-blue { background:rgba(59,130,246,0.15); color:var(--accent); }
+  .tag-orange { background:rgba(245,158,11,0.15); color:var(--orange); }
+
+  /* CATEGORY FILTER */
+  .filter-row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  .filter-btn { padding:6px 14px; border-radius:20px; border:1px solid var(--surface2); background:transparent; color:var(--text2); cursor:pointer; font-size:0.8rem; transition:all 0.2s; }
+  .filter-btn:hover, .filter-btn.active { background:var(--accent); border-color:var(--accent); color:white; }
+
+  /* TIMER */
+  .timer { font-family:'Courier New',monospace; font-size:1.2rem; font-weight:700; }
+  .timer.warning { color:var(--orange); }
+  .timer.danger { color:var(--red); }
+
+  /* RESULTS */
+  .result-correct { color:var(--green); }
+  .result-wrong { color:var(--red); }
+
+  /* BREAKDOWN ANALYSIS */
+  .analysis-section { margin-top:16px; }
+  .analysis-item { display:flex; gap:12px; padding:10px 0; border-bottom:1px solid var(--surface2); }
+  .analysis-icon { font-size:1.2rem; flex-shrink:0; margin-top:2px; }
+  .analysis-content { flex:1; }
+  .analysis-label { font-weight:600; font-size:0.85rem; margin-bottom:2px; }
+  .analysis-desc { font-size:0.85rem; color:var(--text2); }
+
+  /* SCROLLBAR */
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:var(--bg); }
+  ::-webkit-scrollbar-thumb { background:var(--surface2); border-radius:3px; }
+
+  /* HOME CARDS */
+  .home-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px,1fr)); gap:16px; margin-top:20px; }
+  .home-card { background:var(--surface); border-radius:14px; padding:24px; border:1px solid var(--surface2); cursor:pointer; transition:all 0.2s; text-align:center; }
+  .home-card:hover { border-color:var(--accent); transform:translateY(-3px); box-shadow:0 8px 24px rgba(0,0,0,0.3); }
+  .home-icon { font-size:2.5rem; margin-bottom:12px; }
+  .home-card h3 { font-size:1.1rem; margin-bottom:8px; }
+  .home-card p { font-size:0.85rem; color:var(--text2); line-height:1.5; }
+
+  /* EXPLANATION BOX */
+  .explanation { background:var(--bg); border-radius:10px; padding:16px; margin-top:12px; border-left:3px solid var(--green); }
+  .explanation h4 { color:var(--green); margin-bottom:8px; font-size:0.9rem; }
+  .explanation p { font-size:0.88rem; color:var(--text2); line-height:1.6; }
+  .explanation .math { font-family:'Courier New',monospace; color:var(--orange); font-weight:600; }
+
+  /* TOGGLE SWITCH */
+  .toggle-row { display:flex; align-items:center; gap:10px; margin-bottom:16px; padding:12px 16px; background:var(--surface); border-radius:10px; border:1px solid var(--surface2); }
+  .toggle-label { font-size:0.9rem; font-weight:600; }
+  .toggle-sub { font-size:0.75rem; color:var(--text3); }
+  .toggle-switch { position:relative; width:48px; height:26px; flex-shrink:0; cursor:pointer; }
+  .toggle-switch input { opacity:0; width:0; height:0; }
+  .toggle-track { position:absolute; top:0; left:0; right:0; bottom:0; background:var(--surface2); border-radius:13px; transition:background 0.3s; }
+  .toggle-switch input:checked + .toggle-track { background:var(--accent); }
+  .toggle-knob { position:absolute; top:3px; left:3px; width:20px; height:20px; background:white; border-radius:50%; transition:transform 0.3s; }
+  .toggle-switch input:checked ~ .toggle-knob { transform:translateX(22px); }
+
+  /* HIGHLIGHT LEGEND */
+  .hl-legend { display:flex; gap:16px; flex-wrap:wrap; margin-top:8px; padding:10px 14px; background:var(--bg); border-radius:8px; }
+  .hl-legend-item { display:flex; align-items:center; gap:6px; font-size:0.8rem; }
+  .hl-swatch { width:14px; height:14px; border-radius:3px; flex-shrink:0; }
+  .hl-swatch-key { background:rgba(34,197,94,0.35); border:1px solid var(--green); }
+  .hl-swatch-trap { background:rgba(239,68,68,0.2); border:1px solid var(--red); }
+  .hl-swatch-convert { background:rgba(245,158,11,0.25); border:1px solid var(--orange); }
+
+  /* HIGHLIGHTED TEXT */
+  .hl-key { background:rgba(34,197,94,0.2); padding:2px 5px; border-radius:4px; color:var(--green); font-weight:600; border-bottom:2px solid var(--green); }
+  .hl-trap { background:rgba(239,68,68,0.12); padding:2px 5px; border-radius:4px; color:var(--red); opacity:0.6; text-decoration:line-through; }
+  .hl-convert { background:rgba(245,158,11,0.2); padding:2px 5px; border-radius:4px; color:var(--orange); font-weight:600; border-bottom:2px dashed var(--orange); }
+
+  /* Responsive */
+  @media (max-width:600px) {
+    .formula-grid { grid-template-columns:1fr; }
+    .home-grid { grid-template-columns:1fr; }
+    .stats-row { flex-direction:column; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ============================
+// DATA: ALL FORMULAS
+// ============================
+const FORMULAS = [
+  {
+    id: 'desired-over-have',
+    title: 'Desired Over Have (Basic)',
+    category: 'Basic',
+    formula: 'D/H × Q = X',
+    explanation: 'Desired dose ÷ Have on hand × Quantity = Amount to give',
+    example: 'Order: 60 mg. Have: 75 mg/1 mL.\n60/75 × 1 = 0.8 mL',
+    tip: 'D = what the doctor ordered. H = what\'s on the label. Q = the volume/form it comes in.'
+  },
+  {
+    id: 'weight-conversion',
+    title: 'Pounds to Kilograms',
+    category: 'Conversions',
+    formula: 'lb ÷ 2.2 = kg',
+    explanation: 'Always convert pounds to kilograms before weight-based calculations.',
+    example: '176 lb ÷ 2.2 = 80 kg\n55 lb ÷ 2.2 = 25 kg',
+    tip: 'TRAP ALERT: Questions give weight in lbs when the dose is per kg. Always check units!'
+  },
+  {
+    id: 'mcg-mg',
+    title: 'mcg to mg Conversion',
+    category: 'Conversions',
+    formula: 'mcg ÷ 1000 = mg\nmg × 1000 = mcg',
+    explanation: 'Move the decimal 3 places. Essential for weight-based dosing.',
+    example: '500 mcg ÷ 1000 = 0.5 mg\n0.4 mg × 1000 = 400 mcg',
+    tip: 'Watch for orders in mcg with supply in mg (or vice versa). Convert FIRST.'
+  },
+  {
+    id: 'weight-based-dose',
+    title: 'Weight-Based Dosing',
+    category: 'Weight-Based',
+    formula: 'Dose (mg/kg) × Weight (kg) = Total Dose',
+    explanation: 'Multiply the ordered dose rate by patient weight.',
+    example: '500 mcg/kg × 25 kg = 12,500 mcg = 12.5 mg',
+    tip: 'Step 1: Convert lbs→kg. Step 2: Multiply. Step 3: Convert units if needed.'
+  },
+  {
+    id: 'daily-dose-divided',
+    title: 'Daily Dose Divided',
+    category: 'Weight-Based',
+    formula: 'Total Daily Dose ÷ # of Doses = Per Dose',
+    explanation: 'q6h = 4 doses/day, q8h = 3 doses/day, q12h = 2 doses/day, q4h = 6 doses/day',
+    example: '120 mg/kg/day for 28 lb child, q6h:\n28÷2.2=12.7→13 kg\n120×13=1560 mg/day\n1560÷4=390 mg/dose',
+    tip: 'TRAP: "q8h" means every 8 hrs = 24÷8 = 3 doses, NOT 8 doses!'
+  },
+  {
+    id: 'iv-ml-hr',
+    title: 'IV Flow Rate (mL/hr)',
+    category: 'IV/Infusion',
+    formula: 'Total Volume (mL) ÷ Time (hr) = mL/hr',
+    explanation: 'For pump-controlled infusions. Convert minutes to hours if needed.',
+    example: '1000 mL over 8 hr = 1000÷8 = 125 mL/hr\n250 mL over 90 min = 250÷1.5 = 167 mL/hr',
+    tip: 'Convert minutes to hours: 90 min = 1.5 hr, 45 min = 0.75 hr'
+  },
+  {
+    id: 'gtt-min',
+    title: 'Drip Rate (gtt/min)',
+    category: 'IV/Infusion',
+    formula: 'V × DF ÷ T(min) = gtt/min',
+    explanation: 'Volume × Drop Factor ÷ Time in minutes. For gravity IV lines.',
+    example: '1500 mL × 20 gtt/mL ÷ 720 min = 42 gtt/min\n(12 hr = 720 min)',
+    tip: '60 gtt/mL (microdrip): mL/hr = gtt/min! Shortcut!'
+  },
+  {
+    id: 'heparin-infusion',
+    title: 'Heparin Infusion Rate',
+    category: 'IV/Infusion',
+    formula: 'Units/hr ÷ Concentration (units/mL) = mL/hr',
+    explanation: 'Step 1: Find units/hr (may need weight). Step 2: Find concentration. Step 3: Divide.',
+    example: '18 units/kg/hr × 80 kg = 1440 units/hr\n25,000 units/250 mL = 100 units/mL\n1440÷100 = 14.4 mL/hr',
+    tip: 'Always find the concentration first (units per mL of the bag).'
+  },
+  {
+    id: 'mcg-kg-min',
+    title: 'mcg/kg/min Drips',
+    category: 'Critical Care',
+    formula: 'Dose × Wt × 60 ÷ Conc(mcg/mL) = mL/hr',
+    explanation: 'For dopamine, norepinephrine, etc. Convert mg→mcg for concentration.',
+    example: 'Dopamine 5 mcg/kg/min, 82 kg\n400 mg/250 mL = 1600 mcg/mL\n5×82×60÷1600 = 15.4 mL/hr',
+    tip: 'Remember ×60 to convert min→hr! Biggest mistake is forgetting this step.'
+  },
+  {
+    id: 'reconstitution',
+    title: 'Reconstitution',
+    category: 'Basic',
+    formula: 'D/H × Q = mL to give\n(after reconstitution)',
+    explanation: 'After mixing the powder, use the new concentration to calculate volume.',
+    example: 'Cefepime 1.75 g ordered\n2 g vial reconstituted with 8 mL\n1.75/2 × 8 = 7 mL',
+    tip: 'The vial label tells you what concentration you get AFTER reconstitution.'
+  },
+  {
+    id: 'percent-solution',
+    title: 'Percent Solutions',
+    category: 'Basic',
+    formula: '% = g per 100 mL\n0.45% = 0.45 g/100 mL',
+    explanation: 'Percent means "per hundred." 0.9% NaCl = 0.9 g NaCl per 100 mL.',
+    example: '0.45% NaCl in 1000 mL:\n0.45 g/100 mL × 1000 mL = 4.5 g = 4500 mg',
+    tip: 'Multiply the percentage by 10 to get mg/mL. 0.9% = 9 mg/mL.'
+  },
+  {
+    id: '4-2-1-rule',
+    title: '4-2-1 Maintenance Fluids',
+    category: 'Pediatric',
+    formula: 'First 10 kg: 4 mL/kg/hr\nNext 10 kg: 2 mL/kg/hr\nEach kg after: 1 mL/kg/hr',
+    explanation: 'Holliday-Segar method for pediatric maintenance IV fluids.',
+    example: '18 kg child:\nFirst 10 kg: 4×10=40\nNext 8 kg: 2×8=16\nTotal: 56 mL/hr',
+    tip: 'This is a STAIRCASE — each tier uses a different rate. Don\'t just multiply total weight!'
+  },
+  {
+    id: 'safe-dose-check',
+    title: 'Safe Dose Range Check',
+    category: 'Pediatric',
+    formula: 'Min dose × wt = low end\nMax dose × wt = high end\nIs order within range?',
+    explanation: 'Calculate the safe range, then see if the ordered dose falls within it.',
+    example: 'Range: 300-450 mcg/kg/day, pt 65 kg, q8h\nLow: 300×65=19500 mcg/day÷3=6500/dose\nHigh: 450×65=29250÷3=9750/dose\n7000 ordered → YES, safe',
+    tip: 'Don\'t forget to divide the daily range by number of doses if comparing per-dose.'
+  },
+  {
+    id: 'titration-range',
+    title: 'Titration Range',
+    category: 'Critical Care',
+    formula: 'Low rate × wt = low mg/hr\nHigh rate × wt = high mg/hr\nThen convert to mL/hr',
+    explanation: 'Calculate both ends of the dosage range, then convert each to flow rate.',
+    example: '0.6-0.8 mg/kg/hr, 91.3 kg, 1000mg/1L\nLow: 0.6×91.3=55 mg/hr=55 mL/hr\nHigh: 0.8×91.3=73 mg/hr=73 mL/hr',
+    tip: 'When conc is mg/mL and dose is mg/hr, the mL/hr can equal the mg/hr if conc = 1 mg/mL!'
+  },
+  {
+    id: 'insulin-drip',
+    title: 'Insulin Drip',
+    category: 'Critical Care',
+    formula: 'units/kg/hr × wt = units/hr\n100 units in 100 mL → 1:1 ratio',
+    explanation: 'Standard insulin drip: 100 units in 100 mL NS means 1 unit = 1 mL.',
+    example: '0.08 units/kg/hr × 95 kg = 7.6 units/hr\n100u/100mL → 1u/mL\n7.6 units/hr = 7.6 mL/hr',
+    tip: 'The 1:1 ratio (100u in 100mL) is a gift — units/hr = mL/hr!'
+  }
+];
+
+// ============================
+// DATA: QUESTION BANK
+// ============================
+const QUESTIONS = [
+  // === WORKSHEET 8 QUESTIONS ===
+  {
+    id:'w8-1', category:'Weight-Based', difficulty:'Medium',
+    text:'The dose of a drug is 500 mcg/kg of body weight. How many milligrams should be given to a child weighing 55 lbs?',
+    type:'mc',
+    options:['3.6 mg','7.5 mg','12.5 mg','18.6 mg'],
+    correct:2,
+    keyInfo:['500 mcg/kg','55 lbs','answer in milligrams'],
+    traps:['Weight is in lbs, dose is per kg — must convert','Answer is in mg but dose is in mcg — must convert'],
+    keyPhrases:['500 mcg/kg','55 lbs'],
+    trapPhrases:['of body weight','of a drug','to a child'],
+    convertPhrases:['milligrams','lbs'],
+    steps:[
+      {label:'Convert lbs to kg', hint:'55 ÷ 2.2', answer:'25', unit:'kg'},
+      {label:'Calculate total mcg', hint:'500 mcg/kg × 25 kg', answer:'12500', unit:'mcg'},
+      {label:'Convert mcg to mg', hint:'12500 ÷ 1000', answer:'12.5', unit:'mg'}
+    ],
+    formula:'weight-based-dose'
+  },
+  {
+    id:'w8-2', category:'IV/Infusion', difficulty:'Medium',
+    text:'A patient is ordered 12,000 units of heparin sodium to be given by continuous IV drip over 24 hours. Each 500 mL bag contains 25,000 units. How many mL should be administered per hour?',
+    type:'free',
+    correct:'10',
+    unit:'mL/hr',
+    keyInfo:['12,000 units over 24 hours','25,000 units in 500 mL'],
+    traps:['Don\'t confuse total units with units/hr','Bag size (500 mL) is not the answer'],
+    keyPhrases:['12,000 units','over 24 hours','500 mL','25,000 units'],
+    trapPhrases:['heparin sodium','by continuous IV drip','A patient is ordered'],
+    convertPhrases:[],
+    steps:[
+      {label:'Find units per hour', hint:'12000 ÷ 24', answer:'500', unit:'units/hr'},
+      {label:'Find concentration', hint:'25000 units ÷ 500 mL', answer:'50', unit:'units/mL'},
+      {label:'Calculate mL/hr', hint:'500 ÷ 50', answer:'10', unit:'mL/hr'}
+    ],
+    formula:'heparin-infusion'
+  },
+  {
+    id:'w8-3', category:'Basic', difficulty:'Medium',
+    text:'You are asked to mix a 1000 mL bag of 0.45% NaCl using sterile water and concentrated sodium chloride. How many milligrams of sodium chloride will be needed?',
+    type:'free',
+    correct:'4500',
+    unit:'mg',
+    keyInfo:['1000 mL','0.45%','answer in mg'],
+    traps:['0.45% means 0.45 g per 100 mL, not per 1000 mL','Must convert grams to milligrams'],
+    keyPhrases:['1000 mL','0.45%'],
+    trapPhrases:['using sterile water and concentrated sodium chloride','You are asked to mix'],
+    convertPhrases:['milligrams'],
+    steps:[
+      {label:'Understand %', hint:'0.45% = 0.45 g per 100 mL', answer:'0.45', unit:'g/100mL'},
+      {label:'Calculate grams needed', hint:'0.45 × (1000/100) = 0.45 × 10', answer:'4.5', unit:'g'},
+      {label:'Convert to mg', hint:'4.5 × 1000', answer:'4500', unit:'mg'}
+    ],
+    formula:'percent-solution'
+  },
+  {
+    id:'w8-4', category:'Critical Care', difficulty:'Hard',
+    text:'IV dopamine is ordered at 5 mcg/kg/min. Standard concentration is 400 mg/250 mL of D5W. What is the rate (mL/hr) for a 176-pound patient?',
+    type:'free',
+    correct:'15',
+    unit:'mL/hr',
+    keyInfo:['5 mcg/kg/min','400 mg/250 mL','176 pounds'],
+    traps:['Weight in pounds — convert to kg','Dose is per minute — must convert to per hour','Drug concentration is in mg, dose is in mcg'],
+    keyPhrases:['5 mcg/kg/min','400 mg/250 mL','176-pound'],
+    trapPhrases:['IV dopamine','Standard concentration','of D5W'],
+    convertPhrases:['176-pound','mg','mcg','mL/hr'],
+    steps:[
+      {label:'Convert lbs to kg', hint:'176 ÷ 2.2', answer:'80', unit:'kg'},
+      {label:'Calculate mcg/min', hint:'5 × 80', answer:'400', unit:'mcg/min'},
+      {label:'Convert to mcg/hr', hint:'400 × 60', answer:'24000', unit:'mcg/hr'},
+      {label:'Find concentration', hint:'400 mg = 400,000 mcg in 250 mL', answer:'1600', unit:'mcg/mL'},
+      {label:'Calculate mL/hr', hint:'24000 ÷ 1600', answer:'15', unit:'mL/hr'}
+    ],
+    formula:'mcg-kg-min'
+  },
+  {
+    id:'w8-5', category:'Basic', difficulty:'Easy',
+    text:'The narcotics drawer has meperidine (Demerol) labeled 75 mg in 1 mL. Order: Demerol 60 mg IM. Using the basic calculation method (D/H × Q), what is OH (On Hand)?',
+    type:'mc',
+    options:['1 mL','60 mg','75 mL','75 mg'],
+    correct:3,
+    keyInfo:['75 mg in 1 mL','60 mg ordered'],
+    traps:['OH is the amount on hand (75 mg), not the volume','Don\'t confuse D (desired=60mg) with H (have=75mg)'],
+    keyPhrases:['75 mg in 1 mL','60 mg','OH (On Hand)'],
+    trapPhrases:['The narcotics drawer','meperidine (Demerol)','IM'],
+    convertPhrases:[],
+    steps:[
+      {label:'Identify D (Desired)', hint:'What was ordered?', answer:'60', unit:'mg'},
+      {label:'Identify H (On Hand)', hint:'What strength is available?', answer:'75', unit:'mg'},
+      {label:'Identify Q (Quantity)', hint:'What volume contains H?', answer:'1', unit:'mL'}
+    ],
+    formula:'desired-over-have'
+  },
+  {
+    id:'w8-6', category:'Basic', difficulty:'Easy',
+    text:'Meperidine is stocked in cartridges labeled 100 mg/mL. Meperidine 75 mg q4h prn pain is ordered. How much should be given?',
+    type:'mc',
+    options:['0.8 mL','1 mL','7.5 mL','100 mL'],
+    correct:0,
+    keyInfo:['100 mg/mL available','75 mg ordered'],
+    traps:['"q4h prn" is the schedule — irrelevant to calculation','100 mL (option d) reverses the calculation'],
+    keyPhrases:['100 mg/mL','75 mg'],
+    trapPhrases:['is stocked in cartridges','q4h prn pain','Meperidine'],
+    convertPhrases:[],
+    steps:[
+      {label:'Set up D/H × Q', hint:'75/100 × 1', answer:'0.75', unit:'mL'},
+      {label:'Round appropriately', hint:'0.75 rounds to 0.8 mL', answer:'0.8', unit:'mL'}
+    ],
+    formula:'desired-over-have'
+  },
+  {
+    id:'w8-7', category:'Weight-Based', difficulty:'Easy',
+    text:'Gentamicin 30 mg q8h is ordered for a 13-year-old child weighing 38 kg. The usual dose is 3 mg/kg/24h. What is the usual daily dose for this weight?',
+    type:'mc',
+    options:['114 mg','120 mg','30 mg','3 mg'],
+    correct:0,
+    keyInfo:['38 kg','3 mg/kg/24h','asking for daily dose'],
+    traps:['30 mg is the single ordered dose, not the daily dose','Age (13 years) is irrelevant to calculation','The q8h schedule doesn\'t matter — question asks for daily dose'],
+    keyPhrases:['38 kg','3 mg/kg/24h','usual daily dose'],
+    trapPhrases:['Gentamicin','30 mg q8h','13-year-old'],
+    convertPhrases:[],
+    steps:[
+      {label:'Calculate daily dose', hint:'3 mg/kg/day × 38 kg', answer:'114', unit:'mg/day'}
+    ],
+    formula:'weight-based-dose'
+  },
+  {
+    id:'w8-11', category:'Basic', difficulty:'Easy',
+    text:'Furosemide 60 mg PO qd is ordered. Medication is available in 40-mg scored tablets. How many tablets should be administered?',
+    type:'mc',
+    options:['2 tabs','0.5 tab','1.5 tabs','2.5 tabs'],
+    correct:2,
+    keyInfo:['60 mg ordered','40 mg per tablet','scored tablets'],
+    traps:['"PO qd" is route/schedule — not needed for calc','"Scored" confirms you CAN split the tablet'],
+    keyPhrases:['60 mg','40-mg','scored tablets'],
+    trapPhrases:['Furosemide','PO qd'],
+    convertPhrases:[],
+    steps:[
+      {label:'D/H × Q', hint:'60/40 × 1', answer:'1.5', unit:'tabs'}
+    ],
+    formula:'desired-over-have'
+  },
+  {
+    id:'w8-12', category:'Pediatric', difficulty:'Medium',
+    text:'A child weighs 28 lb. The physician ordered 120 mg/kg/day of a medication to be given every 6 hours. How much will be given for one dose?',
+    type:'free',
+    correct:'390',
+    unit:'mg',
+    keyInfo:['28 lb','120 mg/kg/day','every 6 hours (q6h = 4 doses)'],
+    traps:['Weight in lbs','Don\'t give the daily dose — they want ONE dose','q6h = 4 doses/day, not 6'],
+    keyPhrases:['28 lb','120 mg/kg/day','every 6 hours','one dose'],
+    trapPhrases:['The physician ordered','of a medication to be given','A child'],
+    convertPhrases:['28 lb'],
+    steps:[
+      {label:'Convert to kg', hint:'28 ÷ 2.2 = 12.7 → round to 13', answer:'13', unit:'kg'},
+      {label:'Total daily dose', hint:'120 × 13', answer:'1560', unit:'mg/day'},
+      {label:'Doses per day', hint:'24 ÷ 6 = 4 doses', answer:'4', unit:'doses'},
+      {label:'Per dose', hint:'1560 ÷ 4', answer:'390', unit:'mg'}
+    ],
+    formula:'daily-dose-divided'
+  },
+  {
+    id:'w8-14', category:'Weight-Based', difficulty:'Easy',
+    text:'A child weighs 68 lb. A medication is ordered 60 mg/kg/day. How much will be given for the entire day?',
+    type:'free',
+    correct:'1860',
+    unit:'mg/day',
+    keyInfo:['68 lb','60 mg/kg/day','entire day total'],
+    traps:['Weight in lbs — must convert'],
+    keyPhrases:['68 lb','60 mg/kg/day','entire day'],
+    trapPhrases:['A medication is ordered','A child'],
+    convertPhrases:['68 lb'],
+    steps:[
+      {label:'Convert to kg', hint:'68 ÷ 2.2 = 30.9 → round to 31', answer:'31', unit:'kg'},
+      {label:'Total daily dose', hint:'60 × 31', answer:'1860', unit:'mg'}
+    ],
+    formula:'weight-based-dose'
+  },
+  {
+    id:'w8-10', category:'IV/Infusion', difficulty:'Medium',
+    text:'A patient weighing 75 kg is prescribed a heparin infusion of 5 units/kg/hour from a solution of 5,000 units in 100 mL NS. Calculate the continuous infusion flow rate in mL/hr.',
+    type:'free',
+    correct:'7.5',
+    unit:'mL/hr',
+    keyInfo:['75 kg','5 units/kg/hr','5000 units in 100 mL'],
+    traps:['Don\'t forget to find units/hr first, then convert to mL/hr'],
+    keyPhrases:['75 kg','5 units/kg/hour','5,000 units in 100 mL'],
+    trapPhrases:['heparin infusion','continuous infusion flow rate','NS'],
+    convertPhrases:[],
+    steps:[
+      {label:'Calculate units/hr', hint:'5 × 75', answer:'375', unit:'units/hr'},
+      {label:'Find concentration', hint:'5000 ÷ 100', answer:'50', unit:'units/mL'},
+      {label:'Calculate mL/hr', hint:'375 ÷ 50', answer:'7.5', unit:'mL/hr'}
+    ],
+    formula:'heparin-infusion'
+  },
+  // === REMEDIATION #1 QUESTIONS ===
+  {
+    id:'r1-1a', category:'IV/Infusion', difficulty:'Easy',
+    text:'Infuse 2,000 mL of Lactated Ringer\'s over 18 hours. What is the original mL/hr rate?',
+    type:'free',
+    correct:'111',
+    unit:'mL/hr',
+    keyInfo:['2000 mL','18 hours'],
+    traps:['Simple division — no tricks here'],
+    keyPhrases:['2,000 mL','18 hours'],
+    trapPhrases:['Lactated Ringer\'s','original'],
+    convertPhrases:[],
+    steps:[
+      {label:'Calculate mL/hr', hint:'2000 ÷ 18 = 111.1', answer:'111', unit:'mL/hr'}
+    ],
+    formula:'iv-ml-hr'
+  },
+  {
+    id:'r1-3a', category:'IV/Infusion', difficulty:'Medium',
+    text:'Vancomycin 1 g in 250 mL NS. Infuse over 90 minutes. What is the mL/hr rate?',
+    type:'free',
+    correct:'167',
+    unit:'mL/hr',
+    keyInfo:['250 mL','90 minutes'],
+    traps:['Time is in MINUTES — must convert to hours','Drug amount (1 g) is irrelevant for rate calc'],
+    keyPhrases:['250 mL','90 minutes'],
+    trapPhrases:['Vancomycin','1 g','NS'],
+    convertPhrases:['90 minutes'],
+    steps:[
+      {label:'Convert min to hr', hint:'90 ÷ 60', answer:'1.5', unit:'hr'},
+      {label:'Calculate mL/hr', hint:'250 ÷ 1.5', answer:'167', unit:'mL/hr'}
+    ],
+    formula:'iv-ml-hr'
+  },
+  {
+    id:'r1-4b', category:'IV/Infusion', difficulty:'Medium',
+    text:'1,500 mL NS to infuse over 12 hours. Drop factor: 20 gtt/mL. What is the gtt/min rate?',
+    type:'free',
+    correct:'42',
+    unit:'gtt/min',
+    keyInfo:['1500 mL','12 hours','20 gtt/mL'],
+    traps:['Must convert hours to minutes for gtt/min'],
+    keyPhrases:['1,500 mL','12 hours','20 gtt/mL'],
+    trapPhrases:['NS','to infuse'],
+    convertPhrases:['12 hours'],
+    steps:[
+      {label:'Convert hr to min', hint:'12 × 60', answer:'720', unit:'min'},
+      {label:'Calculate gtt/min', hint:'1500 × 20 ÷ 720', answer:'42', unit:'gtt/min'}
+    ],
+    formula:'gtt-min'
+  },
+  {
+    id:'r1-6', category:'IV/Infusion', difficulty:'Hard',
+    text:'Patient weighs 176 lb. Order: Heparin 18 units/kg/hr. Available: 25,000 units in 250 mL. Calculate mL/hr.',
+    type:'free',
+    correct:'14.4',
+    unit:'mL/hr',
+    keyInfo:['176 lb','18 units/kg/hr','25,000 units in 250 mL'],
+    traps:['Weight in lbs','Must find concentration of the bag'],
+    keyPhrases:['176 lb','18 units/kg/hr','25,000 units in 250 mL'],
+    trapPhrases:['Heparin'],
+    convertPhrases:['176 lb'],
+    steps:[
+      {label:'Convert to kg', hint:'176 ÷ 2.2', answer:'80', unit:'kg'},
+      {label:'Calculate units/hr', hint:'18 × 80', answer:'1440', unit:'units/hr'},
+      {label:'Find concentration', hint:'25000 ÷ 250', answer:'100', unit:'units/mL'},
+      {label:'Calculate mL/hr', hint:'1440 ÷ 100', answer:'14.4', unit:'mL/hr'}
+    ],
+    formula:'heparin-infusion'
+  },
+  {
+    id:'r1-7', category:'Critical Care', difficulty:'Hard',
+    text:'Patient weighs 82 kg. Order: Dopamine 5 mcg/kg/min. Available: 400 mg in 250 mL D5W. Calculate mL/hr.',
+    type:'free',
+    correct:'15.4',
+    unit:'mL/hr',
+    keyInfo:['82 kg','5 mcg/kg/min','400 mg in 250 mL'],
+    traps:['mg vs mcg in concentration','Per minute → per hour conversion'],
+    keyPhrases:['82 kg','5 mcg/kg/min','400 mg in 250 mL'],
+    trapPhrases:['Dopamine','D5W'],
+    convertPhrases:['mg','mcg'],
+    steps:[
+      {label:'Convert mg to mcg', hint:'400 × 1000', answer:'400000', unit:'mcg'},
+      {label:'Find concentration', hint:'400000 ÷ 250', answer:'1600', unit:'mcg/mL'},
+      {label:'Calculate mcg/min', hint:'5 × 82', answer:'410', unit:'mcg/min'},
+      {label:'Convert to mcg/hr', hint:'410 × 60', answer:'24600', unit:'mcg/hr'},
+      {label:'Calculate mL/hr', hint:'24600 ÷ 1600', answer:'15.4', unit:'mL/hr'}
+    ],
+    formula:'mcg-kg-min'
+  },
+  {
+    id:'r1-9', category:'Pediatric', difficulty:'Hard',
+    text:'Child weighs 24 kg. Order: Cefepime 50 mg/kg/day divided q8h. Available: 1 g in 100 mL. If infusing over 30 min, what is the mL/hr setting?',
+    type:'free',
+    correct:'80',
+    unit:'mL/hr',
+    keyInfo:['24 kg','50 mg/kg/day','q8h (3 doses)','1 g in 100 mL','30 min infusion'],
+    traps:['Multiple steps — don\'t skip any','q8h = 3 doses not 8','Must convert g to mg for concentration'],
+    keyPhrases:['24 kg','50 mg/kg/day','q8h','1 g in 100 mL','30 min'],
+    trapPhrases:['Cefepime','divided'],
+    convertPhrases:['1 g','30 min'],
+    steps:[
+      {label:'Total daily dose', hint:'50 × 24', answer:'1200', unit:'mg/day'},
+      {label:'Per dose (q8h=3)', hint:'1200 ÷ 3', answer:'400', unit:'mg'},
+      {label:'Concentration', hint:'1 g = 1000 mg in 100 mL = 10 mg/mL', answer:'10', unit:'mg/mL'},
+      {label:'Volume per dose', hint:'400 ÷ 10', answer:'40', unit:'mL'},
+      {label:'mL/hr for 30 min', hint:'40 mL over 0.5 hr = 40 ÷ 0.5', answer:'80', unit:'mL/hr'}
+    ],
+    formula:'daily-dose-divided'
+  },
+  {
+    id:'r1-10', category:'Pediatric', difficulty:'Medium',
+    text:'Calculate maintenance fluids for an 18 kg child using the 4-2-1 rule. What is the hourly rate?',
+    type:'free',
+    correct:'56',
+    unit:'mL/hr',
+    keyInfo:['18 kg child','4-2-1 rule'],
+    traps:['Don\'t multiply 18 × 4 — that\'s wrong!','Each weight tier has a different rate'],
+    keyPhrases:['18 kg','4-2-1 rule','hourly rate'],
+    trapPhrases:['maintenance fluids'],
+    convertPhrases:[],
+    steps:[
+      {label:'First 10 kg', hint:'10 × 4', answer:'40', unit:'mL/hr'},
+      {label:'Next 8 kg', hint:'8 × 2', answer:'16', unit:'mL/hr'},
+      {label:'Total', hint:'40 + 16', answer:'56', unit:'mL/hr'}
+    ],
+    formula:'4-2-1-rule'
+  },
+  {
+    id:'r1-12', category:'Critical Care', difficulty:'Medium',
+    text:'Regular insulin 100 units in 100 mL NS. Order: 0.08 units/kg/hr. Patient weighs 95 kg. What is the mL/hr?',
+    type:'free',
+    correct:'7.6',
+    unit:'mL/hr',
+    keyInfo:['100 units in 100 mL (1:1)','0.08 units/kg/hr','95 kg'],
+    traps:['100u in 100mL means 1u=1mL — units/hr = mL/hr'],
+    keyPhrases:['100 units in 100 mL','0.08 units/kg/hr','95 kg'],
+    trapPhrases:['Regular insulin','NS'],
+    convertPhrases:[],
+    steps:[
+      {label:'Calculate units/hr', hint:'0.08 × 95', answer:'7.6', unit:'units/hr'},
+      {label:'Convert to mL/hr', hint:'1 unit = 1 mL, so same number', answer:'7.6', unit:'mL/hr'}
+    ],
+    formula:'insulin-drip'
+  },
+  // === REMEDIATION #3 QUESTIONS ===
+  {
+    id:'r3-1', category:'Basic', difficulty:'Hard',
+    text:'Order: Vancomycin 20 mg/kg IV. Patient weighs 143 lb. Available: 1 g vial reconstituted with 10 mL. How many mL will you administer?',
+    type:'free',
+    correct:'13',
+    unit:'mL',
+    keyInfo:['20 mg/kg','143 lb','1 g in 10 mL after reconstitution'],
+    traps:['Weight in lbs','1 g = 1000 mg','Answer is in mL not mg'],
+    keyPhrases:['20 mg/kg','143 lb','1 g vial','10 mL'],
+    trapPhrases:['Vancomycin','IV','reconstituted with'],
+    convertPhrases:['143 lb','1 g'],
+    steps:[
+      {label:'Convert to kg', hint:'143 ÷ 2.2', answer:'65', unit:'kg'},
+      {label:'Calculate dose', hint:'20 × 65', answer:'1300', unit:'mg'},
+      {label:'Find concentration', hint:'1 g = 1000 mg in 10 mL = 100 mg/mL', answer:'100', unit:'mg/mL'},
+      {label:'Calculate volume', hint:'1300 ÷ 100', answer:'13', unit:'mL'}
+    ],
+    formula:'reconstitution'
+  },
+  {
+    id:'r3-5', category:'Weight-Based', difficulty:'Medium',
+    text:'Order: Lovenox 1.5 mg/kg SQ. Patient weighs 198 lb. Available: 150 mg/mL. How many mL?',
+    type:'free',
+    correct:'0.9',
+    unit:'mL',
+    keyInfo:['1.5 mg/kg','198 lb','150 mg/mL'],
+    traps:['Weight in lbs','SQ is the route — not relevant to math'],
+    keyPhrases:['1.5 mg/kg','198 lb','150 mg/mL'],
+    trapPhrases:['Lovenox','SQ'],
+    convertPhrases:['198 lb'],
+    steps:[
+      {label:'Convert to kg', hint:'198 ÷ 2.2', answer:'90', unit:'kg'},
+      {label:'Calculate dose', hint:'1.5 × 90', answer:'135', unit:'mg'},
+      {label:'Calculate volume', hint:'135 ÷ 150', answer:'0.9', unit:'mL'}
+    ],
+    formula:'desired-over-have'
+  },
+  {
+    id:'r3-8', category:'Critical Care', difficulty:'Hard',
+    text:'Order: Dopamine 12 mcg/kg/min. Patient weighs 76 kg. IV bag: 800 mg in 500 mL. Calculate mL/hr.',
+    type:'free',
+    correct:'34.2',
+    unit:'mL/hr',
+    keyInfo:['12 mcg/kg/min','76 kg','800 mg in 500 mL'],
+    traps:['mg→mcg conversion for concentration','min→hr conversion'],
+    keyPhrases:['12 mcg/kg/min','76 kg','800 mg in 500 mL'],
+    trapPhrases:['Dopamine','IV bag:'],
+    convertPhrases:['mg','mcg'],
+    steps:[
+      {label:'Calculate mcg/min', hint:'12 × 76', answer:'912', unit:'mcg/min'},
+      {label:'Convert to mcg/hr', hint:'912 × 60', answer:'54720', unit:'mcg/hr'},
+      {label:'Concentration in mcg/mL', hint:'800,000 mcg ÷ 500', answer:'1600', unit:'mcg/mL'},
+      {label:'Calculate mL/hr', hint:'54720 ÷ 1600', answer:'34.2', unit:'mL/hr'}
+    ],
+    formula:'mcg-kg-min'
+  },
+  {
+    id:'r3-9', category:'Critical Care', difficulty:'Hard',
+    text:'Order: Norepinephrine 0.08 mcg/kg/min. Patient weighs 95 kg. IV bag: 8 mg in 250 mL. Calculate mL/hr.',
+    type:'free',
+    correct:'14.25',
+    unit:'mL/hr',
+    keyInfo:['0.08 mcg/kg/min','95 kg','8 mg in 250 mL'],
+    traps:['Very small dose rate — don\'t misplace the decimal','mg→mcg in concentration'],
+    keyPhrases:['0.08 mcg/kg/min','95 kg','8 mg in 250 mL'],
+    trapPhrases:['Norepinephrine','IV bag:'],
+    convertPhrases:['mg','mcg'],
+    steps:[
+      {label:'Calculate mcg/min', hint:'0.08 × 95', answer:'7.6', unit:'mcg/min'},
+      {label:'Convert to mcg/hr', hint:'7.6 × 60', answer:'456', unit:'mcg/hr'},
+      {label:'Concentration', hint:'8000 mcg ÷ 250', answer:'32', unit:'mcg/mL'},
+      {label:'Calculate mL/hr', hint:'456 ÷ 32', answer:'14.25', unit:'mL/hr'}
+    ],
+    formula:'mcg-kg-min'
+  },
+  {
+    id:'r3-11', category:'Pediatric', difficulty:'Medium',
+    text:'Order: Ampicillin 100 mg/kg/day divided q6h. Child weighs 44 lb. How many mg per dose?',
+    type:'free',
+    correct:'500',
+    unit:'mg',
+    keyInfo:['100 mg/kg/day','44 lb','q6h = 4 doses'],
+    traps:['Weight in lbs','q6h = 4 doses per day'],
+    keyPhrases:['100 mg/kg/day','q6h','44 lb','per dose'],
+    trapPhrases:['Ampicillin','divided'],
+    convertPhrases:['44 lb'],
+    steps:[
+      {label:'Convert to kg', hint:'44 ÷ 2.2', answer:'20', unit:'kg'},
+      {label:'Daily dose', hint:'100 × 20', answer:'2000', unit:'mg/day'},
+      {label:'Per dose', hint:'2000 ÷ 4', answer:'500', unit:'mg'}
+    ],
+    formula:'daily-dose-divided'
+  },
+  {
+    id:'r3-15', category:'IV/Infusion', difficulty:'Medium',
+    text:'Infuse 750 mL over 5 hr 30 min. Drop factor: 15 gtt/mL. Calculate gtt/min.',
+    type:'free',
+    correct:'34',
+    unit:'gtt/min',
+    keyInfo:['750 mL','5 hr 30 min','15 gtt/mL'],
+    traps:['Must convert 5 hr 30 min to minutes (330 min)'],
+    keyPhrases:['750 mL','5 hr 30 min','15 gtt/mL'],
+    trapPhrases:[],
+    convertPhrases:['5 hr 30 min'],
+    steps:[
+      {label:'Convert time', hint:'5×60 + 30', answer:'330', unit:'min'},
+      {label:'Calculate gtt/min', hint:'750 × 15 ÷ 330', answer:'34', unit:'gtt/min'}
+    ],
+    formula:'gtt-min'
+  },
+  {
+    id:'r3-18', category:'Critical Care', difficulty:'Medium',
+    text:'Order: Amiodarone 0.5 mg/min. IV bag: 900 mg in 500 mL. Calculate mL/hr.',
+    type:'free',
+    correct:'16.7',
+    unit:'mL/hr',
+    keyInfo:['0.5 mg/min','900 mg in 500 mL'],
+    traps:['Per MINUTE — must convert to per hour','Not weight-based — no kg conversion needed'],
+    keyPhrases:['0.5 mg/min','900 mg in 500 mL'],
+    trapPhrases:['Amiodarone','IV bag:'],
+    convertPhrases:['mg/min'],
+    steps:[
+      {label:'Convert to mg/hr', hint:'0.5 × 60', answer:'30', unit:'mg/hr'},
+      {label:'Find concentration', hint:'900 ÷ 500', answer:'1.8', unit:'mg/mL'},
+      {label:'Calculate mL/hr', hint:'30 ÷ 1.8', answer:'16.7', unit:'mL/hr'}
+    ],
+    formula:'iv-ml-hr'
+  },
+  {
+    id:'r3-19', category:'Critical Care', difficulty:'Hard',
+    text:'Order: Epinephrine 0.03 mcg/kg/min. Patient weighs 132 lb. IV bag: 2 mg in 250 mL. Calculate mL/hr.',
+    type:'free',
+    correct:'13.5',
+    unit:'mL/hr',
+    keyInfo:['0.03 mcg/kg/min','132 lb','2 mg in 250 mL'],
+    traps:['Weight in lbs','Tiny dose — watch decimals','mg→mcg in concentration'],
+    keyPhrases:['0.03 mcg/kg/min','132 lb','2 mg in 250 mL'],
+    trapPhrases:['Epinephrine','IV bag:'],
+    convertPhrases:['132 lb','mg','mcg'],
+    steps:[
+      {label:'Convert to kg', hint:'132 ÷ 2.2', answer:'60', unit:'kg'},
+      {label:'Calculate mcg/min', hint:'0.03 × 60', answer:'1.8', unit:'mcg/min'},
+      {label:'Convert to mcg/hr', hint:'1.8 × 60', answer:'108', unit:'mcg/hr'},
+      {label:'Concentration', hint:'2000 mcg ÷ 250', answer:'8', unit:'mcg/mL'},
+      {label:'Calculate mL/hr', hint:'108 ÷ 8', answer:'13.5', unit:'mL/hr'}
+    ],
+    formula:'mcg-kg-min'
+  }
+];
+
+const CATEGORIES = ['All', 'Basic', 'Conversions', 'Weight-Based', 'IV/Infusion', 'Critical Care', 'Pediatric'];
+
+// ============================
+// CALCULATOR COMPONENT
+// ============================
+function Calculator({ show, onToggle }) {
+  const [display, setDisplay] = useState('0');
+  const [history, setHistory] = useState('');
+  const [prevValue, setPrevValue] = useState(null);
+  const [operator, setOperator] = useState(null);
+  const [newNum, setNewNum] = useState(true);
+
+  const doMath = (a, op, b) => {
+    const na = parseFloat(a);
+    const nb = parseFloat(b);
+    if (isNaN(na) || isNaN(nb)) return 'Error';
+    switch(op) {
+      case '+': return na + nb;
+      case '-': return na - nb;
+      case '×': return na * nb;
+      case '÷': return nb === 0 ? 'Error' : na / nb;
+      default: return nb;
+    }
+  };
+
+  const press = (val) => {
+    if (val === 'C') {
+      setDisplay('0'); setHistory(''); setPrevValue(null); setOperator(null); setNewNum(true);
+      return;
+    }
+    if (val === '=') {
+      if (prevValue !== null && operator) {
+        const result = doMath(prevValue, operator, display);
+        const rounded = typeof result === 'number' ? Math.round(result * 10000) / 10000 : result;
+        setHistory(prevValue + ' ' + operator + ' ' + display + ' =');
+        setDisplay(String(rounded));
+        setPrevValue(null);
+        setOperator(null);
+        setNewNum(true);
+      }
+      return;
+    }
+    if (['+','-','×','÷'].includes(val)) {
+      if (prevValue !== null && operator && !newNum) {
+        const result = doMath(prevValue, operator, display);
+        const rounded = typeof result === 'number' ? Math.round(result * 10000) / 10000 : result;
+        setHistory(String(rounded) + ' ' + val);
+        setDisplay(String(rounded));
+        setPrevValue(String(rounded));
+      } else {
+        setHistory(display + ' ' + val);
+        setPrevValue(display);
+      }
+      setOperator(val);
+      setNewNum(true);
+      return;
+    }
+    if (val === '.' && display.includes('.') && !newNum) return;
+    if (newNum) {
+      setDisplay(val === '.' ? '0.' : val);
+      setNewNum(false);
+    } else {
+      setDisplay(display === '0' && val !== '.' ? val : display + val);
+    }
+  };
+
+  const buttons = ['C','÷','×','-','7','8','9','+','4','5','6','=','1','2','3','.','0',''];
+
+  if (!show) return React.createElement('button', {className:'calc-toggle', onClick:onToggle}, '\u{1F5A9}');
+
+  return React.createElement(React.Fragment, null,
+    React.createElement('button', {className:'calc-toggle', onClick:onToggle}, '\u2715'),
+    React.createElement('div', {className:'calculator'},
+      React.createElement('div', {className:'calc-display'},
+        React.createElement('div', {className:'calc-expr'}, history || '\u00A0'),
+        React.createElement('div', {className:'calc-value'}, display)
+      ),
+      React.createElement('div', {className:'calc-grid'},
+        buttons.map((b, i) => b ?
+          React.createElement('button', {
+            key:i, className:'calc-btn' + (['+','-','×','÷'].includes(b) ? ' op' : b === '=' ? ' eq' : b === 'C' ? ' clear' : ''),
+            onClick:() => press(b), style: b === '0' ? {gridColumn:'span 2'} : {}
+          }, b) : null
+        )
+      )
+    )
+  );
+}
+
+// ============================
+// HOME SCREEN
+// ============================
+function HomeScreen({ onNav }) {
+  const modes = [
+    {id:'learn', icon:'\u{1F4DA}', title:'Formula Lab', desc:'Study all formulas with flashcards. Flip to reveal explanations, examples, and common traps.'},
+    {id:'guided', icon:'\u{1F9E9}', title:'Guided Practice', desc:'Step-by-step problem solving. Fill in each step and get instant feedback before moving on.'},
+    {id:'test', icon:'\u{1F3AF}', title:'Test Mode', desc:'Timed quiz simulation. Multiple choice and free response, just like the real exam.'},
+    {id:'analyze', icon:'\u{1F50D}', title:'Question Analyzer', desc:'Learn to identify key information, spot traps and distractors, and pick the right formula.'},
+  ];
+  return React.createElement('div', null,
+    React.createElement('div', {style:{textAlign:'center', padding:'40px 0 20px'}},
+      React.createElement('h1', {style:{fontSize:'2rem', fontWeight:800, background:'linear-gradient(135deg, #3b82f6, #8b5cf6)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent'}}, 'Med Math Tutor'),
+      React.createElement('p', {style:{color:'var(--text2)', marginTop:8, fontSize:'1.05rem'}}, 'Master dosage calculations. Become unstoppable.')
+    ),
+    React.createElement('div', {className:'home-grid'},
+      modes.map(m => React.createElement('div', {key:m.id, className:'home-card', onClick:() => onNav(m.id)},
+        React.createElement('div', {className:'home-icon'}, m.icon),
+        React.createElement('h3', null, m.title),
+        React.createElement('p', null, m.desc)
+      ))
+    )
+  );
+}
+
+// ============================
+// FORMULA LAB (LEARN MODE)
+// ============================
+function FormulaLab() {
+  const [filter, setFilter] = useState('All');
+  const [flipped, setFlipped] = useState({});
+  const filtered = FORMULAS.filter(f => filter === 'All' || f.category === filter);
+  const toggle = (id) => setFlipped(p => ({...p, [id]: !p[id]}));
+
+  return React.createElement('div', null,
+    React.createElement('h2', {style:{marginBottom:12}}, 'Formula Lab'),
+    React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, 'Click any card to flip it. Memorize the formula first, then check your understanding.'),
+    React.createElement('div', {className:'filter-row'},
+      CATEGORIES.map(c => React.createElement('button', {key:c, className:'filter-btn' + (filter===c?' active':''), onClick:()=>setFilter(c)}, c))
+    ),
+    React.createElement('div', {className:'formula-grid'},
+      filtered.map(f => React.createElement('div', {key:f.id, className:'formula-card' + (flipped[f.id]?' flipped':''), onClick:()=>toggle(f.id)},
+        React.createElement('div', {className:'formula-category'}, f.category),
+        React.createElement('div', {className:'formula-title'}, f.title),
+        !flipped[f.id] ?
+          React.createElement(React.Fragment, null,
+            React.createElement('div', {className:'formula-front'}, f.formula.split('\n').map((l,i) => React.createElement('div', {key:i}, l))),
+            React.createElement('div', {className:'flip-hint'}, 'Click to reveal explanation')
+          ) :
+          React.createElement('div', {className:'formula-back'},
+            React.createElement('p', null, f.explanation),
+            React.createElement('div', {className:'example'},
+              React.createElement('strong', null, 'Example:'),
+              React.createElement('br', null),
+              f.example.split('\n').map((l,i) => React.createElement(React.Fragment, {key:i}, l, React.createElement('br',null)))
+            ),
+            React.createElement('p', {style:{marginTop:10, color:'var(--orange)'}}, '\u26A0 ', f.tip),
+            React.createElement('div', {className:'flip-hint'}, 'Click to show formula')
+          )
+      ))
+    )
+  );
+}
+
+// ============================
+// GUIDED PRACTICE
+// ============================
+// Highlight rendering: takes question text + phrase arrays, returns React elements
+function renderHighlightedText(text, keyPhrases, trapPhrases, convertPhrases) {
+  if (!keyPhrases && !trapPhrases && !convertPhrases) return text;
+  const allPhrases = [];
+  (keyPhrases || []).forEach(p => allPhrases.push({phrase:p, type:'key'}));
+  (trapPhrases || []).forEach(p => allPhrases.push({phrase:p, type:'trap'}));
+  (convertPhrases || []).forEach(p => allPhrases.push({phrase:p, type:'convert'}));
+  // Sort longest first so longer matches take priority
+  allPhrases.sort((a, b) => b.phrase.length - a.phrase.length);
+
+  // Build a list of {start, end, type} ranges, no overlaps
+  const ranges = [];
+  const used = new Array(text.length).fill(false);
+  allPhrases.forEach(({phrase, type}) => {
+    let searchFrom = 0;
+    while (true) {
+      const idx = text.indexOf(phrase, searchFrom);
+      if (idx === -1) break;
+      const end = idx + phrase.length;
+      // Check overlap
+      let overlap = false;
+      for (let i = idx; i < end; i++) { if (used[i]) { overlap = true; break; } }
+      if (!overlap) {
+        ranges.push({start:idx, end, type});
+        for (let i = idx; i < end; i++) used[i] = true;
+      }
+      searchFrom = idx + 1;
+    }
+  });
+  ranges.sort((a, b) => a.start - b.start);
+
+  const parts = [];
+  let cursor = 0;
+  ranges.forEach((r, i) => {
+    if (r.start > cursor) parts.push(React.createElement('span', {key:'n'+i}, text.slice(cursor, r.start)));
+    parts.push(React.createElement('span', {key:'h'+i, className:'hl-' + r.type}, text.slice(r.start, r.end)));
+    cursor = r.end;
+  });
+  if (cursor < text.length) parts.push(React.createElement('span', {key:'end'}, text.slice(cursor)));
+  return parts;
+}
+
+function GuidedPractice() {
+  const [filter, setFilter] = useState('All');
+  const [qIdx, setQIdx] = useState(0);
+  const [stepInputs, setStepInputs] = useState({});
+  const [stepStatus, setStepStatus] = useState({});
+  const [activeStep, setActiveStep] = useState(0);
+  const [showHints, setShowHints] = useState({});
+  const [completed, setCompleted] = useState(false);
+  const [hlOn, setHlOn] = useState(false);
+
+  const filtered = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
+  const q = filtered[qIdx];
+
+  const reset = (idx) => {
+    setQIdx(idx !== undefined ? idx : qIdx);
+    setStepInputs({});
+    setStepStatus({});
+    setActiveStep(0);
+    setShowHints({});
+    setCompleted(false);
+  };
+
+  if (!q) return React.createElement('div', {className:'card'}, 'No questions in this category yet.');
+
+  const checkStep = (i) => {
+    const val = (stepInputs[i] || '').trim();
+    const expected = q.steps[i].answer;
+    const numVal = parseFloat(val);
+    const numExp = parseFloat(expected);
+    const isCorrect = !isNaN(numVal) && !isNaN(numExp) && Math.abs(numVal - numExp) < (numExp * 0.02 + 0.5);
+    setStepStatus(p => ({...p, [i]: isCorrect ? 'correct' : 'wrong'}));
+    if (isCorrect && i === activeStep) {
+      if (i < q.steps.length - 1) setActiveStep(i + 1);
+      else setCompleted(true);
+    }
+  };
+
+  const questionContent = hlOn
+    ? renderHighlightedText(q.text, q.keyPhrases, q.trapPhrases, q.convertPhrases)
+    : q.text;
+
+  return React.createElement('div', null,
+    React.createElement('h2', {style:{marginBottom:12}}, 'Guided Practice'),
+    React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, 'Work through each step. You must get each step right before moving to the next.'),
+    React.createElement('div', {className:'filter-row'},
+      CATEGORIES.filter(c => c !== 'Conversions').map(c => React.createElement('button', {key:c, className:'filter-btn' + (filter===c?' active':''), onClick:()=>{setFilter(c); reset(0);}}, c))
+    ),
+    // HIGHLIGHT TOGGLE
+    React.createElement('div', {className:'toggle-row'},
+      React.createElement('label', {className:'toggle-switch'},
+        React.createElement('input', {type:'checkbox', checked:hlOn, onChange:()=>setHlOn(h=>!h)}),
+        React.createElement('div', {className:'toggle-track'}),
+        React.createElement('div', {className:'toggle-knob'})
+      ),
+      React.createElement('div', null,
+        React.createElement('div', {className:'toggle-label'}, 'X-Ray Mode'),
+        React.createElement('div', {className:'toggle-sub'}, 'See what matters, what\'s fluff, and what needs converting')
+      )
+    ),
+    hlOn && React.createElement('div', {className:'hl-legend'},
+      React.createElement('div', {className:'hl-legend-item'},
+        React.createElement('div', {className:'hl-swatch hl-swatch-key'}),
+        React.createElement('span', null, 'Key info (you need this)')
+      ),
+      React.createElement('div', {className:'hl-legend-item'},
+        React.createElement('div', {className:'hl-swatch hl-swatch-trap'}),
+        React.createElement('span', null, 'Fluff / distractor (ignore it)')
+      ),
+      React.createElement('div', {className:'hl-legend-item'},
+        React.createElement('div', {className:'hl-swatch hl-swatch-convert'}),
+        React.createElement('span', null, 'Needs unit conversion')
+      )
+    ),
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, marginTop:12}},
+      React.createElement('span', {className:'tag tag-blue'}, 'Question ', qIdx + 1, ' of ', filtered.length),
+      React.createElement('span', {className:'tag tag-orange'}, q.difficulty)
+    ),
+    React.createElement('div', {className:'question-box'},
+      React.createElement('div', {className:'question-text'}, questionContent)
+    ),
+    React.createElement('div', {className:'card'},
+      React.createElement('h3', null, 'Solve Step by Step'),
+      q.steps.map((s, i) => {
+        const status = stepStatus[i];
+        const isActive = i === activeStep && !completed;
+        const isLocked = i > activeStep && !completed;
+        return React.createElement('div', {key:i, className:'step' + (status === 'correct' ? ' completed' : status === 'wrong' ? ' wrong' : isActive ? ' active' : ''), style: isLocked ? {opacity:0.4} : {}},
+          React.createElement('div', {className:'step-header'},
+            React.createElement('div', {className:'step-num'}, status === 'correct' ? '\u2713' : i + 1),
+            React.createElement('span', {className:'step-label'}, s.label)
+          ),
+          !isLocked && React.createElement(React.Fragment, null,
+            React.createElement('div', {className:'step-input-row'},
+              React.createElement('input', {
+                type:'text', placeholder:'Your answer...', value: stepInputs[i] || '',
+                onChange: e => setStepInputs(p => ({...p, [i]: e.target.value})),
+                onKeyDown: e => { if (e.key === 'Enter') checkStep(i); },
+                disabled: status === 'correct'
+              }),
+              React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.85rem', whiteSpace:'nowrap'}}, s.unit),
+              status !== 'correct' && React.createElement('button', {className:'btn btn-primary btn-sm', onClick:()=>checkStep(i)}, 'Check')
+            ),
+            React.createElement('div', {style:{display:'flex', gap:8, marginTop:6}},
+              !showHints[i] && status !== 'correct' && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setShowHints(p=>({...p,[i]:true}))}, 'Show Hint'),
+              status === 'wrong' && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setStepInputs(p=>({...p,[i]:s.answer}))}, 'Show Answer')
+            ),
+            showHints[i] && React.createElement('div', {className:'step-hint'}, '\u{1F4A1} ', s.hint),
+            status === 'correct' && React.createElement('div', {className:'step-feedback correct'}, '\u2713 Correct!'),
+            status === 'wrong' && React.createElement('div', {className:'step-feedback incorrect'}, '\u2717 Not quite. Try again or show hint.')
+          )
+        );
+      }),
+      completed && React.createElement('div', {style:{textAlign:'center', padding:'16px 0'}},
+        React.createElement('div', {style:{fontSize:'1.5rem', marginBottom:8}}, '\u{1F389}'),
+        React.createElement('p', {style:{fontWeight:700, color:'var(--green)', marginBottom:12}}, 'Problem Complete!'),
+        qIdx < filtered.length - 1 && React.createElement('button', {className:'btn btn-primary', onClick:()=>reset(qIdx+1)}, 'Next Problem \u2192')
+      )
+    )
+  );
+}
+
+// ============================
+// TEST MODE
+// ============================
+function TestMode() {
+  const [started, setStarted] = useState(false);
+  const [numQ, setNumQ] = useState(10);
+  const [timeLimit, setTimeLimit] = useState(30);
+  const [filter, setFilter] = useState('All');
+  const [questions, setQuestions] = useState([]);
+  const [current, setCurrent] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [submitted, setSubmitted] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(0);
+  const [showExplanation, setShowExplanation] = useState({});
+
+  useEffect(() => {
+    if (!started || submitted) return;
+    if (timeLeft <= 0) { setSubmitted(true); return; }
+    const t = setTimeout(() => setTimeLeft(tl => tl - 1), 1000);
+    return () => clearTimeout(t);
+  }, [timeLeft, started, submitted]);
+
+  const startTest = () => {
+    const pool = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
+    const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, numQ);
+    setQuestions(shuffled);
+    setCurrent(0);
+    setAnswers({});
+    setSubmitted(false);
+    setTimeLeft(timeLimit * 60);
+    setShowExplanation({});
+    setStarted(true);
+  };
+
+  const formatTime = (s) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+  };
+
+  const selectAnswer = (qId, val) => {
+    if (submitted) return;
+    setAnswers(p => ({...p, [qId]: val}));
+  };
+
+  const checkAnswer = (q, ans) => {
+    if (ans === undefined || ans === null || ans === '') return false;
+    if (q.type === 'mc') return ans === q.correct;
+    const numAns = parseFloat(ans);
+    const numCorrect = parseFloat(q.correct);
+    if (isNaN(numAns)) return false;
+    return Math.abs(numAns - numCorrect) < (Math.abs(numCorrect) * 0.02 + 0.3);
+  };
+
+  const score = questions.reduce((acc, q) => acc + (checkAnswer(q, answers[q.id]) ? 1 : 0), 0);
+
+  // Setup screen
+  if (!started) {
+    return React.createElement('div', null,
+      React.createElement('h2', {style:{marginBottom:16}}, 'Test Mode'),
+      React.createElement('div', {className:'card'},
+        React.createElement('h3', null, 'Configure Your Test'),
+        React.createElement('div', {style:{display:'grid', gap:16, maxWidth:400, marginTop:16}},
+          React.createElement('div', null,
+            React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', marginBottom:4, display:'block'}}, 'Category'),
+            React.createElement('div', {className:'filter-row'},
+              CATEGORIES.filter(c=>c!=='Conversions').map(c => React.createElement('button', {key:c, className:'filter-btn'+(filter===c?' active':''), onClick:()=>setFilter(c)}, c))
+            )
+          ),
+          React.createElement('div', null,
+            React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', marginBottom:4, display:'block'}}, 'Number of Questions'),
+            React.createElement('div', {style:{display:'flex', gap:8}},
+              [5,10,15,20].map(n => React.createElement('button', {key:n, className:'filter-btn'+(numQ===n?' active':''), onClick:()=>setNumQ(n)}, n))
+            )
+          ),
+          React.createElement('div', null,
+            React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', marginBottom:4, display:'block'}}, 'Time Limit (minutes)'),
+            React.createElement('div', {style:{display:'flex', gap:8}},
+              [15,30,45,60].map(n => React.createElement('button', {key:n, className:'filter-btn'+(timeLimit===n?' active':''), onClick:()=>setTimeLimit(n)}, n + ' min'))
+            )
+          ),
+          React.createElement('button', {className:'btn btn-primary', style:{marginTop:8}, onClick:startTest}, 'Start Test')
+        )
+      )
+    );
+  }
+
+  // Results screen
+  if (submitted) {
+    const pct = Math.round(score / questions.length * 100);
+    return React.createElement('div', null,
+      React.createElement('h2', {style:{marginBottom:16}}, 'Test Results'),
+      React.createElement('div', {className:'stats-row'},
+        React.createElement('div', {className:'stat-box'},
+          React.createElement('div', {className:'stat-value', style:{color: pct >= 80 ? 'var(--green)' : pct >= 60 ? 'var(--orange)' : 'var(--red)'}}, pct, '%'),
+          React.createElement('div', {className:'stat-label'}, 'Score')
+        ),
+        React.createElement('div', {className:'stat-box'},
+          React.createElement('div', {className:'stat-value'}, score, '/', questions.length),
+          React.createElement('div', {className:'stat-label'}, 'Correct')
+        ),
+        React.createElement('div', {className:'stat-box'},
+          React.createElement('div', {className:'stat-value'}, formatTime(timeLimit * 60 - timeLeft)),
+          React.createElement('div', {className:'stat-label'}, 'Time Used')
+        )
+      ),
+      questions.map((q, i) => {
+        const ans = answers[q.id];
+        const correct = checkAnswer(q, ans);
+        return React.createElement('div', {key:q.id, className:'card', style:{borderLeft: '4px solid ' + (correct ? 'var(--green)' : 'var(--red)')}},
+          React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}},
+            React.createElement('span', {style:{fontWeight:700}}, 'Q', i + 1),
+            React.createElement('span', {className: correct ? 'tag tag-green' : 'tag tag-red'}, correct ? 'Correct' : 'Incorrect')
+          ),
+          React.createElement('p', {style:{fontSize:'0.95rem', marginBottom:12}}, q.text),
+          React.createElement('div', {style:{fontSize:'0.9rem'}},
+            React.createElement('span', {style:{color:'var(--text3)'}}, 'Your answer: '),
+            React.createElement('span', {style:{color: correct ? 'var(--green)' : 'var(--red)', fontWeight:600}},
+              ans !== undefined ? (q.type === 'mc' ? q.options[ans] : ans + ' ' + (q.unit || '')) : 'No answer'
+            ),
+            !correct && React.createElement(React.Fragment, null,
+              React.createElement('br', null),
+              React.createElement('span', {style:{color:'var(--text3)'}}, 'Correct: '),
+              React.createElement('span', {style:{color:'var(--green)', fontWeight:600}},
+                q.type === 'mc' ? q.options[q.correct] : q.correct + ' ' + (q.unit || '')
+              )
+            )
+          ),
+          React.createElement('button', {className:'btn btn-outline btn-sm', style:{marginTop:10}, onClick:()=>setShowExplanation(p=>({...p,[q.id]:!p[q.id]}))}, showExplanation[q.id] ? 'Hide Steps' : 'Show Solution'),
+          showExplanation[q.id] && React.createElement('div', {className:'explanation'},
+            React.createElement('h4', null, 'Step-by-Step Solution'),
+            q.steps.map((s, j) => React.createElement('p', {key:j},
+              React.createElement('span', {className:'math'}, 'Step ', j + 1, ': '), s.label, ' \u2192 ', React.createElement('span', {className:'math'}, s.hint), ' = ', React.createElement('strong', null, s.answer, ' ', s.unit)
+            ))
+          )
+        );
+      }),
+      React.createElement('div', {style:{textAlign:'center', padding:'16px 0'}},
+        React.createElement('button', {className:'btn btn-primary', onClick:()=>setStarted(false)}, 'New Test')
+      )
+    );
+  }
+
+  // Active test
+  const q = questions[current];
+  return React.createElement('div', null,
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}},
+      React.createElement('h2', {style:{margin:0}}, 'Test Mode'),
+      React.createElement('div', {className:'timer' + (timeLeft < 300 ? ' warning' : '') + (timeLeft < 60 ? ' danger' : '')}, formatTime(timeLeft))
+    ),
+    React.createElement('div', {className:'progress-bar'},
+      React.createElement('div', {className:'progress-fill', style:{width: (current / questions.length * 100) + '%'}})
+    ),
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginBottom:16}},
+      React.createElement('span', {className:'tag tag-blue'}, 'Question ', current + 1, ' of ', questions.length),
+      React.createElement('span', {className:'tag tag-orange'}, q.category)
+    ),
+    React.createElement('div', {className:'question-box'},
+      React.createElement('div', {className:'question-text'}, q.text)
+    ),
+    React.createElement('div', {className:'card'},
+      q.type === 'mc' ?
+        React.createElement('div', {className:'mc-options'},
+          q.options.map((opt, i) => React.createElement('div', {
+            key:i, className:'mc-option' + (answers[q.id] === i ? ' selected' : ''),
+            onClick:() => selectAnswer(q.id, i)
+          },
+            React.createElement('div', {className:'mc-letter'}, String.fromCharCode(65 + i)),
+            React.createElement('span', null, opt)
+          ))
+        ) :
+        React.createElement('div', {style:{display:'flex', gap:10, alignItems:'center'}},
+          React.createElement('input', {
+            type:'text', placeholder:'Your answer...', value: answers[q.id] || '',
+            onChange: e => selectAnswer(q.id, e.target.value),
+            style:{maxWidth:250}
+          }),
+          React.createElement('span', {style:{color:'var(--text3)'}}, q.unit)
+        ),
+      React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginTop:20}},
+        React.createElement('button', {className:'btn btn-outline', disabled:current===0, onClick:()=>setCurrent(c=>c-1)}, '\u2190 Previous'),
+        current < questions.length - 1 ?
+          React.createElement('button', {className:'btn btn-primary', onClick:()=>setCurrent(c=>c+1)}, 'Next \u2192') :
+          React.createElement('button', {className:'btn btn-success', onClick:()=>setSubmitted(true)}, 'Submit Test')
+      )
+    ),
+    React.createElement('div', {style:{display:'flex', gap:6, flexWrap:'wrap', marginTop:12}},
+      questions.map((qq, i) => React.createElement('button', {
+        key:i, onClick:()=>setCurrent(i),
+        style:{
+          width:36, height:36, borderRadius:8, border:'2px solid ' + (i === current ? 'var(--accent)' : answers[qq.id] !== undefined ? 'var(--green)' : 'var(--surface2)'),
+          background: answers[qq.id] !== undefined ? 'rgba(34,197,94,0.1)' : 'var(--surface)',
+          color: i === current ? 'var(--accent)' : 'var(--text2)',
+          cursor:'pointer', fontSize:'0.8rem', fontWeight:600
+        }
+      }, i + 1))
+    )
+  );
+}
+
+// ============================
+// QUESTION ANALYZER
+// ============================
+function QuestionAnalyzer() {
+  const [qIdx, setQIdx] = useState(0);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [filter, setFilter] = useState('All');
+
+  const filtered = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
+  const q = filtered[qIdx];
+
+  if (!q) return React.createElement('div', {className:'card'}, 'No questions in this category.');
+
+  const relFormula = FORMULAS.find(f => f.id === q.formula);
+
+  return React.createElement('div', null,
+    React.createElement('h2', {style:{marginBottom:12}}, 'Question Analyzer'),
+    React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, 'Read the question. Think about what matters. Then reveal the full breakdown to train your eye.'),
+    React.createElement('div', {className:'filter-row'},
+      CATEGORIES.filter(c=>c!=='Conversions').map(c => React.createElement('button', {key:c, className:'filter-btn'+(filter===c?' active':''), onClick:()=>{setFilter(c); setQIdx(0); setShowAnalysis(false);}}, c))
+    ),
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}},
+      React.createElement('span', {className:'tag tag-blue'}, qIdx + 1, ' of ', filtered.length),
+      React.createElement('div', {style:{display:'flex', gap:8}},
+        React.createElement('span', {className:'tag tag-orange'}, q.difficulty),
+        React.createElement('span', {className:'tag tag-blue'}, q.category)
+      )
+    ),
+    React.createElement('div', {className:'question-box'},
+      React.createElement('div', {className:'question-text'}, q.text)
+    ),
+    !showAnalysis ?
+      React.createElement('div', {style:{textAlign:'center', padding:'20px 0'}},
+        React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, 'Before revealing: What info is key? What\'s a trap? What formula would you use?'),
+        React.createElement('button', {className:'btn btn-primary', onClick:()=>setShowAnalysis(true)}, 'Reveal Full Analysis')
+      ) :
+      React.createElement(React.Fragment, null,
+        React.createElement('div', {className:'card'},
+          React.createElement('h3', {style:{color:'var(--green)'}}, '\u2705 Key Information (what you NEED)'),
+          React.createElement('div', {className:'analysis-section'},
+            q.keyInfo.map((info, i) => React.createElement('div', {key:i, className:'analysis-item'},
+              React.createElement('div', {className:'analysis-icon'}, '\u{1F7E2}'),
+              React.createElement('div', {className:'analysis-content'},
+                React.createElement('div', {className:'analysis-label', style:{color:'var(--green)'}}, info)
+              )
+            ))
+          )
+        ),
+        React.createElement('div', {className:'card'},
+          React.createElement('h3', {style:{color:'var(--red)'}}, '\u{1F6A8} Traps & Distractors'),
+          React.createElement('div', {className:'analysis-section'},
+            q.traps.map((trap, i) => React.createElement('div', {key:i, className:'analysis-item'},
+              React.createElement('div', {className:'analysis-icon'}, '\u26A0\uFE0F'),
+              React.createElement('div', {className:'analysis-content'},
+                React.createElement('div', {className:'analysis-label', style:{color:'var(--red)'}}, trap)
+              )
+            ))
+          )
+        ),
+        relFormula && React.createElement('div', {className:'card'},
+          React.createElement('h3', {style:{color:'var(--accent)'}}, '\u{1F4D0} Formula to Use: ', relFormula.title),
+          React.createElement('div', {style:{fontFamily:'"Courier New",monospace', fontSize:'1.2rem', color:'var(--orange)', padding:'12px 0', fontWeight:700}},
+            relFormula.formula.split('\n').map((l,i) => React.createElement('div', {key:i}, l))
+          ),
+          React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem'}}, relFormula.explanation)
+        ),
+        React.createElement('div', {className:'card'},
+          React.createElement('h3', {style:{color:'var(--accent2)'}}, '\u{1F9E0} Step-by-Step Solution'),
+          q.steps.map((s, i) => React.createElement('div', {key:i, className:'step completed'},
+            React.createElement('div', {className:'step-header'},
+              React.createElement('div', {className:'step-num'}, i + 1),
+              React.createElement('span', {className:'step-label'}, s.label)
+            ),
+            React.createElement('p', {style:{fontSize:'0.9rem', color:'var(--text2)', marginTop:4}},
+              React.createElement('span', {className:'math'}, s.hint), ' = ',
+              React.createElement('strong', {style:{color:'var(--green)'}}, s.answer, ' ', s.unit)
+            )
+          )),
+          React.createElement('div', {style:{marginTop:12, padding:'12px', background:'var(--bg)', borderRadius:8}},
+            React.createElement('strong', {style:{color:'var(--green)'}}, 'Final Answer: '),
+            React.createElement('span', {style:{fontSize:'1.1rem', fontWeight:700}},
+              q.type === 'mc' ? q.options[q.correct] : q.correct + ' ' + (q.unit || '')
+            )
+          )
+        )
+      ),
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginTop:16}},
+      React.createElement('button', {className:'btn btn-outline', disabled:qIdx===0, onClick:()=>{setQIdx(i=>i-1); setShowAnalysis(false);}}, '\u2190 Previous'),
+      React.createElement('button', {className:'btn btn-primary', disabled:qIdx>=filtered.length-1, onClick:()=>{setQIdx(i=>i+1); setShowAnalysis(false);}}, 'Next Question \u2192')
+    )
+  );
+}
+
+// ============================
+// MAIN APP
+// ============================
+function App() {
+  const [page, setPage] = useState('home');
+  const [showCalc, setShowCalc] = useState(false);
+
+  const renderPage = () => {
+    switch(page) {
+      case 'home': return React.createElement(HomeScreen, {onNav: setPage});
+      case 'learn': return React.createElement(FormulaLab);
+      case 'guided': return React.createElement(GuidedPractice);
+      case 'test': return React.createElement(TestMode);
+      case 'analyze': return React.createElement(QuestionAnalyzer);
+      default: return React.createElement(HomeScreen, {onNav: setPage});
+    }
+  };
+
+  return React.createElement('div', {className:'app'},
+    React.createElement('nav', {className:'nav'},
+      React.createElement('div', {className:'nav-brand', onClick:()=>setPage('home'), style:{cursor:'pointer'}}, 'Med Math Tutor'),
+      page !== 'home' && React.createElement(React.Fragment, null,
+        React.createElement('button', {className:'nav-btn'+(page==='learn'?' active':''), onClick:()=>setPage('learn')}, 'Formula Lab'),
+        React.createElement('button', {className:'nav-btn'+(page==='guided'?' active':''), onClick:()=>setPage('guided')}, 'Guided'),
+        React.createElement('button', {className:'nav-btn'+(page==='test'?' active':''), onClick:()=>setPage('test')}, 'Test'),
+        React.createElement('button', {className:'nav-btn'+(page==='analyze'?' active':''), onClick:()=>setPage('analyze')}, 'Analyzer')
+      )
+    ),
+    renderPage(),
+    React.createElement(Calculator, {show: showCalc, onToggle: () => setShowCalc(s => !s)})
+  );
+}
+
+ReactDOM.render(React.createElement(App), document.getElementById('root'));
+</script>
+</body>
+</html>
