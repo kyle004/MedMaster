@@ -1953,21 +1953,151 @@ function shuffle(arr) {
 function PharmCards() {
   const [filter, setFilter] = useState('All');
   const [flipped, setFlipped] = useState({});
+  const [studying, setStudying] = useState(false);
+  const [deck, setDeck] = useState([]);
+  const [idx, setIdx] = useState(0);
+  const [isFlipped, setIsFlipped] = useState(false);
+  const [knew, setKnew] = useState([]);
+  const [didntKnow, setDidntKnow] = useState([]);
+
   const filtered = MEDS.filter(m => filter === 'All' || m.system === filter);
 
+  const startStudy = (shuffled) => {
+    const d = shuffled ? shuffle(filtered) : [...filtered];
+    setDeck(d);
+    setIdx(0);
+    setIsFlipped(false);
+    setKnew([]);
+    setDidntKnow([]);
+    setStudying(true);
+  };
+
+  const grade = (knewIt) => {
+    const med = deck[idx];
+    if (knewIt) setKnew(p => [...p, med]);
+    else setDidntKnow(p => [...p, med]);
+    const ni = idx + 1;
+    if (ni >= deck.length) {
+      // If there are "didn't know" cards and we just finished, check if we should loop
+      setIdx(ni); // triggers done screen
+    } else {
+      setIdx(ni);
+      setIsFlipped(false);
+    }
+  };
+
+  const studyMissed = () => {
+    const d = shuffle(didntKnow);
+    setDeck(d);
+    setIdx(0);
+    setIsFlipped(false);
+    setKnew([]);
+    setDidntKnow([]);
+  };
+
+  // Render a single flashcard (shared between study mode front/back)
+  const renderCardContent = (m, showBack) => {
+    if (!showBack) {
+      return React.createElement(React.Fragment, null,
+        React.createElement('div', {className:'med-card-name', style:{fontSize:'1.6rem', textAlign:'center'}}, highlightSuffix(m.name)),
+        React.createElement('div', {className:'med-card-class', style:{textAlign:'center', fontSize:'1rem', marginTop:4}}, m.drugClass),
+        React.createElement('div', {style:{color:'var(--text3)', fontSize:'0.9rem', marginTop:16, textAlign:'center'}}, 'Tap to flip')
+      );
+    }
+    return React.createElement(React.Fragment, null,
+      React.createElement('div', {className:'med-card-name', style:{fontSize:'1.4rem', textAlign:'center'}}, highlightSuffix(m.name)),
+      React.createElement('div', {className:'med-card-class', style:{textAlign:'center', marginBottom:12}}, m.drugClass),
+      React.createElement('div', {style:{fontSize:'1.1rem', fontWeight:600, marginBottom:8, textAlign:'center'}}, m.indication),
+      React.createElement('div', {style:{color:'var(--text2)', fontSize:'0.95rem', textAlign:'center'}},
+        React.createElement('strong', null, 'Side Effects: '), m.sideEffects.join(', ')
+      ),
+      React.createElement('div', {className:'med-card-row', style:{justifyContent:'center', marginTop:10}},
+        m.routes.map(r => React.createElement('span', {key:r, className:'med-tag med-tag-route'}, r)),
+        React.createElement('span', {className:'med-tag med-tag-system'}, m.system)
+      ),
+      m.mnemonic && React.createElement('div', {style:{marginTop:12, padding:'8px 12px', background:'rgba(245,158,11,0.1)', borderRadius:8, fontSize:'0.85rem', color:'var(--orange)', textAlign:'center'}},
+        '\uD83D\uDCA1 ', m.mnemonic
+      )
+    );
+  };
+
+  // STUDY MODE — done screen
+  if (studying && idx >= deck.length) {
+    const total = knew.length + didntKnow.length;
+    return React.createElement('div', {style:{textAlign:'center', padding:30}},
+      React.createElement('div', {style:{fontSize:'2.5rem', marginBottom:12}}, didntKnow.length === 0 ? '\uD83C\uDF89' : '\uD83D\uDCCA'),
+      React.createElement('h2', {style:{marginBottom:12}}, didntKnow.length === 0 ? 'You nailed them all!' : 'Round Complete'),
+      React.createElement('div', {style:{display:'flex', gap:20, justifyContent:'center', marginBottom:20}},
+        React.createElement('div', {style:{textAlign:'center'}},
+          React.createElement('div', {style:{fontSize:'2rem', fontWeight:800, color:'var(--green)'}}, knew.length),
+          React.createElement('div', {style:{color:'var(--text2)', fontSize:'0.85rem'}}, 'Knew it')
+        ),
+        React.createElement('div', {style:{textAlign:'center'}},
+          React.createElement('div', {style:{fontSize:'2rem', fontWeight:800, color:'var(--red)'}}, didntKnow.length),
+          React.createElement('div', {style:{color:'var(--text2)', fontSize:'0.85rem'}}, 'Didn\'t know')
+        )
+      ),
+      didntKnow.length > 0 && React.createElement('div', {className:'card', style:{textAlign:'left', marginBottom:16, maxWidth:500, margin:'0 auto 16px'}},
+        React.createElement('h3', {style:{color:'var(--red)', marginBottom:10, fontSize:'0.95rem'}}, 'Cards to review:'),
+        didntKnow.map((m, i) => React.createElement('div', {key:i, style:{padding:'6px 0', borderBottom:'1px solid var(--surface2)', fontSize:'0.9rem'}},
+          React.createElement('strong', null, m.name), ' — ', m.drugClass
+        ))
+      ),
+      React.createElement('div', {style:{display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap'}},
+        didntKnow.length > 0 && React.createElement('button', {className:'btn btn-primary', onClick:studyMissed}, 'Study Missed Cards (' + didntKnow.length + ')'),
+        React.createElement('button', {className:'btn btn-outline', onClick:() => startStudy(true)}, 'Restart (Shuffled)'),
+        React.createElement('button', {className:'btn btn-outline', onClick:() => setStudying(false)}, 'Back to Browse')
+      )
+    );
+  }
+
+  // STUDY MODE — active card
+  if (studying && deck[idx]) {
+    const med = deck[idx];
+    return React.createElement('div', null,
+      React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14}},
+        React.createElement('span', {style:{color:'var(--text2)', fontSize:'0.9rem'}}, 'Card ', idx + 1, ' / ', deck.length),
+        React.createElement('div', {style:{display:'flex', gap:12}},
+          React.createElement('span', {style:{color:'var(--green)', fontWeight:600}}, '\u2713 ', knew.length),
+          React.createElement('span', {style:{color:'var(--red)', fontWeight:600}}, '\u2717 ', didntKnow.length)
+        )
+      ),
+      React.createElement('div', {style:{height:6, borderRadius:3, background:'var(--surface2)', marginBottom:20, overflow:'hidden'}},
+        React.createElement('div', {style:{height:'100%', borderRadius:3, width: Math.round((idx/deck.length)*100)+'%', background:'linear-gradient(90deg, var(--accent), var(--accent2))', transition:'width 0.3s'}})
+      ),
+      React.createElement('div', {className:'med-card', style:{maxWidth:500, margin:'0 auto', padding:32, cursor:'pointer'}, onClick:() => !isFlipped && setIsFlipped(true)},
+        renderCardContent(med, isFlipped)
+      ),
+      isFlipped && React.createElement('div', {style:{display:'flex', gap:12, justifyContent:'center', marginTop:20}},
+        React.createElement('button', {className:'btn', style:{background:'var(--red)', color:'white', padding:'12px 28px', fontSize:'1rem'}, onClick:()=>grade(false)}, '\u2717 Didn\'t Know'),
+        React.createElement('button', {className:'btn', style:{background:'var(--green)', color:'white', padding:'12px 28px', fontSize:'1rem'}, onClick:()=>grade(true)}, '\u2713 Knew It')
+      ),
+      !isFlipped && React.createElement('div', {style:{textAlign:'center', marginTop:16}},
+        React.createElement('button', {className:'btn btn-outline', onClick:() => setStudying(false)}, 'Exit Study Mode')
+      )
+    );
+  }
+
+  // BROWSE MODE — grid view with Start Study button
   return React.createElement('div', null,
     React.createElement('div', {className:'filter-row'},
       MED_SYSTEMS.map(s => React.createElement('button', {key:s, className:'filter-btn'+(filter===s?' active':''), onClick:()=>setFilter(s)}, s))
     ),
-    React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.85rem', marginBottom:14}},
-      'Showing ', filtered.length, ' meds. Click to flip. ',
-      React.createElement('span', {className:'suffix-hl'}, 'Orange'), ' = suffix that tells you the drug class.'
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14, flexWrap:'wrap', gap:8}},
+      React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.85rem', margin:0}},
+        'Showing ', filtered.length, ' meds. ',
+        React.createElement('span', {className:'suffix-hl'}, 'Orange'), ' = suffix \u2192 drug class.'
+      ),
+      React.createElement('div', {style:{display:'flex', gap:8}},
+        React.createElement('button', {className:'btn btn-primary', style:{padding:'8px 20px'}, onClick:()=>startStudy(false)}, '\u25B6 Study in Order'),
+        React.createElement('button', {className:'btn btn-outline', style:{padding:'8px 20px'}, onClick:()=>startStudy(true)}, '\uD83D\uDD00 Shuffle & Study')
+      )
     ),
     React.createElement('div', {className:'med-grid'},
       filtered.map((m, i) => {
-        const isFlipped = flipped[i];
-        return React.createElement('div', {key:i, className:'med-card'+(isFlipped?' flipped':''), onClick:()=>setFlipped(p=>({...p,[i]:!p[i]}))},
-          !isFlipped ? React.createElement(React.Fragment, null,
+        const fl = flipped[filter+'_'+i];
+        return React.createElement('div', {key:filter+'_'+i, className:'med-card'+(fl?' flipped':''), onClick:()=>setFlipped(p=>({...p,[filter+'_'+i]:!p[filter+'_'+i]}))},
+          !fl ? React.createElement(React.Fragment, null,
             React.createElement('div', {className:'med-card-name'}, highlightSuffix(m.name)),
             React.createElement('div', {className:'med-card-class'}, m.drugClass),
             React.createElement('div', {style:{color:'var(--text3)', fontSize:'0.8rem', marginTop:8}}, 'Click to reveal details')
