@@ -162,6 +162,28 @@
   .explanation p { font-size:0.88rem; color:var(--text2); line-height:1.6; }
   .explanation .math { font-family:'Courier New',monospace; color:var(--orange); font-weight:600; }
 
+  /* ACCURACY BAR */
+  .acc-bar-wrap { margin-bottom:14px; }
+  .acc-bar-label { display:flex; justify-content:space-between; margin-bottom:4px; font-size:0.85rem; }
+  .acc-bar-label span:first-child { font-weight:600; }
+  .acc-bar { height:10px; background:var(--surface2); border-radius:5px; overflow:hidden; }
+  .acc-bar-fill { height:100%; border-radius:5px; transition:width 0.5s; }
+  .acc-bar-fill.great { background:var(--green); }
+  .acc-bar-fill.ok { background:var(--orange); }
+  .acc-bar-fill.weak { background:var(--red); }
+
+  /* HISTORY TABLE */
+  .history-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+  .history-table th { text-align:left; padding:8px 12px; border-bottom:2px solid var(--surface2); color:var(--text3); font-weight:600; font-size:0.75rem; text-transform:uppercase; letter-spacing:1px; }
+  .history-table td { padding:8px 12px; border-bottom:1px solid var(--surface2); }
+
+  /* SAVE INDICATOR */
+  .save-badge { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; border-radius:12px; font-size:0.7rem; font-weight:600; background:rgba(34,197,94,0.12); color:var(--green); }
+
+  /* CLEAR BTN */
+  .btn-ghost { background:transparent; border:none; color:var(--text3); cursor:pointer; font-size:0.8rem; padding:4px 8px; }
+  .btn-ghost:hover { color:var(--red); }
+
   /* TOGGLE SWITCH */
   .toggle-row { display:flex; align-items:center; gap:10px; margin-bottom:16px; padding:12px 16px; background:var(--surface); border-radius:10px; border:1px solid var(--surface2); }
   .toggle-label { font-size:0.9rem; font-weight:600; }
@@ -421,7 +443,7 @@ const QUESTIONS = [
   },
   {
     id:'w8-5', category:'Basic', difficulty:'Easy',
-    text:'The narcotics drawer has meperidine (Demerol) labeled 75 mg in 1 mL. Order: Demerol 60 mg IM. Using the basic calculation method (D/H × Q), what is OH (On Hand)?',
+    text:'The narcotics drawer has meperidine (Demerol) labeled 75 mg in 1 mL. Order: Demerol 60 mg IM. Using the basic calculation method (D/H \u00d7 Q), what is OH (On Hand)?',
     type:'mc',
     options:['1 mL','60 mg','75 mL','75 mg'],
     correct:3,
@@ -839,6 +861,62 @@ const QUESTIONS = [
 const CATEGORIES = ['All', 'Basic', 'Conversions', 'Weight-Based', 'IV/Infusion', 'Critical Care', 'Pediatric'];
 
 // ============================
+// PROGRESS / SAVE SYSTEM
+// ============================
+const SAVE_KEY = 'medmath_progress';
+
+function loadProgress() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return getDefaultProgress();
+    return {...getDefaultProgress(), ...JSON.parse(raw)};
+  } catch { return getDefaultProgress(); }
+}
+
+function saveProgress(data) {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch {}
+}
+
+function getDefaultProgress() {
+  return {
+    guidedPosition: {filter:'All', qIdx:0},
+    completedQuestions: [],   // array of question ids completed in guided
+    testHistory: [],          // array of {date, score, total, pct, category, timeUsed, details:[{qId, correct, userAnswer}]}
+    questionStats: {},        // {qId: {attempts, correct, lastAttempt, lastCorrect}}
+    missedQuestions: [],      // array of question ids gotten wrong (deduped)
+  };
+}
+
+// Global progress context via a custom hook
+function useProgress() {
+  const [progress, setProgressState] = useState(() => loadProgress());
+  const setProgress = useCallback((updater) => {
+    setProgressState(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      saveProgress(next);
+      return next;
+    });
+  }, []);
+  return [progress, setProgress];
+}
+
+// Helper to record a question attempt
+function recordAttempt(progress, qId, wasCorrect) {
+  const stats = {...(progress.questionStats || {})};
+  const prev = stats[qId] || {attempts:0, correct:0, lastAttempt:null, lastCorrect:false};
+  stats[qId] = {
+    attempts: prev.attempts + 1,
+    correct: prev.correct + (wasCorrect ? 1 : 0),
+    lastAttempt: Date.now(),
+    lastCorrect: wasCorrect
+  };
+  let missed = [...(progress.missedQuestions || [])];
+  if (!wasCorrect && !missed.includes(qId)) missed.push(qId);
+  if (wasCorrect) missed = missed.filter(id => id !== qId);
+  return {...progress, questionStats: stats, missedQuestions: missed};
+}
+
+// ============================
 // CALCULATOR COMPONENT
 // ============================
 function Calculator({ show, onToggle }) {
@@ -928,17 +1006,43 @@ function Calculator({ show, onToggle }) {
 // ============================
 // HOME SCREEN
 // ============================
-function HomeScreen({ onNav }) {
+function HomeScreen({ onNav, progress }) {
+  const stats = progress.questionStats || {};
+  const totalAttempts = Object.values(stats).reduce((a, s) => a + s.attempts, 0);
+  const totalCorrect = Object.values(stats).reduce((a, s) => a + s.correct, 0);
+  const overallPct = totalAttempts > 0 ? Math.round(totalCorrect / totalAttempts * 100) : 0;
+  const missedCount = (progress.missedQuestions || []).length;
+
   const modes = [
     {id:'learn', icon:'\u{1F4DA}', title:'Formula Lab', desc:'Study all formulas with flashcards. Flip to reveal explanations, examples, and common traps.'},
-    {id:'guided', icon:'\u{1F9E9}', title:'Guided Practice', desc:'Step-by-step problem solving. Fill in each step and get instant feedback before moving on.'},
-    {id:'test', icon:'\u{1F3AF}', title:'Test Mode', desc:'Timed quiz simulation. Multiple choice and free response, just like the real exam.'},
-    {id:'analyze', icon:'\u{1F50D}', title:'Question Analyzer', desc:'Learn to identify key information, spot traps and distractors, and pick the right formula.'},
+    {id:'guided', icon:'\u{1F9E9}', title:'Guided Practice', desc:'Step-by-step problem solving. Your position is saved automatically.'},
+    {id:'test', icon:'\u{1F3AF}', title:'Test Mode', desc:'Timed quiz simulation. Results are tracked on your dashboard.'},
+    {id:'analyze', icon:'\u{1F50D}', title:'Question Analyzer', desc:'Learn to identify key info, spot traps, and pick the right formula.'},
+    {id:'dashboard', icon:'\u{1F4CA}', title:'Dashboard', desc:'Track your accuracy by category. See your strengths and weak spots.'},
+    {id:'missed', icon:'\u{1F6A8}', title:'Missed Questions' + (missedCount > 0 ? ' (' + missedCount + ')' : ''), desc: missedCount > 0 ? missedCount + ' questions to review. Drill your weak spots until they\'re gone.' : 'All clear! Questions you miss will appear here for review.'},
   ];
   return React.createElement('div', null,
     React.createElement('div', {style:{textAlign:'center', padding:'40px 0 20px'}},
       React.createElement('h1', {style:{fontSize:'2rem', fontWeight:800, background:'linear-gradient(135deg, #3b82f6, #8b5cf6)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent'}}, 'Med Math Tutor'),
       React.createElement('p', {style:{color:'var(--text2)', marginTop:8, fontSize:'1.05rem'}}, 'Master dosage calculations. Become unstoppable.')
+    ),
+    totalAttempts > 0 && React.createElement('div', {className:'stats-row', style:{marginBottom:8}},
+      React.createElement('div', {className:'stat-box'},
+        React.createElement('div', {className:'stat-value', style:{color: overallPct >= 80 ? 'var(--green)' : overallPct >= 60 ? 'var(--orange)' : 'var(--red)'}}, overallPct, '%'),
+        React.createElement('div', {className:'stat-label'}, 'Accuracy')
+      ),
+      React.createElement('div', {className:'stat-box'},
+        React.createElement('div', {className:'stat-value'}, Object.keys(stats).length, '/', QUESTIONS.length),
+        React.createElement('div', {className:'stat-label'}, 'Attempted')
+      ),
+      React.createElement('div', {className:'stat-box'},
+        React.createElement('div', {className:'stat-value'}, (progress.testHistory || []).length),
+        React.createElement('div', {className:'stat-label'}, 'Tests Taken')
+      ),
+      React.createElement('div', {className:'stat-box'},
+        React.createElement('div', {className:'stat-value', style:{color: missedCount > 0 ? 'var(--red)' : 'var(--green)'}}, missedCount),
+        React.createElement('div', {className:'stat-label'}, 'To Review')
+      )
     ),
     React.createElement('div', {className:'home-grid'},
       modes.map(m => React.createElement('div', {key:m.id, className:'home-card', onClick:() => onNav(m.id)},
@@ -1034,9 +1138,11 @@ function renderHighlightedText(text, keyPhrases, trapPhrases, convertPhrases) {
   return parts;
 }
 
-function GuidedPractice() {
-  const [filter, setFilter] = useState('All');
-  const [qIdx, setQIdx] = useState(0);
+function GuidedPractice({ progress, setProgress }) {
+  // Restore saved position
+  const saved = progress.guidedPosition || {filter:'All', qIdx:0};
+  const [filter, setFilter] = useState(saved.filter);
+  const [qIdx, setQIdx] = useState(saved.qIdx);
   const [stepInputs, setStepInputs] = useState({});
   const [stepStatus, setStepStatus] = useState({});
   const [activeStep, setActiveStep] = useState(0);
@@ -1046,6 +1152,11 @@ function GuidedPractice() {
 
   const filtered = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
   const q = filtered[qIdx];
+
+  // Save position whenever it changes
+  useEffect(() => {
+    setProgress(p => ({...p, guidedPosition: {filter, qIdx}}));
+  }, [filter, qIdx]);
 
   const reset = (idx) => {
     setQIdx(idx !== undefined ? idx : qIdx);
@@ -1065,18 +1176,35 @@ function GuidedPractice() {
     const numExp = parseFloat(expected);
     const isCorrect = !isNaN(numVal) && !isNaN(numExp) && Math.abs(numVal - numExp) < (numExp * 0.02 + 0.5);
     setStepStatus(p => ({...p, [i]: isCorrect ? 'correct' : 'wrong'}));
+    if (!isCorrect) {
+      // Record wrong attempt
+      setProgress(p => recordAttempt(p, q.id, false));
+    }
     if (isCorrect && i === activeStep) {
       if (i < q.steps.length - 1) setActiveStep(i + 1);
-      else setCompleted(true);
+      else {
+        setCompleted(true);
+        // Record correct completion
+        setProgress(p => {
+          let updated = recordAttempt(p, q.id, true);
+          const done = [...(updated.completedQuestions || [])];
+          if (!done.includes(q.id)) done.push(q.id);
+          return {...updated, completedQuestions: done};
+        });
+      }
     }
   };
 
+  const completedIds = progress.completedQuestions || [];
   const questionContent = hlOn
     ? renderHighlightedText(q.text, q.keyPhrases, q.trapPhrases, q.convertPhrases)
     : q.text;
 
   return React.createElement('div', null,
-    React.createElement('h2', {style:{marginBottom:12}}, 'Guided Practice'),
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}},
+      React.createElement('h2', {style:{margin:0}}, 'Guided Practice'),
+      React.createElement('div', {className:'save-badge'}, '\u2713 Progress saved')
+    ),
     React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, 'Work through each step. You must get each step right before moving to the next.'),
     React.createElement('div', {className:'filter-row'},
       CATEGORIES.filter(c => c !== 'Conversions').map(c => React.createElement('button', {key:c, className:'filter-btn' + (filter===c?' active':''), onClick:()=>{setFilter(c); reset(0);}}, c))
@@ -1114,6 +1242,22 @@ function GuidedPractice() {
     React.createElement('div', {className:'question-box'},
       React.createElement('div', {className:'question-text'}, questionContent)
     ),
+    // Formula reference
+    (() => {
+      const relFormula = FORMULAS.find(f => f.id === q.formula);
+      return relFormula ? React.createElement('details', {style:{marginBottom:12}},
+        React.createElement('summary', {style:{cursor:'pointer', color:'var(--accent)', fontSize:'0.9rem', fontWeight:600, padding:'10px 16px', background:'var(--surface)', borderRadius:10, border:'1px solid var(--surface2)', listStyle:'none', display:'flex', alignItems:'center', gap:8}},
+          '\u{1F4D0} Which formula? (click to reveal: ', relFormula.title, ')'
+        ),
+        React.createElement('div', {style:{background:'var(--surface)', borderRadius:'0 0 10px 10px', padding:'12px 16px', borderTop:'none', marginTop:-4, border:'1px solid var(--surface2)', borderTop:'1px solid var(--surface2)'}},
+          React.createElement('div', {style:{fontFamily:'"Courier New",monospace', fontSize:'1.1rem', color:'var(--orange)', fontWeight:700, marginBottom:8}},
+            relFormula.formula.split('\n').map((l,i) => React.createElement('div', {key:i}, l))
+          ),
+          React.createElement('p', {style:{fontSize:'0.85rem', color:'var(--text2)'}}, relFormula.explanation),
+          React.createElement('p', {style:{fontSize:'0.8rem', color:'var(--orange)', marginTop:6}}, '\u26A0 ', relFormula.tip)
+        )
+      ) : null;
+    })(),
     React.createElement('div', {className:'card'},
       React.createElement('h3', null, 'Solve Step by Step'),
       q.steps.map((s, i) => {
@@ -1158,7 +1302,7 @@ function GuidedPractice() {
 // ============================
 // TEST MODE
 // ============================
-function TestMode() {
+function TestMode({ progress, setProgress }) {
   const [started, setStarted] = useState(false);
   const [numQ, setNumQ] = useState(10);
   const [timeLimit, setTimeLimit] = useState(30);
@@ -1210,6 +1354,22 @@ function TestMode() {
   };
 
   const score = questions.reduce((acc, q) => acc + (checkAnswer(q, answers[q.id]) ? 1 : 0), 0);
+
+  // Save test results when submitted
+  useEffect(() => {
+    if (!submitted || questions.length === 0) return;
+    const details = questions.map(q => ({qId:q.id, correct:checkAnswer(q, answers[q.id]), userAnswer:answers[q.id]}));
+    const pct = Math.round(score / questions.length * 100);
+    const timeUsed = formatTime(timeLimit * 60 - timeLeft);
+    setProgress(p => {
+      let updated = {...p};
+      // Record each question attempt
+      details.forEach(d => { updated = recordAttempt(updated, d.qId, d.correct); });
+      // Add to test history
+      const hist = [...(updated.testHistory || []), {date:Date.now(), score, total:questions.length, pct, category:filter, timeUsed, details}];
+      return {...updated, testHistory: hist};
+    });
+  }, [submitted]);
 
   // Setup screen
   if (!started) {
@@ -1449,20 +1609,228 @@ function QuestionAnalyzer() {
 }
 
 // ============================
+// PERFORMANCE DASHBOARD
+// ============================
+function Dashboard({ progress }) {
+  const stats = progress.questionStats || {};
+  const testHist = progress.testHistory || [];
+  const missed = progress.missedQuestions || [];
+
+  // Category breakdown
+  const catStats = {};
+  CATEGORIES.filter(c => c !== 'All' && c !== 'Conversions').forEach(cat => {
+    catStats[cat] = {attempts:0, correct:0};
+  });
+  QUESTIONS.forEach(q => {
+    const s = stats[q.id];
+    if (s && catStats[q.category]) {
+      catStats[q.category].attempts += s.attempts;
+      catStats[q.category].correct += s.correct;
+    }
+  });
+
+  const totalAttempts = Object.values(stats).reduce((a, s) => a + s.attempts, 0);
+  const totalCorrect = Object.values(stats).reduce((a, s) => a + s.correct, 0);
+  const overallPct = totalAttempts > 0 ? Math.round(totalCorrect / totalAttempts * 100) : 0;
+  const uniqueAttempted = Object.keys(stats).length;
+  const uniqueCompleted = Object.values(stats).filter(s => s.lastCorrect).length;
+
+  return React.createElement('div', null,
+    React.createElement('h2', {style:{marginBottom:16}}, 'Performance Dashboard'),
+    // Overview stats
+    React.createElement('div', {className:'stats-row'},
+      React.createElement('div', {className:'stat-box'},
+        React.createElement('div', {className:'stat-value', style:{color: overallPct >= 80 ? 'var(--green)' : overallPct >= 60 ? 'var(--orange)' : totalAttempts === 0 ? 'var(--text3)' : 'var(--red)'}}, totalAttempts > 0 ? overallPct + '%' : '--'),
+        React.createElement('div', {className:'stat-label'}, 'Overall Accuracy')
+      ),
+      React.createElement('div', {className:'stat-box'},
+        React.createElement('div', {className:'stat-value'}, uniqueAttempted),
+        React.createElement('div', {className:'stat-label'}, 'Questions Attempted')
+      ),
+      React.createElement('div', {className:'stat-box'},
+        React.createElement('div', {className:'stat-value'}, totalAttempts),
+        React.createElement('div', {className:'stat-label'}, 'Total Attempts')
+      ),
+      React.createElement('div', {className:'stat-box'},
+        React.createElement('div', {className:'stat-value', style:{color:'var(--red)'}}, missed.length),
+        React.createElement('div', {className:'stat-label'}, 'In Missed Bank')
+      )
+    ),
+    // Category accuracy bars
+    React.createElement('div', {className:'card'},
+      React.createElement('h3', null, 'Accuracy by Category'),
+      React.createElement('p', {style:{color:'var(--text3)', fontSize:'0.8rem', marginBottom:16}}, 'Based on all attempts across Guided Practice, Tests, and Missed Questions review'),
+      Object.entries(catStats).map(([cat, data]) => {
+        const pct = data.attempts > 0 ? Math.round(data.correct / data.attempts * 100) : 0;
+        const cls = data.attempts === 0 ? '' : pct >= 80 ? 'great' : pct >= 60 ? 'ok' : 'weak';
+        return React.createElement('div', {key:cat, className:'acc-bar-wrap'},
+          React.createElement('div', {className:'acc-bar-label'},
+            React.createElement('span', null, cat),
+            React.createElement('span', {style:{color: cls === 'great' ? 'var(--green)' : cls === 'ok' ? 'var(--orange)' : cls === 'weak' ? 'var(--red)' : 'var(--text3)'}},
+              data.attempts > 0 ? pct + '% (' + data.correct + '/' + data.attempts + ')' : 'No attempts yet'
+            )
+          ),
+          React.createElement('div', {className:'acc-bar'},
+            React.createElement('div', {className:'acc-bar-fill ' + cls, style:{width: (data.attempts > 0 ? pct : 0) + '%'}})
+          )
+        );
+      })
+    ),
+    // Test history
+    React.createElement('div', {className:'card'},
+      React.createElement('h3', null, 'Test History'),
+      testHist.length === 0 ?
+        React.createElement('p', {style:{color:'var(--text3)', fontSize:'0.9rem'}}, 'No tests completed yet. Take a test to see your results here.') :
+        React.createElement('table', {className:'history-table'},
+          React.createElement('thead', null,
+            React.createElement('tr', null,
+              React.createElement('th', null, 'Date'),
+              React.createElement('th', null, 'Category'),
+              React.createElement('th', null, 'Score'),
+              React.createElement('th', null, 'Time')
+            )
+          ),
+          React.createElement('tbody', null,
+            [...testHist].reverse().slice(0, 15).map((t, i) => React.createElement('tr', {key:i},
+              React.createElement('td', null, new Date(t.date).toLocaleDateString()),
+              React.createElement('td', null, React.createElement('span', {className:'tag tag-blue'}, t.category)),
+              React.createElement('td', null, React.createElement('span', {style:{color: t.pct >= 80 ? 'var(--green)' : t.pct >= 60 ? 'var(--orange)' : 'var(--red)', fontWeight:700}}, t.pct + '%'), ' (', t.score, '/', t.total, ')'),
+              React.createElement('td', null, t.timeUsed || '--')
+            ))
+          )
+        )
+    )
+  );
+}
+
+// ============================
+// MISSED QUESTIONS BANK
+// ============================
+function MissedBank({ progress, setProgress }) {
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [stepInputs, setStepInputs] = useState({});
+  const [stepStatus, setStepStatus] = useState({});
+  const [activeStep, setActiveStep] = useState(0);
+  const [completed, setCompleted] = useState(false);
+  const [showHints, setShowHints] = useState({});
+
+  const missed = progress.missedQuestions || [];
+  const missedQs = QUESTIONS.filter(q => missed.includes(q.id));
+
+  const reset = (idx) => {
+    setCurrentIdx(idx !== undefined ? idx : currentIdx);
+    setStepInputs({}); setStepStatus({}); setActiveStep(0); setCompleted(false); setShowHints({});
+  };
+
+  if (missedQs.length === 0) {
+    return React.createElement('div', null,
+      React.createElement('h2', {style:{marginBottom:16}}, 'Missed Questions Bank'),
+      React.createElement('div', {className:'card', style:{textAlign:'center', padding:'40px'}},
+        React.createElement('div', {style:{fontSize:'2rem', marginBottom:12}}, '\u{1F389}'),
+        React.createElement('h3', {style:{color:'var(--green)', marginBottom:8}}, 'All Clear!'),
+        React.createElement('p', {style:{color:'var(--text2)'}}, 'You don\'t have any missed questions. Keep practicing — any question you get wrong will show up here for review.')
+      )
+    );
+  }
+
+  const q = missedQs[currentIdx] || missedQs[0];
+
+  const checkStep = (i) => {
+    const val = (stepInputs[i] || '').trim();
+    const expected = q.steps[i].answer;
+    const numVal = parseFloat(val);
+    const numExp = parseFloat(expected);
+    const isCorrect = !isNaN(numVal) && !isNaN(numExp) && Math.abs(numVal - numExp) < (numExp * 0.02 + 0.5);
+    setStepStatus(p => ({...p, [i]: isCorrect ? 'correct' : 'wrong'}));
+    if (isCorrect && i === activeStep) {
+      if (i < q.steps.length - 1) setActiveStep(i + 1);
+      else {
+        setCompleted(true);
+        // Record correct attempt — removes from missed bank
+        setProgress(p => recordAttempt(p, q.id, true));
+      }
+    }
+  };
+
+  return React.createElement('div', null,
+    React.createElement('h2', {style:{marginBottom:4}}, 'Missed Questions Bank'),
+    React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, missed.length, ' question', missed.length !== 1 ? 's' : '', ' to review. Get them right to remove them from the bank.'),
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}},
+      React.createElement('span', {className:'tag tag-red'}, currentIdx + 1, ' of ', missedQs.length),
+      React.createElement('div', {style:{display:'flex', gap:8}},
+        React.createElement('span', {className:'tag tag-orange'}, q.difficulty),
+        React.createElement('span', {className:'tag tag-blue'}, q.category)
+      )
+    ),
+    React.createElement('div', {className:'question-box'},
+      React.createElement('div', {className:'question-text'}, q.text)
+    ),
+    React.createElement('div', {className:'card'},
+      React.createElement('h3', null, 'Work Through It Again'),
+      q.steps.map((s, i) => {
+        const status = stepStatus[i];
+        const isActive = i === activeStep && !completed;
+        const isLocked = i > activeStep && !completed;
+        return React.createElement('div', {key:i, className:'step' + (status === 'correct' ? ' completed' : status === 'wrong' ? ' wrong' : isActive ? ' active' : ''), style: isLocked ? {opacity:0.4} : {}},
+          React.createElement('div', {className:'step-header'},
+            React.createElement('div', {className:'step-num'}, status === 'correct' ? '\u2713' : i + 1),
+            React.createElement('span', {className:'step-label'}, s.label)
+          ),
+          !isLocked && React.createElement(React.Fragment, null,
+            React.createElement('div', {className:'step-input-row'},
+              React.createElement('input', {
+                type:'text', placeholder:'Your answer...', value: stepInputs[i] || '',
+                onChange: e => setStepInputs(p => ({...p, [i]: e.target.value})),
+                onKeyDown: e => { if (e.key === 'Enter') checkStep(i); },
+                disabled: status === 'correct'
+              }),
+              React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.85rem', whiteSpace:'nowrap'}}, s.unit),
+              status !== 'correct' && React.createElement('button', {className:'btn btn-primary btn-sm', onClick:()=>checkStep(i)}, 'Check')
+            ),
+            React.createElement('div', {style:{display:'flex', gap:8, marginTop:6}},
+              !showHints[i] && status !== 'correct' && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setShowHints(p=>({...p,[i]:true}))}, 'Show Hint'),
+              status === 'wrong' && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setStepInputs(p=>({...p,[i]:s.answer}))}, 'Show Answer')
+            ),
+            showHints[i] && React.createElement('div', {className:'step-hint'}, '\u{1F4A1} ', s.hint),
+            status === 'correct' && React.createElement('div', {className:'step-feedback correct'}, '\u2713 Correct!'),
+            status === 'wrong' && React.createElement('div', {className:'step-feedback incorrect'}, '\u2717 Not quite. Try again or show hint.')
+          )
+        );
+      }),
+      completed && React.createElement('div', {style:{textAlign:'center', padding:'16px 0'}},
+        React.createElement('div', {style:{fontSize:'1.5rem', marginBottom:8}}, '\u{1F389}'),
+        React.createElement('p', {style:{fontWeight:700, color:'var(--green)', marginBottom:4}}, 'Nailed it! Removed from missed bank.'),
+        React.createElement('p', {style:{color:'var(--text3)', fontSize:'0.85rem', marginBottom:12}}, missed.length - 1 > 0 ? (missed.length - 1) + ' remaining' : 'Bank is clear!'),
+        currentIdx < missedQs.length - 1 ?
+          React.createElement('button', {className:'btn btn-primary', onClick:()=>reset(currentIdx)}, 'Next Missed Question \u2192') :
+          missedQs.length > 1 && React.createElement('button', {className:'btn btn-primary', onClick:()=>reset(0)}, 'Back to Start')
+      )
+    ),
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginTop:12}},
+      React.createElement('button', {className:'btn btn-outline', disabled:currentIdx===0, onClick:()=>reset(currentIdx-1)}, '\u2190 Previous'),
+      React.createElement('button', {className:'btn btn-outline', disabled:currentIdx>=missedQs.length-1, onClick:()=>reset(currentIdx+1)}, 'Skip \u2192')
+    )
+  );
+}
+
+// ============================
 // MAIN APP
 // ============================
 function App() {
   const [page, setPage] = useState('home');
   const [showCalc, setShowCalc] = useState(false);
+  const [progress, setProgress] = useProgress();
 
   const renderPage = () => {
     switch(page) {
-      case 'home': return React.createElement(HomeScreen, {onNav: setPage});
+      case 'home': return React.createElement(HomeScreen, {onNav: setPage, progress});
       case 'learn': return React.createElement(FormulaLab);
-      case 'guided': return React.createElement(GuidedPractice);
-      case 'test': return React.createElement(TestMode);
+      case 'guided': return React.createElement(GuidedPractice, {progress, setProgress});
+      case 'test': return React.createElement(TestMode, {progress, setProgress});
       case 'analyze': return React.createElement(QuestionAnalyzer);
-      default: return React.createElement(HomeScreen, {onNav: setPage});
+      case 'dashboard': return React.createElement(Dashboard, {progress});
+      case 'missed': return React.createElement(MissedBank, {progress, setProgress});
+      default: return React.createElement(HomeScreen, {onNav: setPage, progress});
     }
   };
 
@@ -1470,10 +1838,14 @@ function App() {
     React.createElement('nav', {className:'nav'},
       React.createElement('div', {className:'nav-brand', onClick:()=>setPage('home'), style:{cursor:'pointer'}}, 'Med Math Tutor'),
       page !== 'home' && React.createElement(React.Fragment, null,
-        React.createElement('button', {className:'nav-btn'+(page==='learn'?' active':''), onClick:()=>setPage('learn')}, 'Formula Lab'),
+        React.createElement('button', {className:'nav-btn'+(page==='learn'?' active':''), onClick:()=>setPage('learn')}, 'Formulas'),
         React.createElement('button', {className:'nav-btn'+(page==='guided'?' active':''), onClick:()=>setPage('guided')}, 'Guided'),
         React.createElement('button', {className:'nav-btn'+(page==='test'?' active':''), onClick:()=>setPage('test')}, 'Test'),
-        React.createElement('button', {className:'nav-btn'+(page==='analyze'?' active':''), onClick:()=>setPage('analyze')}, 'Analyzer')
+        React.createElement('button', {className:'nav-btn'+(page==='analyze'?' active':''), onClick:()=>setPage('analyze')}, 'Analyzer'),
+        React.createElement('button', {className:'nav-btn'+(page==='dashboard'?' active':''), onClick:()=>setPage('dashboard')}, 'Stats'),
+        React.createElement('button', {className:'nav-btn'+(page==='missed'?' active':''), onClick:()=>setPage('missed')},
+          'Missed', (progress.missedQuestions || []).length > 0 ? ' (' + progress.missedQuestions.length + ')' : ''
+        )
       )
     ),
     renderPage(),
