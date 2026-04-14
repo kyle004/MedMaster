@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Med Math Tutor</title>
+<title>MedMaster</title>
 <meta name="app-version" content="1">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -208,6 +208,18 @@
   .hl-key { background:rgba(34,197,94,0.2); padding:2px 5px; border-radius:4px; color:var(--green); font-weight:600; border-bottom:2px solid var(--green); }
   .hl-trap { background:rgba(239,68,68,0.12); padding:2px 5px; border-radius:4px; color:var(--red); opacity:0.6; text-decoration:line-through; }
   .hl-convert { background:rgba(245,158,11,0.2); padding:2px 5px; border-radius:4px; color:var(--orange); font-weight:600; border-bottom:2px dashed var(--orange); }
+
+  /* EXAM BADGE */
+  .exam-badge { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; border-radius:20px; font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; }
+  .exam-badge-on { background:rgba(239,68,68,0.15); color:var(--red); border:1px solid rgba(239,68,68,0.3); }
+  .exam-badge-similar { background:rgba(245,158,11,0.15); color:var(--orange); border:1px solid rgba(245,158,11,0.3); }
+  .exam-glow { box-shadow:0 0 0 2px rgba(239,68,68,0.2), 0 0 12px rgba(239,68,68,0.1); border-color:rgba(239,68,68,0.3) !important; }
+
+  /* LAB DAY SECTION */
+  .labday-card { background:var(--surface); border-radius:12px; padding:20px; margin-bottom:12px; border:1px solid var(--surface2); position:relative; }
+  .labday-card.exam-card { border-left:3px solid var(--red); }
+  .labday-card.similar-card { border-left:3px solid var(--orange); }
+  .labday-num { font-size:0.8rem; color:var(--text3); font-weight:600; margin-bottom:6px; }
 
   /* PHARM SECTION */
   .pharm-subnav { display:flex; gap:6px; margin-bottom:16px; flex-wrap:wrap; }
@@ -916,6 +928,103 @@ const QUESTIONS = [
       {label:'Calculate mL/hr', hint:'108 ÷ 8', answer:'13.5', unit:'mL/hr'}
     ],
     formula:'mcg-kg-min'
+  },
+  // ===== LAB DAY TEST QUESTIONS =====
+  {
+    id:'lab-1', category:'IV/Infusion', difficulty:'Hard', exam:true,
+    text:'The order is 0.9% NS 1,000 mL IV over 8 hours, then 125 mL/h for 4 hours, then 50 mL/h for 12 hours. The drop factor is 15 gtt/mL. What is the flow rate of the initial bolus gtt/min?',
+    type:'free',
+    correct:'31',
+    unit:'gtt/min',
+    keyInfo:['1,000 mL over 8 hours','15 gtt/mL','asking for INITIAL bolus only'],
+    traps:['The 125 mL/h and 50 mL/h are subsequent orders — ignore them for this question','Multiple phases designed to overwhelm you — focus on the first phase only'],
+    keyPhrases:['1,000 mL','over 8 hours','15 gtt/mL','initial bolus'],
+    trapPhrases:['then 125 mL/h for 4 hours','then 50 mL/h for 12 hours','0.9% NS'],
+    convertPhrases:['8 hours'],
+    steps:[
+      {label:'Convert hours to minutes', hint:'8 × 60', answer:'480', unit:'min'},
+      {label:'Apply gtt/min formula', hint:'(1000 × 15) ÷ 480', answer:'31.25', unit:'gtt/min'},
+      {label:'Round to whole drops', hint:'Round 31.25', answer:'31', unit:'gtt/min'}
+    ],
+    formula:'drip-rate'
+  },
+  {
+    id:'lab-2', category:'IV/Infusion', difficulty:'Hard', exam:true,
+    text:'The patient will receive 1 L 0.9% Sodium Chloride over 15 minutes. Then Normal Saline 150 mL/h for 6 hours, then 75 mL/h for 4 hours. What is the total volume of IV fluids this patient will receive in the next 12 hours?',
+    type:'free',
+    correct:'2200',
+    unit:'mL',
+    keyInfo:['1 L = 1000 mL','150 mL/h × 6 hours','75 mL/h × 4 hours','total over 12 hours'],
+    traps:['1 L must be converted to 1000 mL','The 15 minutes is within the 12-hour window','Must calculate each phase separately and add them'],
+    keyPhrases:['1 L','150 mL/h for 6 hours','75 mL/h for 4 hours','total volume','12 hours'],
+    trapPhrases:['0.9% Sodium Chloride','over 15 minutes','Normal Saline'],
+    convertPhrases:['1 L'],
+    steps:[
+      {label:'Phase 1: Convert 1 L to mL', hint:'1 L = 1000 mL', answer:'1000', unit:'mL'},
+      {label:'Phase 2: Calculate volume', hint:'150 mL/h × 6 h', answer:'900', unit:'mL'},
+      {label:'Phase 3: Calculate volume', hint:'75 mL/h × 4 h', answer:'300', unit:'mL'},
+      {label:'Add all phases', hint:'1000 + 900 + 300', answer:'2200', unit:'mL'}
+    ],
+    formula:'iv-ml-hr'
+  },
+  {
+    id:'lab-3', category:'Pediatric', difficulty:'Hard', exam:true,
+    text:'The order is for Cefazolin 300 mg IV for a child weighing 22 lb. The safe dose range is 25–100 mg/kg/day divided every 8 hours. Is this dose safe? (Show calculation of safe range.)',
+    type:'free',
+    correct:'safe',
+    unit:'',
+    keyInfo:['300 mg per dose','22 lb','25–100 mg/kg/day','divided every 8 hours (3 doses/day)'],
+    traps:['Weight in lbs — must convert to kg','Need to compare single dose to the per-dose safe range, not daily','q8h = 3 doses/day, not 8'],
+    keyPhrases:['300 mg','22 lb','25–100 mg/kg/day','every 8 hours'],
+    trapPhrases:['Cefazolin','IV','for a child'],
+    convertPhrases:['22 lb'],
+    steps:[
+      {label:'Convert weight to kg', hint:'22 ÷ 2.2', answer:'10', unit:'kg'},
+      {label:'Low daily dose', hint:'25 mg/kg/day × 10 kg', answer:'250', unit:'mg/day'},
+      {label:'High daily dose', hint:'100 mg/kg/day × 10 kg', answer:'1000', unit:'mg/day'},
+      {label:'Doses per day (q8h)', hint:'24 ÷ 8', answer:'3', unit:'doses'},
+      {label:'Low per-dose', hint:'250 ÷ 3', answer:'83', unit:'mg/dose'},
+      {label:'High per-dose', hint:'1000 ÷ 3', answer:'333', unit:'mg/dose'},
+      {label:'Is 300 mg within 83–333 mg?', hint:'83 ≤ 300 ≤ 333 → Yes', answer:'safe', unit:'(within range)'}
+    ],
+    formula:'safe-dose-range'
+  },
+  {
+    id:'lab-4', category:'Conversions', difficulty:'Easy', exam:true,
+    text:'Give Levothyroxine 0.075 mg PO daily. The pharmacy provides Levothyroxine 50 mcg tablets. How many tablets are required per dose?',
+    type:'free',
+    correct:'1.5',
+    unit:'tabs',
+    keyInfo:['0.075 mg ordered','50 mcg available','mg to mcg conversion needed'],
+    traps:['Units don\'t match — order is mg, supply is mcg','Must convert before calculating D/H'],
+    keyPhrases:['0.075 mg','50 mcg tablets'],
+    trapPhrases:['Levothyroxine','PO daily','The pharmacy provides'],
+    convertPhrases:['0.075 mg','50 mcg'],
+    steps:[
+      {label:'Convert mg to mcg', hint:'0.075 × 1000', answer:'75', unit:'mcg'},
+      {label:'D/H × Q', hint:'75 ÷ 50 × 1', answer:'1.5', unit:'tabs'}
+    ],
+    formula:'desired-over-have'
+  },
+  {
+    id:'lab-5', category:'Critical Care', difficulty:'Hard', exam:true,
+    text:'A patient weighs 92 kg and is prescribed dopamine at 8 mcg/kg/min. The medication is available in 400 mg in 250 mL D5W. What is the medication concentration in mcg/mL and calculate the infusion rate.',
+    type:'free',
+    correct:'27.6',
+    unit:'mL/hr',
+    keyInfo:['92 kg','8 mcg/kg/min','400 mg in 250 mL','need concentration AND rate'],
+    traps:['mg to mcg conversion for concentration','Two-part question — must find concentration first, then rate','mcg/min must convert to mL/hr'],
+    keyPhrases:['92 kg','8 mcg/kg/min','400 mg in 250 mL','concentration','infusion rate'],
+    trapPhrases:['dopamine','D5W','A patient weighs'],
+    convertPhrases:['400 mg','mcg/mL'],
+    steps:[
+      {label:'Convert mg to mcg', hint:'400 × 1000', answer:'400000', unit:'mcg'},
+      {label:'Concentration', hint:'400,000 ÷ 250', answer:'1600', unit:'mcg/mL'},
+      {label:'Dose per minute', hint:'8 × 92', answer:'736', unit:'mcg/min'},
+      {label:'Convert to mcg/hr', hint:'736 × 60', answer:'44160', unit:'mcg/hr'},
+      {label:'Calculate mL/hr', hint:'44160 ÷ 1600', answer:'27.6', unit:'mL/hr'}
+    ],
+    formula:'mcg-kg-min'
   }
 ];
 
@@ -1074,7 +1183,9 @@ function HomeScreen({ onNav, progress }) {
   const overallPct = totalAttempts > 0 ? Math.round(totalCorrect / totalAttempts * 100) : 0;
   const missedCount = (progress.missedQuestions || []).length;
 
+  const examCount = QUESTIONS.filter(q => q.exam).length;
   const modes = [
+    {id:'labday', icon:'\u{1F9EA}', title:'Lab Day Test (' + examCount + ')', desc:'Your actual exam questions. Guided practice and test simulation. Master these first.'},
     {id:'learn', icon:'\u{1F4DA}', title:'Formula Lab', desc:'Study all formulas with flashcards. Flip to reveal explanations, examples, and common traps.'},
     {id:'guided', icon:'\u{1F9E9}', title:'Guided Practice', desc:'Step-by-step problem solving. Your position is saved automatically.'},
     {id:'test', icon:'\u{1F3AF}', title:'Test Mode', desc:'Timed quiz simulation. Results are tracked on your dashboard.'},
@@ -1085,8 +1196,8 @@ function HomeScreen({ onNav, progress }) {
   ];
   return React.createElement('div', null,
     React.createElement('div', {style:{textAlign:'center', padding:'40px 0 20px'}},
-      React.createElement('h1', {style:{fontSize:'2rem', fontWeight:800, background:'linear-gradient(135deg, #3b82f6, #8b5cf6)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent'}}, 'Med Math Tutor'),
-      React.createElement('p', {style:{color:'var(--text2)', marginTop:8, fontSize:'1.05rem'}}, 'Master dosage calculations. Become unstoppable.')
+      React.createElement('h1', {style:{fontSize:'2rem', fontWeight:800, background:'linear-gradient(135deg, #3b82f6, #8b5cf6)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent'}}, 'MedMaster'),
+      React.createElement('p', {style:{color:'var(--text2)', marginTop:8, fontSize:'1.05rem'}}, 'Dosage calc. Pharmacology. Total domination.')
     ),
     totalAttempts > 0 && React.createElement('div', {className:'stats-row', style:{marginBottom:8}},
       React.createElement('div', {className:'stat-box'},
@@ -1298,10 +1409,14 @@ function GuidedPractice({ progress, setProgress }) {
       )
     ),
     React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, marginTop:12}},
-      React.createElement('span', {className:'tag tag-blue'}, 'Question ', qIdx + 1, ' of ', filtered.length),
+      React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+        React.createElement('span', {className:'tag tag-blue'}, 'Question ', qIdx + 1, ' of ', filtered.length),
+        q.exam && React.createElement('span', {className:'exam-badge exam-badge-on'}, '\uD83C\uDFAF ON TEST'),
+        q.examSimilar && React.createElement('span', {className:'exam-badge exam-badge-similar'}, '\u223C SIMILAR')
+      ),
       React.createElement('span', {className:'tag tag-orange'}, q.difficulty)
     ),
-    React.createElement('div', {className:'question-box'},
+    React.createElement('div', {className:'question-box' + (q.exam ? ' exam-glow' : '')},
       React.createElement('div', {className:'question-text'}, questionContent)
     ),
     // Formula reference
@@ -1488,7 +1603,11 @@ function TestMode({ progress, setProgress }) {
         const correct = checkAnswer(q, ans);
         return React.createElement('div', {key:q.id, className:'card', style:{borderLeft: '4px solid ' + (correct ? 'var(--green)' : 'var(--red)')}},
           React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}},
-            React.createElement('span', {style:{fontWeight:700}}, 'Q', i + 1),
+            React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+              React.createElement('span', {style:{fontWeight:700}}, 'Q', i + 1),
+              q.exam && React.createElement('span', {className:'exam-badge exam-badge-on'}, '\uD83C\uDFAF ON TEST'),
+              q.examSimilar && React.createElement('span', {className:'exam-badge exam-badge-similar'}, '\u223C SIMILAR')
+            ),
             React.createElement('span', {className: correct ? 'tag tag-green' : 'tag tag-red'}, correct ? 'Correct' : 'Incorrect')
           ),
           React.createElement('p', {style:{fontSize:'0.95rem', marginBottom:12}}, q.text),
@@ -1531,10 +1650,14 @@ function TestMode({ progress, setProgress }) {
       React.createElement('div', {className:'progress-fill', style:{width: (current / questions.length * 100) + '%'}})
     ),
     React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginBottom:16}},
-      React.createElement('span', {className:'tag tag-blue'}, 'Question ', current + 1, ' of ', questions.length),
+      React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+        React.createElement('span', {className:'tag tag-blue'}, 'Question ', current + 1, ' of ', questions.length),
+        q.exam && React.createElement('span', {className:'exam-badge exam-badge-on'}, '\uD83C\uDFAF ON TEST'),
+        q.examSimilar && React.createElement('span', {className:'exam-badge exam-badge-similar'}, '\u223C SIMILAR')
+      ),
       React.createElement('span', {className:'tag tag-orange'}, q.category)
     ),
-    React.createElement('div', {className:'question-box'},
+    React.createElement('div', {className:'question-box' + (q.exam ? ' exam-glow' : '')},
       React.createElement('div', {className:'question-text'}, q.text)
     ),
     React.createElement('div', {className:'card'},
@@ -2449,6 +2572,316 @@ function PharmSpeed() {
 }
 
 // ============================
+// LAB DAY TEST
+// ============================
+function LabDayTest({ progress, setProgress }) {
+  const labQs = QUESTIONS.filter(q => q.exam || q.examSimilar);
+  const examQs = labQs.filter(q => q.exam);
+  const similarQs = labQs.filter(q => q.examSimilar);
+  const [mode, setMode] = useState('menu'); // menu, practice, test
+  const [qIdx, setQIdx] = useState(0);
+  const [stepInputs, setStepInputs] = useState({});
+  const [stepStatus, setStepStatus] = useState({});
+  const [activeStep, setActiveStep] = useState(0);
+  const [showHints, setShowHints] = useState({});
+  const [completed, setCompleted] = useState(false);
+  const [hlOn, setHlOn] = useState(false);
+  const [filterType, setFilterType] = useState('all'); // all, exam, similar
+  const [testAnswers, setTestAnswers] = useState({});
+  const [testSubmitted, setTestSubmitted] = useState(false);
+
+  const filtered = filterType === 'exam' ? examQs : filterType === 'similar' ? similarQs : labQs;
+
+  const reset = (idx) => {
+    setQIdx(idx !== undefined ? idx : 0);
+    setStepInputs({});
+    setStepStatus({});
+    setActiveStep(0);
+    setShowHints({});
+    setCompleted(false);
+  };
+
+  const checkStep = (i) => {
+    const q = filtered[qIdx];
+    const val = (stepInputs[i] || '').trim();
+    const expected = q.steps[i].answer;
+    const numVal = parseFloat(val);
+    const numExp = parseFloat(expected);
+    const isStr = isNaN(numExp);
+    const isCorrect = isStr ? val.toLowerCase() === expected.toLowerCase() : (!isNaN(numVal) && Math.abs(numVal - numExp) < (numExp * 0.02 + 0.5));
+    setStepStatus(p => ({...p, [i]: isCorrect ? 'correct' : 'wrong'}));
+    if (!isCorrect) setProgress(p => recordAttempt(p, q.id, false));
+    if (isCorrect && i === activeStep) {
+      if (i < q.steps.length - 1) setActiveStep(i + 1);
+      else {
+        setCompleted(true);
+        setProgress(p => {
+          let updated = recordAttempt(p, q.id, true);
+          const done = [...(updated.completedQuestions || [])];
+          if (!done.includes(q.id)) done.push(q.id);
+          return {...updated, completedQuestions: done};
+        });
+      }
+    }
+  };
+
+  const submitTest = () => {
+    setTestSubmitted(true);
+    filtered.forEach((q) => {
+      const userAns = (testAnswers[q.id] || '').trim();
+      const numVal = parseFloat(userAns);
+      const numExp = parseFloat(q.correct);
+      const isStr = isNaN(numExp);
+      const isCorrect = isStr ? userAns.toLowerCase() === q.correct.toLowerCase() : (!isNaN(numVal) && Math.abs(numVal - numExp) < (numExp * 0.02 + 0.5));
+      setProgress(p => recordAttempt(p, q.id, isCorrect));
+    });
+    // Save test history
+    const results = filtered.map(q => {
+      const userAns = (testAnswers[q.id] || '').trim();
+      const numVal = parseFloat(userAns);
+      const numExp = parseFloat(q.correct);
+      const isStr = isNaN(numExp);
+      const correct = isStr ? userAns.toLowerCase() === q.correct.toLowerCase() : (!isNaN(numVal) && Math.abs(numVal - numExp) < (numExp * 0.02 + 0.5));
+      return {qId:q.id, correct, userAnswer:userAns};
+    });
+    const correctCount = results.filter(r=>r.correct).length;
+    setProgress(p => ({...p, testHistory:[...(p.testHistory||[]), {date:new Date().toISOString(), score:correctCount, total:filtered.length, pct:Math.round(correctCount/filtered.length*100), category:'Lab Day', details:results}]}));
+  };
+
+  const examBadge = (q) => {
+    if (q.exam) return React.createElement('span', {className:'exam-badge exam-badge-on'}, '\uD83C\uDFAF ON TEST');
+    if (q.examSimilar) return React.createElement('span', {className:'exam-badge exam-badge-similar'}, '\u223C SIMILAR');
+    return null;
+  };
+
+  // MENU
+  if (mode === 'menu') {
+    const stats = progress.questionStats || {};
+    const examAttempted = examQs.filter(q => stats[q.id]).length;
+    const examCorrect = examQs.filter(q => stats[q.id] && stats[q.id].correct > 0).length;
+    return React.createElement('div', null,
+      React.createElement('h2', {style:{marginBottom:4}}, '\uD83E\uDDEA Lab Day Test'),
+      React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:20}},
+        examQs.length, ' exam questions', similarQs.length > 0 ? ' + ' + similarQs.length + ' similar practice' : '', '. Master these before test day.'
+      ),
+      examAttempted > 0 && React.createElement('div', {className:'stats-row', style:{marginBottom:16}},
+        React.createElement('div', {className:'stat-box'},
+          React.createElement('div', {className:'stat-value'}, examAttempted, '/', examQs.length),
+          React.createElement('div', {className:'stat-label'}, 'Attempted')
+        ),
+        React.createElement('div', {className:'stat-box'},
+          React.createElement('div', {className:'stat-value', style:{color: examCorrect === examQs.length ? 'var(--green)' : 'var(--orange)'}}, examCorrect),
+          React.createElement('div', {className:'stat-label'}, 'Mastered')
+        )
+      ),
+      React.createElement('div', {className:'home-grid'},
+        React.createElement('div', {className:'home-card', onClick:() => { reset(0); setMode('practice'); }},
+          React.createElement('div', {className:'home-icon'}, '\uD83E\uDDE9'),
+          React.createElement('h3', null, 'Guided Practice'),
+          React.createElement('p', null, 'Work through each question step-by-step with hints and X-Ray mode.')
+        ),
+        React.createElement('div', {className:'home-card', onClick:() => { setTestAnswers({}); setTestSubmitted(false); setMode('test'); }},
+          React.createElement('div', {className:'home-icon'}, '\uD83C\uDFAF'),
+          React.createElement('h3', null, 'Test Simulation'),
+          React.createElement('p', null, 'Answer all questions, then submit to see your score. No hints.')
+        )
+      ),
+      React.createElement('div', {style:{marginTop:24}},
+        React.createElement('h3', {style:{marginBottom:12, fontSize:'1rem'}}, 'Question Overview'),
+        labQs.map((q, i) => {
+          const s = stats[q.id];
+          return React.createElement('div', {key:q.id, className:'labday-card' + (q.exam ? ' exam-card' : ' similar-card')},
+            React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6}},
+              React.createElement('span', {className:'labday-num'}, 'Q', i+1),
+              React.createElement('div', {style:{display:'flex', gap:6, alignItems:'center'}},
+                examBadge(q),
+                s && React.createElement('span', {className:'tag', style:{background: s.correct > 0 ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)', color: s.correct > 0 ? 'var(--green)' : 'var(--red)', fontSize:'0.75rem'}},
+                  s.correct > 0 ? '\u2713 Solved' : s.attempts + ' attempts'
+                )
+              )
+            ),
+            React.createElement('div', {style:{fontSize:'0.9rem', color:'var(--text)'}}, q.text.length > 120 ? q.text.slice(0, 120) + '...' : q.text)
+          );
+        })
+      )
+    );
+  }
+
+  // PRACTICE MODE
+  if (mode === 'practice') {
+    const q = filtered[qIdx];
+    if (!q) return React.createElement('div', {className:'card'}, 'No questions available.');
+    const questionContent = hlOn ? renderHighlightedText(q.text, q.keyPhrases, q.trapPhrases, q.convertPhrases) : q.text;
+
+    return React.createElement('div', null,
+      React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}},
+        React.createElement('h2', {style:{margin:0}}, '\uD83E\uDDEA Lab Day Practice'),
+        React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setMode('menu')}, '\u2190 Back')
+      ),
+      React.createElement('div', {style:{display:'flex', gap:6, marginBottom:14, flexWrap:'wrap'}},
+        ['all','exam','similar'].map(f =>
+          React.createElement('button', {key:f, className:'filter-btn'+(filterType===f?' active':''), onClick:()=>{setFilterType(f); reset(0);}},
+            f === 'all' ? 'All (' + labQs.length + ')' : f === 'exam' ? '\uD83C\uDFAF On Test (' + examQs.length + ')' : '\u223C Similar (' + similarQs.length + ')'
+          )
+        )
+      ),
+      // X-Ray toggle
+      React.createElement('div', {className:'toggle-row'},
+        React.createElement('label', {className:'toggle-switch'},
+          React.createElement('input', {type:'checkbox', checked:hlOn, onChange:()=>setHlOn(h=>!h)}),
+          React.createElement('div', {className:'toggle-track'}),
+          React.createElement('div', {className:'toggle-knob'})
+        ),
+        React.createElement('div', null,
+          React.createElement('div', {className:'toggle-label'}, 'X-Ray Mode'),
+          React.createElement('div', {className:'toggle-sub'}, 'Highlight key info, traps, and conversions')
+        )
+      ),
+      hlOn && React.createElement('div', {className:'hl-legend'},
+        React.createElement('div', {className:'hl-legend-item'}, React.createElement('div', {className:'hl-swatch hl-swatch-key'}), React.createElement('span', null, 'Key info')),
+        React.createElement('div', {className:'hl-legend-item'}, React.createElement('div', {className:'hl-swatch hl-swatch-trap'}), React.createElement('span', null, 'Fluff / distractor')),
+        React.createElement('div', {className:'hl-legend-item'}, React.createElement('div', {className:'hl-swatch hl-swatch-convert'}), React.createElement('span', null, 'Needs conversion'))
+      ),
+      React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, marginTop:12}},
+        React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+          React.createElement('span', {className:'tag tag-blue'}, 'Q ', qIdx+1, ' / ', filtered.length),
+          examBadge(q)
+        ),
+        React.createElement('span', {className:'tag tag-orange'}, q.difficulty)
+      ),
+      React.createElement('div', {className:'question-box' + (q.exam ? ' exam-glow' : '')},
+        React.createElement('div', {className:'question-text'}, questionContent)
+      ),
+      // Formula reference
+      (() => {
+        const relFormula = FORMULAS.find(f => f.id === q.formula);
+        return relFormula ? React.createElement('details', {style:{marginBottom:12}},
+          React.createElement('summary', {style:{cursor:'pointer', color:'var(--accent)', fontSize:'0.9rem', fontWeight:600, padding:'10px 16px', background:'var(--surface)', borderRadius:10, border:'1px solid var(--surface2)', listStyle:'none', display:'flex', alignItems:'center', gap:8}},
+            '\uD83D\uDCD0 Formula: ', relFormula.title
+          ),
+          React.createElement('div', {style:{background:'var(--surface)', borderRadius:'0 0 10px 10px', padding:'12px 16px', marginTop:-4, border:'1px solid var(--surface2)'}},
+            React.createElement('div', {style:{fontFamily:'monospace', fontSize:'1.1rem', color:'var(--orange)', fontWeight:700, marginBottom:8}},
+              relFormula.formula.split('\n').map((l,i) => React.createElement('div', {key:i}, l))
+            ),
+            React.createElement('p', {style:{fontSize:'0.85rem', color:'var(--text2)'}}, relFormula.explanation)
+          )
+        ) : null;
+      })(),
+      React.createElement('div', {className:'card'},
+        React.createElement('h3', null, 'Solve Step by Step'),
+        q.steps.map((s, i) => {
+          const status = stepStatus[i];
+          const isActive = i === activeStep && !completed;
+          const isLocked = i > activeStep && !completed;
+          return React.createElement('div', {key:i, className:'step' + (status==='correct'?' completed':status==='wrong'?' wrong':isActive?' active':''), style:isLocked?{opacity:0.4}:{}},
+            React.createElement('div', {className:'step-header'},
+              React.createElement('div', {className:'step-num'}, status==='correct'?'\u2713':i+1),
+              React.createElement('span', {className:'step-label'}, s.label)
+            ),
+            !isLocked && React.createElement(React.Fragment, null,
+              React.createElement('div', {className:'step-input-row'},
+                React.createElement('input', {type:'text', placeholder:'Your answer...', value:stepInputs[i]||'',
+                  onChange:e=>setStepInputs(p=>({...p,[i]:e.target.value})),
+                  onKeyDown:e=>{if(e.key==='Enter')checkStep(i);},
+                  disabled:status==='correct'
+                }),
+                React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.85rem', whiteSpace:'nowrap'}}, s.unit),
+                status!=='correct' && React.createElement('button', {className:'btn btn-primary btn-sm', onClick:()=>checkStep(i)}, 'Check')
+              ),
+              React.createElement('div', {style:{display:'flex', gap:8, marginTop:6}},
+                !showHints[i] && status!=='correct' && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setShowHints(p=>({...p,[i]:true}))}, 'Show Hint'),
+                status==='wrong' && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setStepInputs(p=>({...p,[i]:s.answer}))}, 'Show Answer')
+              ),
+              showHints[i] && React.createElement('div', {className:'step-hint'}, '\uD83D\uDCA1 ', s.hint)
+            )
+          );
+        }),
+        completed && React.createElement('div', {style:{textAlign:'center', marginTop:16, padding:16, background:'rgba(34,197,94,0.08)', borderRadius:10}},
+          React.createElement('div', {style:{fontSize:'1.3rem', fontWeight:700, color:'var(--green)'}}, '\u2705 Nailed it!'),
+          qIdx < filtered.length - 1 && React.createElement('button', {className:'btn btn-primary', style:{marginTop:10}, onClick:()=>reset(qIdx+1)}, 'Next Question \u2192')
+        )
+      ),
+      React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginTop:12}},
+        React.createElement('button', {className:'btn btn-outline', disabled:qIdx===0, onClick:()=>reset(qIdx-1)}, '\u2190 Previous'),
+        React.createElement('button', {className:'btn btn-outline', disabled:qIdx>=filtered.length-1, onClick:()=>reset(qIdx+1)}, 'Skip \u2192')
+      )
+    );
+  }
+
+  // TEST MODE
+  if (mode === 'test') {
+    if (testSubmitted) {
+      const results = filtered.map(q => {
+        const userAns = (testAnswers[q.id] || '').trim();
+        const numVal = parseFloat(userAns);
+        const numExp = parseFloat(q.correct);
+        const isStr = isNaN(numExp);
+        const correct = isStr ? userAns.toLowerCase() === q.correct.toLowerCase() : (!isNaN(numVal) && Math.abs(numVal - numExp) < (numExp * 0.02 + 0.5));
+        return {q, correct, userAns};
+      });
+      const correctCount = results.filter(r=>r.correct).length;
+      return React.createElement('div', null,
+        React.createElement('div', {style:{textAlign:'center', padding:'20px 0'}},
+          React.createElement('h2', null, '\uD83E\uDDEA Lab Day Test Results'),
+          React.createElement('div', {style:{fontSize:'3rem', fontWeight:800, color: correctCount/filtered.length >= 0.8 ? 'var(--green)' : correctCount/filtered.length >= 0.6 ? 'var(--orange)' : 'var(--red)', margin:'10px 0'}},
+            correctCount, ' / ', filtered.length
+          ),
+          React.createElement('p', {style:{color:'var(--text2)'}}, Math.round(correctCount/filtered.length*100), '% — ', correctCount === filtered.length ? 'Perfect! You\'re ready.' : 'Keep practicing the ones you missed.')
+        ),
+        results.map((r, i) => React.createElement('div', {key:i, className:'labday-card' + (r.q.exam ? ' exam-card' : ' similar-card')},
+          React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6}},
+            React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+              React.createElement('span', {style:{fontSize:'1.2rem'}}, r.correct ? '\u2705' : '\u274C'),
+              examBadge(r.q)
+            ),
+            React.createElement('span', {className:'tag tag-orange'}, r.q.difficulty)
+          ),
+          React.createElement('div', {style:{fontSize:'0.9rem', marginBottom:8}}, r.q.text),
+          !r.correct && React.createElement('div', {style:{padding:'8px 12px', background:'rgba(34,197,94,0.08)', borderRadius:8, fontSize:'0.9rem'}},
+            React.createElement('strong', {style:{color:'var(--green)'}}, 'Answer: '), r.q.correct, ' ', r.q.unit,
+            React.createElement('div', {style:{color:'var(--text2)', marginTop:4, fontSize:'0.85rem'}}, 'You answered: ', r.userAns || '(blank)')
+          )
+        )),
+        React.createElement('div', {style:{display:'flex', gap:10, justifyContent:'center', marginTop:16}},
+          React.createElement('button', {className:'btn btn-primary', onClick:()=>{setTestAnswers({}); setTestSubmitted(false);}}, 'Retake Test'),
+          React.createElement('button', {className:'btn btn-outline', onClick:()=>setMode('menu')}, 'Back to Menu')
+        )
+      );
+    }
+
+    return React.createElement('div', null,
+      React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16}},
+        React.createElement('h2', {style:{margin:0}}, '\uD83E\uDDEA Lab Day Test'),
+        React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setMode('menu')}, '\u2190 Back')
+      ),
+      React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:20}}, 'Answer all questions, then submit. No hints — just like the real thing.'),
+      filtered.map((q, i) => React.createElement('div', {key:q.id, className:'labday-card' + (q.exam ? ' exam-card' : ' similar-card'), style:{marginBottom:16}},
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}},
+          React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+            React.createElement('span', {className:'labday-num'}, 'Q', i+1),
+            examBadge(q)
+          ),
+          React.createElement('span', {className:'tag tag-orange'}, q.difficulty)
+        ),
+        React.createElement('div', {className:'question-text', style:{marginBottom:12, fontSize:'0.95rem'}}, q.text),
+        React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+          React.createElement('input', {type:'text', placeholder:'Your answer...', value:testAnswers[q.id]||'',
+            onChange:e=>setTestAnswers(p=>({...p,[q.id]:e.target.value})),
+            style:{padding:'10px 14px', border:'2px solid var(--surface2)', borderRadius:8, background:'var(--bg)', color:'var(--text)', fontSize:'1rem', flex:1, maxWidth:200}
+          }),
+          q.unit && React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.9rem'}}, q.unit)
+        )
+      )),
+      React.createElement('div', {style:{textAlign:'center', marginTop:20}},
+        React.createElement('button', {className:'btn btn-primary', style:{fontSize:'1.1rem', padding:'14px 40px'}, onClick:submitTest}, 'Submit Test')
+      )
+    );
+  }
+
+  return null;
+}
+
+// ============================
 // PHARM HUB (Main container)
 // ============================
 function PharmHub() {
@@ -2490,14 +2923,16 @@ function App() {
       case 'dashboard': return React.createElement(Dashboard, {progress});
       case 'missed': return React.createElement(MissedBank, {progress, setProgress});
       case 'pharm': return React.createElement(PharmHub);
+      case 'labday': return React.createElement(LabDayTest, {progress, setProgress});
       default: return React.createElement(HomeScreen, {onNav: setPage, progress});
     }
   };
 
   return React.createElement('div', {className:'app'},
     React.createElement('nav', {className:'nav'},
-      React.createElement('div', {className:'nav-brand', onClick:()=>setPage('home'), style:{cursor:'pointer'}}, 'Med Math Tutor'),
+      React.createElement('div', {className:'nav-brand', onClick:()=>setPage('home'), style:{cursor:'pointer'}}, 'MedMaster'),
       page !== 'home' && React.createElement(React.Fragment, null,
+        React.createElement('button', {className:'nav-btn'+(page==='labday'?' active':''), style:page==='labday'?{background:'var(--red)'}:{background:'rgba(239,68,68,0.15)', color:'var(--red)'}, onClick:()=>setPage('labday')}, '\uD83E\uDDEA Lab Day'),
         React.createElement('button', {className:'nav-btn'+(page==='learn'?' active':''), onClick:()=>setPage('learn')}, 'Formulas'),
         React.createElement('button', {className:'nav-btn'+(page==='guided'?' active':''), onClick:()=>setPage('guided')}, 'Guided'),
         React.createElement('button', {className:'nav-btn'+(page==='test'?' active':''), onClick:()=>setPage('test')}, 'Test'),
