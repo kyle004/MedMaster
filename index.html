@@ -209,6 +209,44 @@
   .hl-trap { background:rgba(239,68,68,0.12); padding:2px 5px; border-radius:4px; color:var(--red); opacity:0.6; text-decoration:line-through; }
   .hl-convert { background:rgba(245,158,11,0.2); padding:2px 5px; border-radius:4px; color:var(--orange); font-weight:600; border-bottom:2px dashed var(--orange); }
 
+  /* QUESTION NAVIGATOR */
+  .qnav-toggle { position:fixed; right:16px; top:50%; transform:translateY(-50%); z-index:90; width:40px; height:40px; border-radius:50%; background:var(--accent); color:white; border:none; cursor:pointer; font-size:1.1rem; font-weight:700; box-shadow:0 2px 10px rgba(59,130,246,0.4); display:flex; align-items:center; justify-content:center; }
+  .qnav-panel { position:fixed; right:0; top:0; bottom:0; width:260px; background:var(--surface); border-left:1px solid var(--surface2); z-index:95; padding:16px; overflow-y:auto; transform:translateX(100%); transition:transform 0.3s ease; box-shadow:-4px 0 20px rgba(0,0,0,0.3); }
+  .qnav-panel.open { transform:translateX(0); }
+  .qnav-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin-top:12px; }
+  .qnav-dot { width:38px; height:38px; border-radius:8px; border:2px solid var(--surface2); background:var(--bg); color:var(--text2); font-size:0.8rem; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all 0.2s; }
+  .qnav-dot:hover { border-color:var(--accent); color:var(--text); }
+  .qnav-dot.current { background:var(--accent); border-color:var(--accent); color:white; }
+  .qnav-dot.done { background:rgba(34,197,94,0.15); border-color:var(--green); color:var(--green); }
+  .qnav-dot.wrong { background:rgba(239,68,68,0.1); border-color:var(--red); color:var(--red); }
+  .qnav-dot.answered { background:rgba(59,130,246,0.1); border-color:var(--accent); color:var(--accent); }
+  .qnav-dot.exam-dot { box-shadow:0 0 0 2px rgba(239,68,68,0.3); }
+  .qnav-close { position:absolute; top:12px; right:12px; background:none; border:none; color:var(--text3); cursor:pointer; font-size:1.2rem; }
+  .qnav-legend { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; padding-top:12px; border-top:1px solid var(--surface2); }
+  .qnav-legend-item { display:flex; align-items:center; gap:4px; font-size:0.7rem; color:var(--text3); }
+  .qnav-legend-dot { width:10px; height:10px; border-radius:3px; }
+
+  /* SMART STUDY */
+  .smart-card { background:var(--surface); border-radius:12px; padding:20px; margin-bottom:14px; border:1px solid var(--surface2); }
+  .smart-card h3 { font-size:1rem; margin-bottom:10px; }
+  .approach-textarea { width:100%; min-height:80px; padding:12px; border:2px solid var(--surface2); border-radius:10px; background:var(--bg); color:var(--text); font-size:0.9rem; resize:vertical; font-family:inherit; }
+  .approach-textarea:focus { border-color:var(--accent); outline:none; }
+  .approach-textarea::placeholder { color:var(--text3); }
+  .weak-bar { height:8px; border-radius:4px; background:var(--surface2); overflow:hidden; margin-top:6px; }
+  .weak-bar-fill { height:100%; border-radius:4px; transition:width 0.5s; }
+  .smart-rec { padding:12px 16px; background:var(--bg); border-radius:10px; margin-bottom:8px; border-left:3px solid var(--accent); display:flex; gap:10px; align-items:flex-start; cursor:pointer; }
+  .smart-rec:hover { background:var(--surface2); }
+
+  /* SETTINGS */
+  .settings-section { margin-bottom:24px; }
+  .settings-section h3 { font-size:1rem; color:var(--text2); margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid var(--surface2); }
+  .setting-row { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:var(--surface); border-radius:10px; margin-bottom:8px; }
+  .setting-label { font-weight:600; font-size:0.9rem; }
+  .setting-desc { font-size:0.8rem; color:var(--text3); margin-top:2px; }
+  .setting-select { padding:6px 12px; border:1px solid var(--surface2); border-radius:8px; background:var(--bg); color:var(--text); font-size:0.85rem; }
+  .danger-btn { background:rgba(239,68,68,0.15); color:var(--red); border:1px solid rgba(239,68,68,0.3); padding:10px 20px; border-radius:8px; cursor:pointer; font-weight:600; font-size:0.9rem; }
+  .danger-btn:hover { background:rgba(239,68,68,0.25); }
+
   /* EXAM BADGE */
   .exam-badge { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; border-radius:20px; font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; }
   .exam-badge-on { background:rgba(239,68,68,0.15); color:var(--red); border:1px solid rgba(239,68,68,0.3); }
@@ -1050,10 +1088,24 @@ function saveProgress(data) {
 function getDefaultProgress() {
   return {
     guidedPosition: {filter:'All', qIdx:0},
-    completedQuestions: [],   // array of question ids completed in guided
-    testHistory: [],          // array of {date, score, total, pct, category, timeUsed, details:[{qId, correct, userAnswer}]}
-    questionStats: {},        // {qId: {attempts, correct, lastAttempt, lastCorrect}}
-    missedQuestions: [],      // array of question ids gotten wrong (deduped)
+    completedQuestions: [],
+    testHistory: [],
+    questionStats: {},
+    missedQuestions: [],
+    // Smart Study: approach notes per formula/question
+    approachNotes: {},    // {formulaId: "user's approach text"}
+    questionNotes: {},    // {qId: "user's note for this question"}
+    // Settings
+    settings: {
+      defaultXRay: false,
+      timerSeconds: 10,        // speed round timer
+      testTimeLimit: 30,       // test mode default minutes
+      testNumQuestions: 10,
+      showFormulaHints: true,
+      autoProceed: false,      // auto-advance on correct in guided
+      darkMode: true,          // already dark, but placeholder
+      questionNavSide: 'right',
+    }
   };
 }
 
@@ -1192,6 +1244,7 @@ function HomeScreen({ onNav, progress }) {
     {id:'analyze', icon:'\u{1F50D}', title:'Question Analyzer', desc:'Learn to identify key info, spot traps, and pick the right formula.'},
     {id:'dashboard', icon:'\u{1F4CA}', title:'Dashboard', desc:'Track your accuracy by category. See your strengths and weak spots.'},
     {id:'missed', icon:'\u{1F6A8}', title:'Missed Questions' + (missedCount > 0 ? ' (' + missedCount + ')' : ''), desc: missedCount > 0 ? missedCount + ' questions to review. Drill your weak spots until they\'re gone.' : 'All clear! Questions you miss will appear here for review.'},
+    {id:'smart', icon:'\u{1F9E0}', title:'Smart Study', desc:'Adaptive practice based on YOUR patterns. Record your approaches. Study your way.'},
     {id:'pharm', icon:'\u{1F48A}', title:'Pharmacology', desc:'28 meds with flashcards, reverse mode, suffix matching game, and timed speed rounds.'},
   ];
   return React.createElement('div', null,
@@ -1472,7 +1525,15 @@ function GuidedPractice({ progress, setProgress }) {
         React.createElement('p', {style:{fontWeight:700, color:'var(--green)', marginBottom:12}}, 'Problem Complete!'),
         qIdx < filtered.length - 1 && React.createElement('button', {className:'btn btn-primary', onClick:()=>reset(qIdx+1)}, 'Next Problem \u2192')
       )
-    )
+    ),
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginTop:12}},
+      React.createElement('button', {className:'btn btn-outline', disabled:qIdx===0, onClick:()=>reset(qIdx-1)}, '\u2190 Previous'),
+      React.createElement('button', {className:'btn btn-outline', disabled:qIdx>=filtered.length-1, onClick:()=>reset(qIdx+1)}, 'Next \u2192')
+    ),
+    React.createElement(QuestionNav, {
+      questions:filtered, currentIdx:qIdx, onSelect:(i)=>reset(i),
+      getStatus:(q) => { if(completedIds.includes(q.id)) return 'done'; const s=stats[q.id]; if(s && !s.lastCorrect) return 'wrong'; return ''; }
+    })
   );
 }
 
@@ -1686,17 +1747,10 @@ function TestMode({ progress, setProgress }) {
           React.createElement('button', {className:'btn btn-success', onClick:()=>setSubmitted(true)}, 'Submit Test')
       )
     ),
-    React.createElement('div', {style:{display:'flex', gap:6, flexWrap:'wrap', marginTop:12}},
-      questions.map((qq, i) => React.createElement('button', {
-        key:i, onClick:()=>setCurrent(i),
-        style:{
-          width:36, height:36, borderRadius:8, border:'2px solid ' + (i === current ? 'var(--accent)' : answers[qq.id] !== undefined ? 'var(--green)' : 'var(--surface2)'),
-          background: answers[qq.id] !== undefined ? 'rgba(34,197,94,0.1)' : 'var(--surface)',
-          color: i === current ? 'var(--accent)' : 'var(--text2)',
-          cursor:'pointer', fontSize:'0.8rem', fontWeight:600
-        }
-      }, i + 1))
-    )
+    React.createElement(QuestionNav, {
+      questions, currentIdx:current, onSelect:setCurrent,
+      getStatus:(q) => answers[q.id] !== undefined ? 'answered' : ''
+    })
   );
 }
 
@@ -1994,7 +2048,11 @@ function MissedBank({ progress, setProgress }) {
     React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginTop:12}},
       React.createElement('button', {className:'btn btn-outline', disabled:currentIdx===0, onClick:()=>reset(currentIdx-1)}, '\u2190 Previous'),
       React.createElement('button', {className:'btn btn-outline', disabled:currentIdx>=missedQs.length-1, onClick:()=>reset(currentIdx+1)}, 'Skip \u2192')
-    )
+    ),
+    React.createElement(QuestionNav, {
+      questions:missedQs, currentIdx:currentIdx, onSelect:(i)=>reset(i),
+      getStatus:() => 'wrong'
+    })
   );
 }
 
@@ -2906,6 +2964,566 @@ function PharmHub() {
 }
 
 // ============================
+// QUESTION NAVIGATOR (reusable)
+// ============================
+function QuestionNav({ questions, currentIdx, onSelect, getStatus }) {
+  const [open, setOpen] = useState(false);
+  // getStatus(q, i) should return 'current'|'done'|'wrong'|'answered'|''
+  return React.createElement(React.Fragment, null,
+    !open && React.createElement('button', {className:'qnav-toggle', onClick:()=>setOpen(true), title:'Question Navigator'},
+      React.createElement('span', null, currentIdx+1, '/', questions.length)
+    ),
+    React.createElement('div', {className:'qnav-panel' + (open?' open':'')},
+      React.createElement('button', {className:'qnav-close', onClick:()=>setOpen(false)}, '\u2715'),
+      React.createElement('h3', {style:{fontSize:'1rem', marginBottom:4}}, 'Questions'),
+      React.createElement('p', {style:{color:'var(--text3)', fontSize:'0.8rem', marginBottom:4}},
+        'Q', currentIdx+1, ' of ', questions.length
+      ),
+      React.createElement('div', {className:'qnav-grid'},
+        questions.map((q, i) => {
+          const status = i === currentIdx ? 'current' : (getStatus ? getStatus(q, i) : '');
+          return React.createElement('button', {
+            key:i, className:'qnav-dot ' + status + (q.exam ? ' exam-dot' : ''),
+            onClick:() => { onSelect(i); setOpen(false); }
+          }, i + 1);
+        })
+      ),
+      React.createElement('div', {className:'qnav-legend'},
+        React.createElement('div', {className:'qnav-legend-item'},
+          React.createElement('div', {className:'qnav-legend-dot', style:{background:'var(--accent)'}}), 'Current'
+        ),
+        React.createElement('div', {className:'qnav-legend-item'},
+          React.createElement('div', {className:'qnav-legend-dot', style:{background:'rgba(34,197,94,0.4)', border:'1px solid var(--green)'}}), 'Done'
+        ),
+        React.createElement('div', {className:'qnav-legend-item'},
+          React.createElement('div', {className:'qnav-legend-dot', style:{background:'rgba(239,68,68,0.3)', border:'1px solid var(--red)'}}), 'Wrong'
+        ),
+        React.createElement('div', {className:'qnav-legend-item'},
+          React.createElement('div', {className:'qnav-legend-dot', style:{border:'2px solid rgba(239,68,68,0.5)', background:'transparent', width:8, height:8}}), 'Exam'
+        )
+      )
+    )
+  );
+}
+
+// ============================
+// SMART STUDY
+// ============================
+function SmartStudy({ progress, setProgress }) {
+  const [tab, setTab] = useState('overview');
+  const [practiceFilter, setPracticeFilter] = useState('weak');
+  const [qIdx, setQIdx] = useState(0);
+  const [stepInputs, setStepInputs] = useState({});
+  const [stepStatus, setStepStatus] = useState({});
+  const [activeStep, setActiveStep] = useState(0);
+  const [showHints, setShowHints] = useState({});
+  const [completed, setCompleted] = useState(false);
+  const [hlOn, setHlOn] = useState(progress.settings?.defaultXRay || false);
+  const [editFormula, setEditFormula] = useState(null);
+  const [editNote, setEditNote] = useState('');
+  const [editQNote, setEditQNote] = useState(null);
+  const [editQText, setEditQText] = useState('');
+
+  const stats = progress.questionStats || {};
+  const notes = progress.approachNotes || {};
+  const qNotes = progress.questionNotes || {};
+
+  // Analyze learner profile
+  const catStats = {};
+  QUESTIONS.forEach(q => {
+    if (!catStats[q.category]) catStats[q.category] = {attempts:0, correct:0};
+    const s = stats[q.id];
+    if (s) { catStats[q.category].attempts += s.attempts; catStats[q.category].correct += s.correct; }
+  });
+
+  const weakCats = Object.entries(catStats)
+    .filter(([,s]) => s.attempts > 0 && (s.correct / s.attempts) < 0.7)
+    .sort((a,b) => (a[1].correct/a[1].attempts) - (b[1].correct/b[1].attempts));
+
+  const strongCats = Object.entries(catStats)
+    .filter(([,s]) => s.attempts >= 3 && (s.correct / s.attempts) >= 0.8)
+    .sort((a,b) => (b[1].correct/b[1].attempts) - (a[1].correct/a[1].attempts));
+
+  // Questions sorted by weakness (most wrong first, then untried)
+  const getWeakQuestions = () => {
+    const scored = QUESTIONS.map(q => {
+      const s = stats[q.id];
+      if (!s) return {q, score: -1}; // untried = show after weak
+      const pct = s.correct / s.attempts;
+      return {q, score: pct};
+    });
+    return scored.sort((a,b) => a.score - b.score).map(s => s.q);
+  };
+
+  const getUntried = () => QUESTIONS.filter(q => !stats[q.id]);
+
+  const getRecommended = () => {
+    // Mix: weak questions, untried, then exam questions not mastered
+    const weak = QUESTIONS.filter(q => { const s=stats[q.id]; return s && s.correct/s.attempts < 0.7; });
+    const untried = QUESTIONS.filter(q => !stats[q.id]);
+    const examNotMastered = QUESTIONS.filter(q => q.exam && (!stats[q.id] || stats[q.id].correct/stats[q.id].attempts < 0.9));
+    const seen = new Set();
+    const result = [];
+    [...examNotMastered, ...weak, ...untried].forEach(q => { if (!seen.has(q.id)) { seen.add(q.id); result.push(q); }});
+    return result;
+  };
+
+  const practiceQs = practiceFilter === 'weak' ? getWeakQuestions() :
+    practiceFilter === 'untried' ? getUntried() :
+    practiceFilter === 'recommended' ? getRecommended() : QUESTIONS;
+
+  const reset = (idx) => {
+    setQIdx(idx !== undefined ? idx : 0);
+    setStepInputs({});
+    setStepStatus({});
+    setActiveStep(0);
+    setShowHints({});
+    setCompleted(false);
+  };
+
+  const checkStep = (i) => {
+    const q = practiceQs[qIdx];
+    const val = (stepInputs[i] || '').trim();
+    const expected = q.steps[i].answer;
+    const numVal = parseFloat(val);
+    const numExp = parseFloat(expected);
+    const isStr = isNaN(numExp);
+    const isCorrect = isStr ? val.toLowerCase() === expected.toLowerCase() : (!isNaN(numVal) && Math.abs(numVal - numExp) < (numExp * 0.02 + 0.5));
+    setStepStatus(p => ({...p, [i]: isCorrect ? 'correct' : 'wrong'}));
+    if (!isCorrect) setProgress(p => recordAttempt(p, q.id, false));
+    if (isCorrect && i === activeStep) {
+      if (i < q.steps.length - 1) setActiveStep(i + 1);
+      else {
+        setCompleted(true);
+        setProgress(p => {
+          let updated = recordAttempt(p, q.id, true);
+          const done = [...(updated.completedQuestions || [])];
+          if (!done.includes(q.id)) done.push(q.id);
+          return {...updated, completedQuestions: done};
+        });
+      }
+    }
+  };
+
+  const saveFormulaNote = (fId) => {
+    setProgress(p => ({...p, approachNotes: {...(p.approachNotes||{}), [fId]: editNote}}));
+    setEditFormula(null);
+    setEditNote('');
+  };
+
+  const saveQuestionNote = (qId) => {
+    setProgress(p => ({...p, questionNotes: {...(p.questionNotes||{}), [qId]: editQText}}));
+    setEditQNote(null);
+    setEditQText('');
+  };
+
+  const tabs = [
+    {id:'overview', label:'\uD83E\uDDE0 Overview'},
+    {id:'practice', label:'\uD83C\uDFAF Adaptive Practice'},
+    {id:'approaches', label:'\uD83D\uDCDD My Approaches'},
+  ];
+
+  // OVERVIEW TAB
+  if (tab === 'overview') {
+    const totalAttempted = Object.keys(stats).length;
+    const totalCorrect = Object.values(stats).reduce((a,s) => a + s.correct, 0);
+    const totalAttempts = Object.values(stats).reduce((a,s) => a + s.attempts, 0);
+    const overallPct = totalAttempts > 0 ? Math.round(totalCorrect/totalAttempts*100) : 0;
+    const recommendations = getRecommended();
+
+    return React.createElement('div', null,
+      React.createElement('h2', {style:{marginBottom:4}}, '\uD83E\uDDE0 Smart Study'),
+      React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:16}}, 'Personalized to how you learn. Your patterns, your pace, your approach.'),
+      React.createElement('div', {className:'pharm-subnav'},
+        tabs.map(t => React.createElement('button', {key:t.id, className:tab===t.id?'active':'', onClick:()=>setTab(t.id)}, t.label))
+      ),
+      // Profile Summary
+      React.createElement('div', {className:'stats-row'},
+        React.createElement('div', {className:'stat-box'},
+          React.createElement('div', {className:'stat-value', style:{color: overallPct>=80?'var(--green)':overallPct>=60?'var(--orange)':'var(--red)'}}, overallPct, '%'),
+          React.createElement('div', {className:'stat-label'}, 'Overall')
+        ),
+        React.createElement('div', {className:'stat-box'},
+          React.createElement('div', {className:'stat-value'}, totalAttempted, '/', QUESTIONS.length),
+          React.createElement('div', {className:'stat-label'}, 'Attempted')
+        ),
+        React.createElement('div', {className:'stat-box'},
+          React.createElement('div', {className:'stat-value'}, Object.keys(notes).length),
+          React.createElement('div', {className:'stat-label'}, 'Approaches Saved')
+        )
+      ),
+      // Weak areas
+      weakCats.length > 0 && React.createElement('div', {className:'smart-card'},
+        React.createElement('h3', {style:{color:'var(--red)'}}, '\uD83D\uDEA8 Needs Work'),
+        weakCats.map(([cat, s]) => {
+          const pct = Math.round(s.correct/s.attempts*100);
+          return React.createElement('div', {key:cat, style:{marginBottom:10}},
+            React.createElement('div', {style:{display:'flex', justifyContent:'space-between', fontSize:'0.9rem'}},
+              React.createElement('span', {style:{fontWeight:600}}, cat),
+              React.createElement('span', {style:{color: pct<50?'var(--red)':'var(--orange)'}}, pct, '% (', s.correct, '/', s.attempts, ')')
+            ),
+            React.createElement('div', {className:'weak-bar'},
+              React.createElement('div', {className:'weak-bar-fill', style:{width:pct+'%', background: pct<50?'var(--red)':'var(--orange)'}})
+            )
+          );
+        })
+      ),
+      // Strong areas
+      strongCats.length > 0 && React.createElement('div', {className:'smart-card'},
+        React.createElement('h3', {style:{color:'var(--green)'}}, '\u2705 Strong Areas'),
+        strongCats.map(([cat, s]) => {
+          const pct = Math.round(s.correct/s.attempts*100);
+          return React.createElement('div', {key:cat, style:{display:'flex', justifyContent:'space-between', padding:'6px 0', fontSize:'0.9rem'}},
+            React.createElement('span', {style:{fontWeight:600}}, cat),
+            React.createElement('span', {style:{color:'var(--green)'}}, pct, '%')
+          );
+        })
+      ),
+      // Recommendations
+      React.createElement('div', {className:'smart-card'},
+        React.createElement('h3', null, '\uD83D\uDCA1 Recommended Next'),
+        React.createElement('p', {style:{color:'var(--text3)', fontSize:'0.8rem', marginBottom:10}}, 'Based on your weak spots, untried questions, and exam priority.'),
+        recommendations.length === 0
+          ? React.createElement('p', {style:{color:'var(--green)', fontWeight:600}}, 'Start practicing to get personalized recommendations!')
+          : recommendations.slice(0, 5).map((q, i) => {
+            const s = stats[q.id];
+            return React.createElement('div', {key:q.id, className:'smart-rec', onClick:()=>{setTab('practice'); setPracticeFilter('recommended'); reset(i);}},
+              React.createElement('div', {style:{fontSize:'1.1rem'}}, q.exam ? '\uD83C\uDFAF' : s ? '\uD83D\uDD04' : '\u2753'),
+              React.createElement('div', {style:{flex:1}},
+                React.createElement('div', {style:{fontWeight:600, fontSize:'0.9rem'}}, q.text.slice(0, 80) + '...'),
+                React.createElement('div', {style:{color:'var(--text3)', fontSize:'0.8rem', marginTop:2}},
+                  q.category, ' \u2022 ', q.difficulty,
+                  s ? ' \u2022 ' + Math.round(s.correct/s.attempts*100) + '% accuracy' : ' \u2022 Not tried yet'
+                )
+              )
+            );
+          })
+      )
+    );
+  }
+
+  // ADAPTIVE PRACTICE TAB
+  if (tab === 'practice') {
+    const q = practiceQs[qIdx];
+
+    return React.createElement('div', null,
+      React.createElement('h2', {style:{marginBottom:4}}, '\uD83E\uDDE0 Smart Study'),
+      React.createElement('div', {className:'pharm-subnav'},
+        tabs.map(t => React.createElement('button', {key:t.id, className:tab===t.id?'active':'', onClick:()=>setTab(t.id)}, t.label))
+      ),
+      React.createElement('div', {style:{display:'flex', gap:6, marginBottom:14, flexWrap:'wrap'}},
+        [
+          {id:'recommended', label:'\uD83C\uDFAF Recommended (' + getRecommended().length + ')'},
+          {id:'weak', label:'\uD83D\uDEA8 Weakest First (' + getWeakQuestions().length + ')'},
+          {id:'untried', label:'\u2753 Untried (' + getUntried().length + ')'},
+          {id:'all', label:'All (' + QUESTIONS.length + ')'},
+        ].map(f => React.createElement('button', {key:f.id, className:'filter-btn'+(practiceFilter===f.id?' active':''), onClick:()=>{setPracticeFilter(f.id); reset(0);}}, f.label))
+      ),
+      !q ? React.createElement('div', {className:'card', style:{textAlign:'center', padding:30}},
+        React.createElement('div', {style:{fontSize:'2rem', marginBottom:8}}, '\uD83C\uDF89'),
+        React.createElement('div', {style:{fontWeight:700, fontSize:'1.1rem', color:'var(--green)'}}, practiceFilter==='untried' ? 'You\'ve tried every question!' : 'No questions match this filter.'),
+        React.createElement('button', {className:'btn btn-outline', style:{marginTop:12}, onClick:()=>{setPracticeFilter('all'); reset(0);}}, 'Show All Questions')
+      ) : React.createElement(React.Fragment, null,
+        // X-Ray toggle
+        React.createElement('div', {className:'toggle-row'},
+          React.createElement('label', {className:'toggle-switch'},
+            React.createElement('input', {type:'checkbox', checked:hlOn, onChange:()=>setHlOn(h=>!h)}),
+            React.createElement('div', {className:'toggle-track'}),
+            React.createElement('div', {className:'toggle-knob'})
+          ),
+          React.createElement('div', null,
+            React.createElement('div', {className:'toggle-label'}, 'X-Ray Mode'),
+            React.createElement('div', {className:'toggle-sub'}, 'Highlight key info, traps, conversions')
+          )
+        ),
+        hlOn && React.createElement('div', {className:'hl-legend'},
+          React.createElement('div', {className:'hl-legend-item'}, React.createElement('div', {className:'hl-swatch hl-swatch-key'}), React.createElement('span', null, 'Key info')),
+          React.createElement('div', {className:'hl-legend-item'}, React.createElement('div', {className:'hl-swatch hl-swatch-trap'}), React.createElement('span', null, 'Distractor')),
+          React.createElement('div', {className:'hl-legend-item'}, React.createElement('div', {className:'hl-swatch hl-swatch-convert'}), React.createElement('span', null, 'Needs conversion'))
+        ),
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, marginTop:12}},
+          React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+            React.createElement('span', {className:'tag tag-blue'}, 'Q ', qIdx+1, ' / ', practiceQs.length),
+            q.exam && React.createElement('span', {className:'exam-badge exam-badge-on'}, '\uD83C\uDFAF ON TEST')
+          ),
+          React.createElement('span', {className:'tag tag-orange'}, q.difficulty)
+        ),
+        React.createElement('div', {className:'question-box' + (q.exam ? ' exam-glow' : '')},
+          React.createElement('div', {className:'question-text'}, hlOn ? renderHighlightedText(q.text, q.keyPhrases, q.trapPhrases, q.convertPhrases) : q.text)
+        ),
+        // User note for this question
+        React.createElement('div', {style:{marginBottom:12}},
+          qNotes[q.id] && editQNote !== q.id && React.createElement('div', {style:{padding:'8px 12px', background:'rgba(139,92,246,0.1)', borderRadius:8, fontSize:'0.85rem', color:'var(--accent2)', cursor:'pointer', marginBottom:6}, onClick:()=>{setEditQNote(q.id); setEditQText(qNotes[q.id]);}},
+            '\uD83D\uDCDD Your note: ', qNotes[q.id]
+          ),
+          editQNote === q.id ? React.createElement('div', {style:{display:'flex', gap:8}},
+            React.createElement('input', {type:'text', value:editQText, onChange:e=>setEditQText(e.target.value), placeholder:'Your note for this question...', style:{flex:1, padding:'8px 12px', border:'2px solid var(--surface2)', borderRadius:8, background:'var(--bg)', color:'var(--text)', fontSize:'0.85rem'}}),
+            React.createElement('button', {className:'btn btn-primary btn-sm', onClick:()=>saveQuestionNote(q.id)}, 'Save'),
+            React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setEditQNote(null)}, '\u2715')
+          ) : !qNotes[q.id] && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>{setEditQNote(q.id); setEditQText('');}}, '\uD83D\uDCDD Add Note')
+        ),
+        // Formula reference
+        (() => {
+          const relFormula = FORMULAS.find(f => f.id === q.formula);
+          return relFormula ? React.createElement('details', {style:{marginBottom:12}},
+            React.createElement('summary', {style:{cursor:'pointer', color:'var(--accent)', fontSize:'0.9rem', fontWeight:600, padding:'10px 16px', background:'var(--surface)', borderRadius:10, border:'1px solid var(--surface2)', listStyle:'none', display:'flex', alignItems:'center', gap:8}},
+              '\uD83D\uDCD0 Formula: ', relFormula.title,
+              notes[relFormula.id] ? ' \u2022 \uD83D\uDCDD Has your approach' : ''
+            ),
+            React.createElement('div', {style:{background:'var(--surface)', borderRadius:'0 0 10px 10px', padding:'12px 16px', marginTop:-4, border:'1px solid var(--surface2)'}},
+              React.createElement('div', {style:{fontFamily:'monospace', fontSize:'1.1rem', color:'var(--orange)', fontWeight:700, marginBottom:8}},
+                relFormula.formula.split('\n').map((l,i) => React.createElement('div', {key:i}, l))
+              ),
+              React.createElement('p', {style:{fontSize:'0.85rem', color:'var(--text2)'}}, relFormula.explanation),
+              notes[relFormula.id] && React.createElement('div', {style:{marginTop:10, padding:'8px 12px', background:'rgba(139,92,246,0.1)', borderRadius:8, fontSize:'0.85rem', color:'var(--accent2)'}},
+                '\uD83D\uDCDD Your approach: ', notes[relFormula.id]
+              )
+            )
+          ) : null;
+        })(),
+        // Step-by-step
+        React.createElement('div', {className:'card'},
+          React.createElement('h3', null, 'Solve Step by Step'),
+          q.steps.map((s, i) => {
+            const status = stepStatus[i];
+            const isActive = i === activeStep && !completed;
+            const isLocked = i > activeStep && !completed;
+            return React.createElement('div', {key:i, className:'step'+(status==='correct'?' completed':status==='wrong'?' wrong':isActive?' active':''), style:isLocked?{opacity:0.4}:{}},
+              React.createElement('div', {className:'step-header'},
+                React.createElement('div', {className:'step-num'}, status==='correct'?'\u2713':i+1),
+                React.createElement('span', {className:'step-label'}, s.label)
+              ),
+              !isLocked && React.createElement(React.Fragment, null,
+                React.createElement('div', {className:'step-input-row'},
+                  React.createElement('input', {type:'text', placeholder:'Your answer...', value:stepInputs[i]||'',
+                    onChange:e=>setStepInputs(p=>({...p,[i]:e.target.value})),
+                    onKeyDown:e=>{if(e.key==='Enter')checkStep(i);},
+                    disabled:status==='correct'
+                  }),
+                  React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.85rem', whiteSpace:'nowrap'}}, s.unit),
+                  status!=='correct' && React.createElement('button', {className:'btn btn-primary btn-sm', onClick:()=>checkStep(i)}, 'Check')
+                ),
+                React.createElement('div', {style:{display:'flex', gap:8, marginTop:6}},
+                  !showHints[i] && status!=='correct' && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setShowHints(p=>({...p,[i]:true}))}, 'Show Hint'),
+                  status==='wrong' && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setStepInputs(p=>({...p,[i]:s.answer}))}, 'Show Answer')
+                ),
+                showHints[i] && React.createElement('div', {className:'step-hint'}, '\uD83D\uDCA1 ', s.hint)
+              )
+            );
+          }),
+          completed && React.createElement('div', {style:{textAlign:'center', marginTop:16, padding:16, background:'rgba(34,197,94,0.08)', borderRadius:10}},
+            React.createElement('div', {style:{fontSize:'1.3rem', fontWeight:700, color:'var(--green)'}}, '\u2705 Nailed it!'),
+            qIdx < practiceQs.length - 1 && React.createElement('button', {className:'btn btn-primary', style:{marginTop:10}, onClick:()=>reset(qIdx+1)}, 'Next Question \u2192')
+          )
+        ),
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginTop:12}},
+          React.createElement('button', {className:'btn btn-outline', disabled:qIdx===0, onClick:()=>reset(qIdx-1)}, '\u2190 Previous'),
+          React.createElement('button', {className:'btn btn-outline', disabled:qIdx>=practiceQs.length-1, onClick:()=>reset(qIdx+1)}, 'Next \u2192')
+        ),
+        // Question Navigator
+        React.createElement(QuestionNav, {
+          questions:practiceQs, currentIdx:qIdx, onSelect:(i)=>reset(i),
+          getStatus:(q) => { const s=stats[q.id]; if(!s) return ''; return s.lastCorrect ? 'done' : 'wrong'; }
+        })
+      )
+    );
+  }
+
+  // MY APPROACHES TAB
+  if (tab === 'approaches') {
+    return React.createElement('div', null,
+      React.createElement('h2', {style:{marginBottom:4}}, '\uD83E\uDDE0 Smart Study'),
+      React.createElement('div', {className:'pharm-subnav'},
+        tabs.map(t => React.createElement('button', {key:t.id, className:tab===t.id?'active':'', onClick:()=>setTab(t.id)}, t.label))
+      ),
+      React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:16}}, 'Record how YOU think through each formula. Your notes show up during practice so you can study your way.'),
+      // Formula approaches
+      React.createElement('h3', {style:{marginBottom:12}}, 'Formula Approaches'),
+      FORMULAS.map(f => React.createElement('div', {key:f.id, className:'smart-card'},
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}},
+          React.createElement('div', null,
+            React.createElement('div', {style:{fontWeight:700, fontSize:'0.95rem'}}, f.title),
+            React.createElement('div', {style:{fontFamily:'monospace', fontSize:'0.85rem', color:'var(--orange)', marginTop:2}}, f.formula.split('\n')[0])
+          ),
+          notes[f.id] ? React.createElement('span', {className:'tag tag-green'}, '\u2713 Saved') : React.createElement('span', {className:'tag', style:{background:'var(--surface2)', color:'var(--text3)'}}, 'Not set')
+        ),
+        editFormula === f.id ? React.createElement('div', {style:{marginTop:10}},
+          React.createElement('textarea', {className:'approach-textarea', value:editNote, onChange:e=>setEditNote(e.target.value), placeholder:'Describe YOUR approach... e.g. "I always convert units first, then plug into D/H x Q. I remember D = what the doctor ordered."'}),
+          React.createElement('div', {style:{display:'flex', gap:8, marginTop:8}},
+            React.createElement('button', {className:'btn btn-primary btn-sm', onClick:()=>saveFormulaNote(f.id)}, 'Save'),
+            React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setEditFormula(null)}, 'Cancel')
+          )
+        ) : React.createElement('div', {style:{marginTop:8}},
+          notes[f.id] && React.createElement('div', {style:{padding:'8px 12px', background:'rgba(139,92,246,0.1)', borderRadius:8, fontSize:'0.85rem', color:'var(--accent2)', marginBottom:8}}, notes[f.id]),
+          React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>{setEditFormula(f.id); setEditNote(notes[f.id]||'');}},
+            notes[f.id] ? 'Edit Approach' : '\uD83D\uDCDD Write Your Approach'
+          )
+        )
+      )),
+      // Question notes
+      Object.keys(qNotes).length > 0 && React.createElement(React.Fragment, null,
+        React.createElement('h3', {style:{marginTop:24, marginBottom:12}}, 'Question Notes'),
+        Object.entries(qNotes).map(([qId, note]) => {
+          const q = QUESTIONS.find(qq => qq.id === qId);
+          if (!q) return null;
+          return React.createElement('div', {key:qId, className:'smart-card'},
+            React.createElement('div', {style:{fontSize:'0.85rem', color:'var(--text2)', marginBottom:4}}, q.text.slice(0, 80) + '...'),
+            React.createElement('div', {style:{padding:'6px 10px', background:'rgba(139,92,246,0.1)', borderRadius:6, fontSize:'0.85rem', color:'var(--accent2)'}}, note)
+          );
+        })
+      )
+    );
+  }
+
+  return null;
+}
+
+// ============================
+// SETTINGS
+// ============================
+function SettingsPage({ progress, setProgress }) {
+  const settings = progress.settings || {};
+
+  const update = (key, val) => {
+    setProgress(p => ({...p, settings: {...(p.settings||{}), [key]: val}}));
+  };
+
+  const resetAllData = () => {
+    if (confirm('This will erase ALL your progress, notes, and settings. Are you sure?')) {
+      setProgress(getDefaultProgress());
+    }
+  };
+
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify(progress, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'medmaster_backup.json'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importData = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const data = JSON.parse(ev.target.result);
+          setProgress({...getDefaultProgress(), ...data});
+        } catch { alert('Invalid backup file.'); }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
+  return React.createElement('div', null,
+    React.createElement('h2', {style:{marginBottom:4}}, '\u2699\uFE0F Settings'),
+    React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:20}}, 'Customize your study experience.'),
+
+    // Study Preferences
+    React.createElement('div', {className:'settings-section'},
+      React.createElement('h3', null, 'Study Preferences'),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Default X-Ray Mode'),
+          React.createElement('div', {className:'setting-desc'}, 'Auto-enable highlighting in practice modes')
+        ),
+        React.createElement('label', {className:'toggle-switch', style:{marginLeft:12}},
+          React.createElement('input', {type:'checkbox', checked:settings.defaultXRay||false, onChange:()=>update('defaultXRay', !settings.defaultXRay)}),
+          React.createElement('div', {className:'toggle-track'}),
+          React.createElement('div', {className:'toggle-knob'})
+        )
+      ),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Show Formula Hints'),
+          React.createElement('div', {className:'setting-desc'}, 'Show formula references in guided practice')
+        ),
+        React.createElement('label', {className:'toggle-switch', style:{marginLeft:12}},
+          React.createElement('input', {type:'checkbox', checked:settings.showFormulaHints!==false, onChange:()=>update('showFormulaHints', settings.showFormulaHints===false)}),
+          React.createElement('div', {className:'toggle-track'}),
+          React.createElement('div', {className:'toggle-knob'})
+        )
+      ),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Auto-Advance on Correct'),
+          React.createElement('div', {className:'setting-desc'}, 'Automatically go to next question when you finish')
+        ),
+        React.createElement('label', {className:'toggle-switch', style:{marginLeft:12}},
+          React.createElement('input', {type:'checkbox', checked:settings.autoProceed||false, onChange:()=>update('autoProceed', !settings.autoProceed)}),
+          React.createElement('div', {className:'toggle-track'}),
+          React.createElement('div', {className:'toggle-knob'})
+        )
+      )
+    ),
+
+    // Test Defaults
+    React.createElement('div', {className:'settings-section'},
+      React.createElement('h3', null, 'Test Defaults'),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Default Time Limit'),
+          React.createElement('div', {className:'setting-desc'}, 'Pre-selected time for Test Mode')
+        ),
+        React.createElement('select', {className:'setting-select', value:settings.testTimeLimit||30, onChange:e=>update('testTimeLimit', parseInt(e.target.value))},
+          [15,30,45,60].map(n => React.createElement('option', {key:n, value:n}, n + ' min'))
+        )
+      ),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Default Question Count'),
+          React.createElement('div', {className:'setting-desc'}, 'Pre-selected number of questions')
+        ),
+        React.createElement('select', {className:'setting-select', value:settings.testNumQuestions||10, onChange:e=>update('testNumQuestions', parseInt(e.target.value))},
+          [5,10,15,20].map(n => React.createElement('option', {key:n, value:n}, n + ' questions'))
+        )
+      ),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Speed Round Timer'),
+          React.createElement('div', {className:'setting-desc'}, 'Seconds per card in Pharm speed rounds')
+        ),
+        React.createElement('select', {className:'setting-select', value:settings.timerSeconds||10, onChange:e=>update('timerSeconds', parseInt(e.target.value))},
+          [5,8,10,15,20].map(n => React.createElement('option', {key:n, value:n}, n + 's'))
+        )
+      )
+    ),
+
+    // Data Management
+    React.createElement('div', {className:'settings-section'},
+      React.createElement('h3', null, 'Data Management'),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Export Progress'),
+          React.createElement('div', {className:'setting-desc'}, 'Download a backup of all your data')
+        ),
+        React.createElement('button', {className:'btn btn-outline btn-sm', onClick:exportData}, '\u2B07 Export')
+      ),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Import Progress'),
+          React.createElement('div', {className:'setting-desc'}, 'Restore from a backup file')
+        ),
+        React.createElement('button', {className:'btn btn-outline btn-sm', onClick:importData}, '\u2B06 Import')
+      ),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Reset All Data'),
+          React.createElement('div', {className:'setting-desc'}, 'Erase everything and start fresh')
+        ),
+        React.createElement('button', {className:'danger-btn', onClick:resetAllData}, '\uD83D\uDDD1 Reset')
+      )
+    )
+  );
+}
+
+// ============================
 // MAIN APP
 // ============================
 function App() {
@@ -2924,6 +3542,8 @@ function App() {
       case 'missed': return React.createElement(MissedBank, {progress, setProgress});
       case 'pharm': return React.createElement(PharmHub);
       case 'labday': return React.createElement(LabDayTest, {progress, setProgress});
+      case 'smart': return React.createElement(SmartStudy, {progress, setProgress});
+      case 'settings': return React.createElement(SettingsPage, {progress, setProgress});
       default: return React.createElement(HomeScreen, {onNav: setPage, progress});
     }
   };
@@ -2938,10 +3558,12 @@ function App() {
         React.createElement('button', {className:'nav-btn'+(page==='test'?' active':''), onClick:()=>setPage('test')}, 'Test'),
         React.createElement('button', {className:'nav-btn'+(page==='analyze'?' active':''), onClick:()=>setPage('analyze')}, 'Analyzer'),
         React.createElement('button', {className:'nav-btn'+(page==='pharm'?' active':''), style:page==='pharm'?{background:'var(--accent2)'}:{}, onClick:()=>setPage('pharm')}, '\uD83D\uDC8A Pharm'),
+        React.createElement('button', {className:'nav-btn'+(page==='smart'?' active':''), style:page==='smart'?{background:'linear-gradient(135deg, var(--accent), var(--accent2))'}:{}, onClick:()=>setPage('smart')}, '\uD83E\uDDE0 Smart'),
         React.createElement('button', {className:'nav-btn'+(page==='dashboard'?' active':''), onClick:()=>setPage('dashboard')}, 'Stats'),
         React.createElement('button', {className:'nav-btn'+(page==='missed'?' active':''), onClick:()=>setPage('missed')},
           'Missed', (progress.missedQuestions || []).length > 0 ? ' (' + progress.missedQuestions.length + ')' : ''
-        )
+        ),
+        React.createElement('button', {className:'nav-btn'+(page==='settings'?' active':''), onClick:()=>setPage('settings')}, '\u2699\uFE0F')
       )
     ),
     renderPage(),
