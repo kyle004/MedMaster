@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
-<meta name="app-version" content="4">
+<meta name="app-version" content="5">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
@@ -82,6 +82,15 @@
   .step-feedback { font-size:0.85rem; margin-top:6px; padding:8px 12px; border-radius:6px; }
   .step-feedback.correct { background:rgba(34,197,94,0.15); color:var(--green); }
   .step-feedback.incorrect { background:rgba(239,68,68,0.15); color:var(--red); }
+
+  /* CHALLENGE HINTS */
+  .hint-summary { cursor:pointer; padding:10px 14px; background:var(--bg); border-radius:8px; border:1px solid var(--surface2); font-weight:600; font-size:0.9rem; color:var(--text2); display:flex; align-items:center; gap:8px; list-style:none; transition:all 0.2s; }
+  .hint-summary:hover { border-color:var(--accent); color:var(--text); }
+  .hint-summary::-webkit-details-marker { display:none; }
+  .hint-summary::before { content:'\25B6'; font-size:0.7rem; color:var(--text3); transition:transform 0.2s; }
+  details[open] > .hint-summary::before { transform:rotate(90deg); }
+  .hint-summary.hint-formula { color:var(--orange); border-color:rgba(245,158,11,0.3); }
+  .hint-content { padding:12px 14px; margin-top:4px; background:var(--surface); border-radius:0 0 8px 8px; border:1px solid var(--surface2); border-top:none; }
 
   /* MULTIPLE CHOICE */
   .mc-options { display:grid; gap:10px; margin-top:12px; }
@@ -1565,6 +1574,218 @@ function GuidedPractice({ progress, setProgress }) {
       React.createElement('button', {className:'btn btn-outline', disabled:qIdx===0, onClick:()=>reset(qIdx-1)}, '\u2190 Previous'),
       React.createElement('button', {className:'btn btn-outline', disabled:qIdx>=filtered.length-1, onClick:()=>reset(qIdx+1)}, 'Next \u2192')
     ),
+    React.createElement(QuestionNav, {
+      questions:filtered, currentIdx:qIdx, onSelect:(i)=>reset(i),
+      getStatus:(q) => { if(completedIds.includes(q.id)) return 'done'; const s=stats[q.id]; if(s && !s.lastCorrect) return 'wrong'; return ''; }
+    })
+  );
+}
+
+// ============================
+// CHALLENGE PRACTICE
+// ============================
+function ChallengePractice({ progress, setProgress }) {
+  const saved = progress.challengePosition || {filter:'All', qIdx:0};
+  const [filter, setFilter] = useState(saved.filter);
+  const [qIdx, setQIdx] = useState(saved.qIdx);
+  const [answer, setAnswer] = useState('');
+  const [status, setStatus] = useState(null); // null, 'correct', 'wrong'
+  const [attempts, setAttempts] = useState(0);
+  const [hintsOpen, setHintsOpen] = useState(false);
+  const [stepHints, setStepHints] = useState({}); // {0: true, 1: true, ...}
+  const [stepAnswers, setStepAnswers] = useState({}); // revealed step answers
+  const [showFormula, setShowFormula] = useState(false);
+  const [hlOn, setHlOn] = useState(progress.settings?.defaultXRay || false);
+  const [showFull, setShowFull] = useState(false); // reveal full guided walkthrough
+
+  const filtered = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
+  const q = filtered[qIdx];
+
+  useEffect(() => {
+    setProgress(p => ({...p, challengePosition: {filter, qIdx}}));
+  }, [filter, qIdx]);
+
+  const reset = (idx) => {
+    setQIdx(idx !== undefined ? idx : qIdx);
+    setAnswer('');
+    setStatus(null);
+    setAttempts(0);
+    setHintsOpen(false);
+    setStepHints({});
+    setStepAnswers({});
+    setShowFormula(false);
+    setShowFull(false);
+  };
+
+  if (!q) return React.createElement('div', {className:'card'}, 'No questions in this category yet.');
+
+  const checkAnswer = () => {
+    const val = parseFloat(answer.trim());
+    const lastStep = q.steps[q.steps.length - 1];
+    const expected = parseFloat(lastStep.answer);
+    const isCorrect = !isNaN(val) && !isNaN(expected) && Math.abs(val - expected) < (expected * 0.02 + 0.5);
+    setAttempts(a => a + 1);
+    if (isCorrect) {
+      setStatus('correct');
+      setProgress(p => {
+        let updated = recordAttempt(p, q.id, true);
+        const done = [...(updated.completedQuestions || [])];
+        if (!done.includes(q.id)) done.push(q.id);
+        return {...updated, completedQuestions: done};
+      });
+    } else {
+      setStatus('wrong');
+      setProgress(p => recordAttempt(p, q.id, false));
+    }
+  };
+
+  const hintsUsed = Object.keys(stepHints).length;
+  const completedIds = progress.completedQuestions || [];
+  const stats = progress.questionStats || {};
+  const questionContent = hlOn ? renderHighlightedText(q.text, q.keyPhrases, q.trapPhrases, q.convertPhrases) : q.text;
+  const relFormula = FORMULAS.find(f => f.id === q.formula);
+
+  return React.createElement('div', null,
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}},
+      React.createElement('h2', {style:{margin:0}}, 'Challenge Practice'),
+      React.createElement('div', {className:'save-badge'}, '\u2713 Progress saved')
+    ),
+    React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, 'Solve the problem on your own. Use progressive hints only if you get stuck.'),
+
+    // Category filter
+    React.createElement('div', {className:'filter-row'},
+      CATEGORIES.filter(c => c !== 'Conversions').map(c => React.createElement('button', {key:c, className:'filter-btn' + (filter===c?' active':''), onClick:()=>{setFilter(c); reset(0);}}, c))
+    ),
+
+    // X-Ray toggle
+    React.createElement('div', {className:'toggle-row'},
+      React.createElement('label', {className:'toggle-switch'},
+        React.createElement('input', {type:'checkbox', checked:hlOn, onChange:()=>setHlOn(h=>!h)}),
+        React.createElement('div', {className:'toggle-track'}),
+        React.createElement('div', {className:'toggle-knob'})
+      ),
+      React.createElement('div', null,
+        React.createElement('div', {className:'toggle-label'}, 'X-Ray Mode'),
+        React.createElement('div', {className:'toggle-sub'}, 'See what matters, what\'s fluff, and what needs converting')
+      )
+    ),
+    hlOn && React.createElement('div', {className:'hl-legend'},
+      React.createElement('div', {className:'hl-legend-item'},
+        React.createElement('div', {className:'hl-swatch hl-swatch-key'}),
+        React.createElement('span', null, 'Key info')
+      ),
+      React.createElement('div', {className:'hl-legend-item'},
+        React.createElement('div', {className:'hl-swatch hl-swatch-trap'}),
+        React.createElement('span', null, 'Distractor')
+      ),
+      React.createElement('div', {className:'hl-legend-item'},
+        React.createElement('div', {className:'hl-swatch hl-swatch-convert'}),
+        React.createElement('span', null, 'Needs conversion')
+      )
+    ),
+
+    // Question info bar
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, marginTop:12}},
+      React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+        React.createElement('span', {className:'tag tag-blue'}, 'Q', qIdx + 1, ' / ', filtered.length),
+        q.exam && React.createElement('span', {className:'exam-badge exam-badge-on'}, '\uD83C\uDFAF ON TEST'),
+        q.examSimilar && React.createElement('span', {className:'exam-badge exam-badge-similar'}, '\u223C SIMILAR')
+      ),
+      React.createElement('span', {className:'tag tag-orange'}, q.difficulty)
+    ),
+
+    // Question
+    React.createElement('div', {className:'question-box' + (q.exam ? ' exam-glow' : '')},
+      React.createElement('div', {className:'question-text'}, questionContent)
+    ),
+
+    // Answer box
+    React.createElement('div', {className:'card'},
+      React.createElement('h3', {style:{marginBottom:12}}, 'Your Answer'),
+      React.createElement('div', {style:{display:'flex', gap:10, alignItems:'center'}},
+        React.createElement('input', {
+          type:'text', placeholder:'Enter your final answer...', value:answer,
+          onChange:e => { setAnswer(e.target.value); if (status === 'wrong') setStatus(null); },
+          onKeyDown:e => { if (e.key === 'Enter' && answer.trim()) checkAnswer(); },
+          disabled:status === 'correct',
+          style:{flex:1, padding:'14px 18px', fontSize:'1.1rem', borderRadius:12, border:'2px solid ' + (status === 'correct' ? 'var(--green)' : status === 'wrong' ? 'var(--red)' : 'var(--surface2)'), background:'var(--bg)', color:'var(--text)', fontWeight:600}
+        }),
+        React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.9rem', whiteSpace:'nowrap'}}, q.steps[q.steps.length-1].unit),
+        status !== 'correct' && React.createElement('button', {className:'btn btn-primary', style:{padding:'14px 24px', fontSize:'1rem'}, onClick:checkAnswer, disabled:!answer.trim()}, 'Check')
+      ),
+      status === 'correct' && React.createElement('div', {style:{marginTop:12, padding:'12px 16px', background:'rgba(34,197,94,0.1)', borderRadius:10, color:'var(--green)', fontWeight:700, textAlign:'center', fontSize:'1.05rem'}},
+        '\u2713 Correct!' + (attempts === 1 && hintsUsed === 0 ? ' First try, no hints! \uD83C\uDF1F' : attempts === 1 ? ' First try!' : ' Got it in ' + attempts + ' attempt' + (attempts > 1 ? 's' : '') + '.')
+      ),
+      status === 'wrong' && React.createElement('div', {style:{marginTop:12, padding:'12px 16px', background:'rgba(239,68,68,0.08)', borderRadius:10, color:'var(--red)', fontWeight:600, textAlign:'center'}},
+        '\u2717 Not quite.' + (attempts >= 2 && !hintsOpen ? ' Try opening hints below.' : ' Try again.')
+      )
+    ),
+
+    // HINTS SECTION — progressive dropdowns
+    React.createElement('div', {className:'card', style:{marginTop:0, border: hintsOpen ? '1px solid var(--orange)' : '1px solid var(--surface2)'}},
+      React.createElement('div', {style:{cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center'}, onClick:()=>setHintsOpen(!hintsOpen)},
+        React.createElement('h3', {style:{margin:0, color: hintsOpen ? 'var(--orange)' : 'var(--text)'}}, '\uD83D\uDCA1 Need a hint?'),
+        React.createElement('div', {style:{display:'flex', alignItems:'center', gap:8}},
+          hintsUsed > 0 && React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--text3)'}}, hintsUsed + '/' + q.steps.length + ' used'),
+          React.createElement('span', {style:{color:'var(--text3)', fontSize:'1.1rem', transition:'transform 0.2s', transform:hintsOpen ? 'rotate(180deg)' : 'rotate(0)'}}, '\u25BC')
+        )
+      ),
+      hintsOpen && React.createElement('div', {style:{marginTop:14, display:'flex', flexDirection:'column', gap:8}},
+        // Formula hint (always first)
+        relFormula && React.createElement('details', {open:showFormula, onToggle:e=>setShowFormula(e.target.open)},
+          React.createElement('summary', {className:'hint-summary hint-formula'}, '\uD83D\uDCD0 Which formula to use?'),
+          React.createElement('div', {className:'hint-content'},
+            React.createElement('div', {style:{fontWeight:700, color:'var(--accent)', marginBottom:4}}, relFormula.title),
+            React.createElement('div', {style:{fontFamily:'"Courier New",monospace', fontSize:'1rem', color:'var(--orange)', fontWeight:700, marginBottom:6}},
+              relFormula.formula.split('\n').map((l,i) => React.createElement('div', {key:i}, l))
+            ),
+            React.createElement('p', {style:{fontSize:'0.85rem', color:'var(--text2)', margin:0}}, relFormula.explanation)
+          )
+        ),
+        // Step hints — each in its own dropdown
+        q.steps.map((s, i) =>
+          React.createElement('details', {key:i, open:!!stepHints[i],
+            onToggle:e => { if (e.target.open) setStepHints(p => ({...p, [i]:true})); }
+          },
+            React.createElement('summary', {className:'hint-summary'},
+              React.createElement('span', null, 'Step ' + (i + 1) + ': ' + s.label),
+              stepAnswers[i] && React.createElement('span', {style:{color:'var(--green)', fontSize:'0.8rem', marginLeft:8}}, '\u2713')
+            ),
+            React.createElement('div', {className:'hint-content'},
+              React.createElement('div', {style:{marginBottom:8, color:'var(--text2)', fontSize:'0.9rem'}}, '\uD83D\uDCA1 ', s.hint),
+              !stepAnswers[i] && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setStepAnswers(p=>({...p,[i]:true}))}, 'Show this step\'s answer'),
+              stepAnswers[i] && React.createElement('div', {style:{marginTop:6, padding:'8px 12px', background:'rgba(59,130,246,0.08)', borderRadius:8, fontWeight:700, color:'var(--accent)', fontSize:'0.95rem'}},
+                '\u2192 ' + s.answer + ' ' + s.unit
+              )
+            )
+          )
+        ),
+        // Nuclear option: show full walkthrough
+        !showFull && React.createElement('button', {className:'btn btn-outline btn-sm', style:{marginTop:4, alignSelf:'flex-start', color:'var(--red)', borderColor:'var(--red)'},
+          onClick:()=>setShowFull(true)}, '\uD83D\uDEA8 Show Full Walkthrough'),
+        showFull && React.createElement('div', {style:{marginTop:8, padding:'14px', background:'rgba(239,68,68,0.06)', borderRadius:10, border:'1px solid rgba(239,68,68,0.2)'}},
+          React.createElement('div', {style:{fontWeight:700, color:'var(--red)', marginBottom:8, fontSize:'0.9rem'}}, 'Full Solution:'),
+          q.steps.map((s, i) => React.createElement('div', {key:i, style:{padding:'6px 0', borderBottom: i < q.steps.length-1 ? '1px solid var(--surface2)' : 'none', fontSize:'0.9rem'}},
+            React.createElement('span', {style:{color:'var(--text3)', fontWeight:600}}, 'Step ' + (i+1) + ': '),
+            React.createElement('span', {style:{color:'var(--text2)'}}, s.label + ' \u2192 '),
+            React.createElement('span', {style:{fontWeight:700, color:'var(--accent)'}}, s.answer + ' ' + s.unit)
+          ))
+        )
+      )
+    ),
+
+    // Completed celebration + next
+    status === 'correct' && React.createElement('div', {style:{textAlign:'center', padding:'16px 0'}},
+      qIdx < filtered.length - 1 && React.createElement('button', {className:'btn btn-primary', onClick:()=>reset(qIdx+1)}, 'Next Problem \u2192')
+    ),
+
+    // Prev / Next
+    React.createElement('div', {style:{display:'flex', justifyContent:'space-between', marginTop:12}},
+      React.createElement('button', {className:'btn btn-outline', disabled:qIdx===0, onClick:()=>reset(qIdx-1)}, '\u2190 Previous'),
+      React.createElement('button', {className:'btn btn-outline', disabled:qIdx>=filtered.length-1, onClick:()=>reset(qIdx+1)}, 'Next \u2192')
+    ),
+
+    // QuestionNav
     React.createElement(QuestionNav, {
       questions:filtered, currentIdx:qIdx, onSelect:(i)=>reset(i),
       getStatus:(q) => { if(completedIds.includes(q.id)) return 'done'; const s=stats[q.id]; if(s && !s.lastCorrect) return 'wrong'; return ''; }
@@ -4606,6 +4827,7 @@ function App() {
       case 'home': return React.createElement(HomeScreen, {onNav: setPage, progress});
       case 'learn': return React.createElement(FormulaLab);
       case 'guided': return React.createElement(GuidedPractice, {progress, setProgress});
+      case 'challenge': return React.createElement(ChallengePractice, {progress, setProgress});
       case 'test': return React.createElement(TestMode, {progress, setProgress});
       case 'analyze': return React.createElement(QuestionAnalyzer);
       case 'dashboard': return React.createElement(Dashboard, {progress});
@@ -4625,6 +4847,7 @@ function App() {
         React.createElement('button', {className:'nav-btn'+(page==='labday'?' active':''), style:page==='labday'?{background:'var(--red)'}:{background:'rgba(239,68,68,0.15)', color:'var(--red)'}, onClick:()=>setPage('labday')}, '\uD83E\uDDEA Lab Day'),
         React.createElement('button', {className:'nav-btn'+(page==='learn'?' active':''), onClick:()=>setPage('learn')}, 'Formulas'),
         React.createElement('button', {className:'nav-btn'+(page==='guided'?' active':''), onClick:()=>setPage('guided')}, 'Guided'),
+        React.createElement('button', {className:'nav-btn'+(page==='challenge'?' active':''), style:page==='challenge'?{background:'linear-gradient(135deg, var(--green), #059669)'}:{}, onClick:()=>setPage('challenge')}, '\uD83C\uDFAF Challenge'),
         React.createElement('button', {className:'nav-btn'+(page==='test'?' active':''), onClick:()=>setPage('test')}, 'Test'),
         React.createElement('button', {className:'nav-btn'+(page==='analyze'?' active':''), onClick:()=>setPage('analyze')}, 'Analyzer'),
         React.createElement('button', {className:'nav-btn'+(page==='pharm'?' active':''), style:page==='pharm'?{background:'var(--accent2)'}:{}, onClick:()=>setPage('pharm')}, '\uD83D\uDC8A Pharm'),
