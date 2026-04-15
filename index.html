@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
-<meta name="app-version" content="5">
+<meta name="app-version" content="6">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
@@ -1103,6 +1103,186 @@ const QUESTIONS = [
       {label:'Calculate mL/hr', hint:'44160 ÷ 1600', answer:'27.6', unit:'mL/hr'}
     ],
     formula:'mcg-kg-min'
+  },
+  // === PRACTICE SET (Gemini-generated, exam-style) ===
+  {
+    id:'ps-1', category:'IV/Infusion', difficulty:'Medium', practiceSet:'extra',
+    text:'The provider orders 500 mL of Lactated Ringer\'s to be infused over 4 hours. The tubing has a drop factor of 20 gtt/mL. What is the flow rate in gtt/min?',
+    type:'free',
+    correct:'41.7',
+    unit:'gtt/min',
+    keyInfo:['500 mL','4 hours','20 gtt/mL','answer in gtt/min'],
+    traps:['Must convert hours to minutes first','Don\'t forget the drop factor'],
+    keyPhrases:['500 mL','4 hours','20 gtt/mL'],
+    trapPhrases:['Lactated Ringer\'s','The provider orders'],
+    convertPhrases:['gtt/min'],
+    steps:[
+      {label:'Convert hours to minutes', hint:'4 × 60', answer:'240', unit:'min'},
+      {label:'Apply drip rate formula', hint:'(500 × 20) ÷ 240', answer:'41.7', unit:'gtt/min'}
+    ],
+    formula:'gtt-min'
+  },
+  {
+    id:'ps-2', category:'IV/Infusion', difficulty:'Medium', practiceSet:'extra',
+    text:'A patient is ordered a 250 mL bolus of Normal Saline over 30 minutes, followed by a continuous infusion of 100 mL/h for 6 hours, and then 50 mL/h for 5.5 hours. What is the total volume of IV fluids the patient will receive over the course of these 12 hours?',
+    type:'free',
+    correct:'1125',
+    unit:'mL',
+    keyInfo:['250 mL bolus','100 mL/h × 6 hours','50 mL/h × 5.5 hours'],
+    traps:['Three separate phases — must calculate each','Don\'t forget the bolus volume','0.5 hours = 30 min extra'],
+    keyPhrases:['250 mL bolus','100 mL/h for 6 hours','50 mL/h for 5.5 hours'],
+    trapPhrases:['Normal Saline','over 30 minutes','over the course of these 12 hours'],
+    convertPhrases:['total volume'],
+    steps:[
+      {label:'Bolus volume', hint:'Given directly', answer:'250', unit:'mL'},
+      {label:'Continuous phase', hint:'100 × 6', answer:'600', unit:'mL'},
+      {label:'Maintenance phase', hint:'50 × 5.5', answer:'275', unit:'mL'},
+      {label:'Total volume', hint:'250 + 600 + 275', answer:'1125', unit:'mL'}
+    ],
+    formula:'iv-ml-hr'
+  },
+  {
+    id:'ps-3', category:'Pediatric', difficulty:'Medium', practiceSet:'extra',
+    text:'An order is written for Amoxicillin 200 mg PO every 8 hours for a child weighing 33 lb. The safe dose range is 20–40 mg/kg/day. Is this dose safe? Calculate the safe range in mg/day.',
+    type:'free',
+    correct:'600',
+    unit:'mg/day (max)',
+    keyInfo:['200 mg every 8 hours','33 lb','safe range 20–40 mg/kg/day'],
+    traps:['Weight in lbs — must convert to kg','Every 8 hours = 3 doses per day','Compare total daily dose to the range'],
+    keyPhrases:['200 mg','every 8 hours','33 lb','20–40 mg/kg/day'],
+    trapPhrases:['Amoxicillin','PO','An order is written'],
+    convertPhrases:['33 lb','mg/kg/day'],
+    steps:[
+      {label:'Convert lbs to kg', hint:'33 ÷ 2.2', answer:'15', unit:'kg'},
+      {label:'Low end of safe range', hint:'15 × 20', answer:'300', unit:'mg/day'},
+      {label:'High end of safe range', hint:'15 × 40', answer:'600', unit:'mg/day'},
+      {label:'Calculate total ordered/day', hint:'200 mg × 3 doses', answer:'600', unit:'mg/day'},
+      {label:'Compare: is 600 within 300–600?', hint:'600 = upper limit → safe', answer:'600', unit:'mg/day (safe)'}
+    ],
+    formula:'daily-dose-divided'
+  },
+  {
+    id:'ps-4', category:'Basic', difficulty:'Easy', practiceSet:'extra',
+    text:'The order is for Digoxin 0.125 mg PO daily. The pharmacy provides Digoxin in 62.5 mcg tablets. How many tablets will the nurse administer per dose?',
+    type:'free',
+    correct:'2',
+    unit:'tablets',
+    keyInfo:['0.125 mg ordered','62.5 mcg per tablet','answer in tablets'],
+    traps:['mg vs mcg — must convert units','0.125 mg = 125 mcg'],
+    keyPhrases:['0.125 mg','62.5 mcg tablets'],
+    trapPhrases:['Digoxin','PO daily','The pharmacy provides'],
+    convertPhrases:['0.125 mg','mcg'],
+    steps:[
+      {label:'Convert mg to mcg', hint:'0.125 × 1000', answer:'125', unit:'mcg'},
+      {label:'Divide by tablet strength', hint:'125 ÷ 62.5', answer:'2', unit:'tablets'}
+    ],
+    formula:'desired-over-have'
+  },
+  {
+    id:'ps-5', category:'Critical Care', difficulty:'Hard', practiceSet:'extra',
+    text:'A patient weighing 75 kg is prescribed a Dobutamine infusion at 5 mcg/kg/min. The medication is available in a concentration of 500 mg in 250 mL D5W. Calculate the infusion rate in mL/h.',
+    type:'free',
+    correct:'11.3',
+    unit:'mL/h',
+    keyInfo:['75 kg','5 mcg/kg/min','500 mg in 250 mL','answer in mL/h'],
+    traps:['mcg to mg conversion needed','Must convert mcg/min to mg/h','Find concentration first'],
+    keyPhrases:['75 kg','5 mcg/kg/min','500 mg in 250 mL'],
+    trapPhrases:['Dobutamine','D5W','A patient weighing'],
+    convertPhrases:['mcg/kg/min','mL/h'],
+    steps:[
+      {label:'Dose per minute', hint:'75 × 5', answer:'375', unit:'mcg/min'},
+      {label:'Dose per hour', hint:'375 × 60', answer:'22500', unit:'mcg/h'},
+      {label:'Convert to mg/h', hint:'22500 ÷ 1000', answer:'22.5', unit:'mg/h'},
+      {label:'Concentration', hint:'500 ÷ 250', answer:'2', unit:'mg/mL'},
+      {label:'Infusion rate', hint:'22.5 ÷ 2', answer:'11.3', unit:'mL/h'}
+    ],
+    formula:'mcg-kg-min'
+  },
+  {
+    id:'ps-6', category:'IV/Infusion', difficulty:'Easy', practiceSet:'extra',
+    text:'The order is for 1 liter of D5NS to run at 125 mL/h. The drop factor is 10 gtt/mL. What is the flow rate in gtt/min?',
+    type:'free',
+    correct:'20.8',
+    unit:'gtt/min',
+    keyInfo:['125 mL/h','10 gtt/mL','answer in gtt/min'],
+    traps:['1 liter is a distractor — you only need the rate','Use the gtt/min formula'],
+    keyPhrases:['125 mL/h','10 gtt/mL'],
+    trapPhrases:['1 liter','D5NS','The order is for'],
+    convertPhrases:['gtt/min'],
+    steps:[
+      {label:'Apply drip formula', hint:'(125 × 10) ÷ 60', answer:'20.8', unit:'gtt/min'}
+    ],
+    formula:'gtt-min'
+  },
+  {
+    id:'ps-7', category:'Pediatric', difficulty:'Medium', practiceSet:'extra',
+    text:'A physician orders Gentamicin 45 mg IV every 8 hours for a child weighing 18 kg. The safe dosage range is 6–7.5 mg/kg/day. Calculate the safe daily range and determine if the ordered dose is safe.',
+    type:'free',
+    correct:'135',
+    unit:'mg/day (ordered)',
+    keyInfo:['45 mg every 8 hours','18 kg','safe range 6–7.5 mg/kg/day'],
+    traps:['Every 8 hours = 3 doses/day','135 mg/day is exactly at the max limit — technically safe but at ceiling'],
+    keyPhrases:['45 mg','every 8 hours','18 kg','6–7.5 mg/kg/day'],
+    trapPhrases:['Gentamicin','IV','A physician orders'],
+    convertPhrases:['mg/kg/day'],
+    steps:[
+      {label:'Low end of safe range', hint:'18 × 6', answer:'108', unit:'mg/day'},
+      {label:'High end of safe range', hint:'18 × 7.5', answer:'135', unit:'mg/day'},
+      {label:'Total ordered per day', hint:'45 × 3', answer:'135', unit:'mg/day'},
+      {label:'Compare', hint:'135 = 135 max → at max limit, safe', answer:'135', unit:'mg/day (at max)'}
+    ],
+    formula:'daily-dose-divided'
+  },
+  {
+    id:'ps-8', category:'Basic', difficulty:'Easy', practiceSet:'extra',
+    text:'The order is for Phenobarbital 30 mg PO twice daily. The medication is available as an elixir with a concentration of 20 mg/5 mL. How many mL will the nurse administer per dose?',
+    type:'free',
+    correct:'7.5',
+    unit:'mL',
+    keyInfo:['30 mg ordered per dose','20 mg per 5 mL','answer in mL'],
+    traps:['Twice daily is for daily total — each dose is still 30 mg','Use desired over have × vehicle'],
+    keyPhrases:['30 mg','20 mg/5 mL'],
+    trapPhrases:['Phenobarbital','PO twice daily','as an elixir'],
+    convertPhrases:[],
+    steps:[
+      {label:'Set up desired/have × vehicle', hint:'(30 ÷ 20) × 5', answer:'7.5', unit:'mL'}
+    ],
+    formula:'desired-over-have'
+  },
+  {
+    id:'ps-9', category:'Critical Care', difficulty:'Medium', practiceSet:'extra',
+    text:'A patient weighing 110 lb is prescribed an infusion at 2 mcg/kg/min. The pharmacy sends a bag containing 100 mg of the medication in 100 mL of Normal Saline. What is the concentration in mcg/mL?',
+    type:'free',
+    correct:'1000',
+    unit:'mcg/mL',
+    keyInfo:['100 mg in 100 mL','answer in mcg/mL'],
+    traps:['The weight and rate info are distractors for THIS question — it only asks for concentration','Must convert mg to mcg'],
+    keyPhrases:['100 mg','100 mL'],
+    trapPhrases:['110 lb','2 mcg/kg/min','Normal Saline','A patient weighing'],
+    convertPhrases:['mcg/mL','100 mg'],
+    steps:[
+      {label:'Convert mg to mcg', hint:'100 × 1000', answer:'100000', unit:'mcg'},
+      {label:'Calculate concentration', hint:'100000 ÷ 100', answer:'1000', unit:'mcg/mL'}
+    ],
+    formula:'mcg-kg-min'
+  },
+  {
+    id:'ps-10', category:'Critical Care', difficulty:'Hard', practiceSet:'extra',
+    text:'A patient weighing 82 kg is receiving a Heparin drip. The order is for 18 units/kg/h. The pharmacy provides a bag with 25,000 units of Heparin in 500 mL of D5W. What is the infusion rate in mL/h?',
+    type:'free',
+    correct:'29.5',
+    unit:'mL/h',
+    keyInfo:['82 kg','18 units/kg/h','25,000 units in 500 mL','answer in mL/h'],
+    traps:['Must find units/hr first, then convert to mL/hr','Concentration is units/mL, not mg/mL'],
+    keyPhrases:['82 kg','18 units/kg/h','25,000 units','500 mL'],
+    trapPhrases:['Heparin drip','D5W','A patient weighing'],
+    convertPhrases:['mL/h'],
+    steps:[
+      {label:'Calculate units/hr', hint:'82 × 18', answer:'1476', unit:'units/h'},
+      {label:'Find concentration', hint:'25000 ÷ 500', answer:'50', unit:'units/mL'},
+      {label:'Calculate infusion rate', hint:'1476 ÷ 50', answer:'29.5', unit:'mL/h'}
+    ],
+    formula:'heparin-infusion'
   }
 ];
 
@@ -1283,7 +1463,8 @@ function HomeScreen({ onNav, progress }) {
     {id:'labday', icon:'\u{1F9EA}', title:'Lab Day Test (' + examCount + ')', desc:'Your actual exam questions. Guided practice and test simulation. Master these first.'},
     {id:'learn', icon:'\u{1F4DA}', title:'Formula Lab', desc:'Study all formulas with flashcards. Flip to reveal explanations, examples, and common traps.'},
     {id:'guided', icon:'\u{1F9E9}', title:'Guided Practice', desc:'Step-by-step problem solving. Your position is saved automatically.'},
-    {id:'test', icon:'\u{1F3AF}', title:'Test Mode', desc:'Timed quiz simulation. Results are tracked on your dashboard.'},
+    {id:'challenge', icon:'\u{1F3AF}', title:'Challenge Practice', desc:'Solve problems on your own with progressive hints. No steps shown until you ask.'},
+    {id:'test', icon:'\u{1F4DD}', title:'Test Mode', desc:'Timed quiz simulation. Results are tracked on your dashboard.'},
     {id:'analyze', icon:'\u{1F50D}', title:'Question Analyzer', desc:'Learn to identify key info, spot traps, and pick the right formula.'},
     {id:'dashboard', icon:'\u{1F4CA}', title:'Dashboard', desc:'Track your accuracy by category. See your strengths and weak spots.'},
     {id:'missed', icon:'\u{1F6A8}', title:'Missed Questions' + (missedCount > 0 ? ' (' + missedCount + ')' : ''), desc: missedCount > 0 ? missedCount + ' questions to review. Drill your weak spots until they\'re gone.' : 'All clear! Questions you miss will appear here for review.'},
@@ -1409,9 +1590,10 @@ function renderHighlightedText(text, keyPhrases, trapPhrases, convertPhrases) {
 
 function GuidedPractice({ progress, setProgress }) {
   // Restore saved position
-  const saved = progress.guidedPosition || {filter:'All', qIdx:0};
+  const saved = progress.guidedPosition || {filter:'All', qIdx:0, qSet:'all'};
   const [filter, setFilter] = useState(saved.filter);
   const [qIdx, setQIdx] = useState(saved.qIdx);
+  const [qSet, setQSet] = useState(saved.qSet || 'all');
   const [stepInputs, setStepInputs] = useState({});
   const [stepStatus, setStepStatus] = useState({});
   const [activeStep, setActiveStep] = useState(0);
@@ -1419,13 +1601,18 @@ function GuidedPractice({ progress, setProgress }) {
   const [completed, setCompleted] = useState(false);
   const [hlOn, setHlOn] = useState(false);
 
-  const filtered = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
+  const baseFiltered = QUESTIONS.filter(q => {
+    if (qSet === 'original') return !q.practiceSet;
+    if (qSet === 'extra') return q.practiceSet === 'extra';
+    return true;
+  });
+  const filtered = baseFiltered.filter(q => filter === 'All' || q.category === filter);
   const q = filtered[qIdx];
 
   // Save position whenever it changes
   useEffect(() => {
-    setProgress(p => ({...p, guidedPosition: {filter, qIdx}}));
-  }, [filter, qIdx]);
+    setProgress(p => ({...p, guidedPosition: {filter, qIdx, qSet}}));
+  }, [filter, qIdx, qSet]);
 
   const reset = (idx) => {
     setQIdx(idx !== undefined ? idx : qIdx);
@@ -1476,6 +1663,11 @@ function GuidedPractice({ progress, setProgress }) {
       React.createElement('div', {className:'save-badge'}, '\u2713 Progress saved')
     ),
     React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, 'Work through each step. You must get each step right before moving to the next.'),
+    // Question set selector
+    React.createElement('div', {style:{display:'flex', gap:8, marginBottom:10, flexWrap:'wrap'}},
+      [{id:'all', label:'All (' + QUESTIONS.length + ')'}, {id:'original', label:'Original (' + QUESTIONS.filter(q=>!q.practiceSet).length + ')'}, {id:'extra', label:'Practice Set (' + QUESTIONS.filter(q=>q.practiceSet==='extra').length + ')'}
+      ].map(s => React.createElement('button', {key:s.id, className:'filter-btn'+(qSet===s.id?' active':''), onClick:()=>{setQSet(s.id); setFilter('All'); reset(0);}}, s.label))
+    ),
     React.createElement('div', {className:'filter-row'},
       CATEGORIES.filter(c => c !== 'Conversions').map(c => React.createElement('button', {key:c, className:'filter-btn' + (filter===c?' active':''), onClick:()=>{setFilter(c); reset(0);}}, c))
     ),
@@ -1585,9 +1777,10 @@ function GuidedPractice({ progress, setProgress }) {
 // CHALLENGE PRACTICE
 // ============================
 function ChallengePractice({ progress, setProgress }) {
-  const saved = progress.challengePosition || {filter:'All', qIdx:0};
+  const saved = progress.challengePosition || {filter:'All', qIdx:0, qSet:'original'};
   const [filter, setFilter] = useState(saved.filter);
   const [qIdx, setQIdx] = useState(saved.qIdx);
+  const [qSet, setQSet] = useState(saved.qSet || 'original');
   const [answer, setAnswer] = useState('');
   const [status, setStatus] = useState(null); // null, 'correct', 'wrong'
   const [attempts, setAttempts] = useState(0);
@@ -1598,12 +1791,17 @@ function ChallengePractice({ progress, setProgress }) {
   const [hlOn, setHlOn] = useState(progress.settings?.defaultXRay || false);
   const [showFull, setShowFull] = useState(false); // reveal full guided walkthrough
 
-  const filtered = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
+  const baseFiltered = QUESTIONS.filter(q => {
+    if (qSet === 'original') return !q.practiceSet;
+    if (qSet === 'extra') return q.practiceSet === 'extra';
+    return true; // 'all'
+  });
+  const filtered = baseFiltered.filter(q => filter === 'All' || q.category === filter);
   const q = filtered[qIdx];
 
   useEffect(() => {
-    setProgress(p => ({...p, challengePosition: {filter, qIdx}}));
-  }, [filter, qIdx]);
+    setProgress(p => ({...p, challengePosition: {filter, qIdx, qSet}}));
+  }, [filter, qIdx, qSet]);
 
   const reset = (idx) => {
     setQIdx(idx !== undefined ? idx : qIdx);
@@ -1651,6 +1849,18 @@ function ChallengePractice({ progress, setProgress }) {
       React.createElement('div', {className:'save-badge'}, '\u2713 Progress saved')
     ),
     React.createElement('p', {style:{color:'var(--text2)', marginBottom:16, fontSize:'0.9rem'}}, 'Solve the problem on your own. Use progressive hints only if you get stuck.'),
+
+    // Question Set selector
+    React.createElement('div', {style:{display:'flex', gap:8, marginBottom:12, flexWrap:'wrap'}},
+      [{id:'original', label:'Original (' + QUESTIONS.filter(q=>!q.practiceSet).length + ')', color:'var(--accent)'},
+       {id:'extra', label:'Practice Set (' + QUESTIONS.filter(q=>q.practiceSet==='extra').length + ')', color:'var(--green)'},
+       {id:'all', label:'All (' + QUESTIONS.length + ')', color:'var(--accent2)'}
+      ].map(s => React.createElement('button', {key:s.id,
+        className:'btn' + (qSet===s.id ? ' btn-primary' : ' btn-outline'),
+        style:Object.assign({padding:'6px 16px', fontSize:'0.85rem'}, qSet===s.id ? {background:s.color} : {}),
+        onClick:()=>{setQSet(s.id); setFilter('All'); reset(0);}
+      }, s.label))
+    ),
 
     // Category filter
     React.createElement('div', {className:'filter-row'},
@@ -1801,6 +2011,7 @@ function TestMode({ progress, setProgress }) {
   const [numQ, setNumQ] = useState(10);
   const [timeLimit, setTimeLimit] = useState(30);
   const [filter, setFilter] = useState('All');
+  const [testPool, setTestPool] = useState('all'); // 'all', 'original', 'extra'
   const [questions, setQuestions] = useState([]);
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState({});
@@ -1816,7 +2027,9 @@ function TestMode({ progress, setProgress }) {
   }, [timeLeft, started, submitted]);
 
   const startTest = () => {
-    const pool = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
+    let pool = QUESTIONS.filter(q => filter === 'All' || q.category === filter);
+    if (testPool === 'original') pool = pool.filter(q => !q.practiceSet);
+    else if (testPool === 'extra') pool = pool.filter(q => q.practiceSet === 'extra');
     const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, numQ);
     setQuestions(shuffled);
     setCurrent(0);
@@ -1872,6 +2085,15 @@ function TestMode({ progress, setProgress }) {
       React.createElement('div', {className:'card'},
         React.createElement('h3', null, 'Configure Your Test'),
         React.createElement('div', {style:{display:'grid', gap:16, maxWidth:400, marginTop:16}},
+          React.createElement('div', null,
+            React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', marginBottom:4, display:'block'}}, 'Question Pool'),
+            React.createElement('div', {style:{display:'flex', gap:8, flexWrap:'wrap'}},
+              [{id:'all',l:'All Questions',c:QUESTIONS.length},
+               {id:'original',l:'Original',c:QUESTIONS.filter(q=>!q.practiceSet).length},
+               {id:'extra',l:'Practice Set',c:QUESTIONS.filter(q=>q.practiceSet==='extra').length}
+              ].map(p => React.createElement('button', {key:p.id, className:'filter-btn'+(testPool===p.id?' active':''), onClick:()=>setTestPool(p.id)}, p.l+' ('+p.c+')'))
+            )
+          ),
           React.createElement('div', null,
             React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', marginBottom:4, display:'block'}}, 'Category'),
             React.createElement('div', {className:'filter-row'},
