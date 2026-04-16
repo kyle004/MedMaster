@@ -4,10 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
-<meta name="app-version" content="6">
+<meta name="app-version" content="7">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <style>
   :root {
     --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
@@ -353,6 +357,35 @@
   .sim-text-input { flex:1; padding:10px 16px; border:2px solid var(--surface2); border-radius:24px; background:var(--bg); color:var(--text); font-size:0.92rem; }
   .sim-text-input:focus { border-color:var(--accent); outline:none; }
   .sim-text-input:disabled { opacity:0.5; }
+
+  /* USERNAME MODAL */
+  .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:9999; backdrop-filter:blur(4px); }
+  .modal-box { background:var(--surface); border-radius:16px; padding:32px; max-width:400px; width:90%; border:1px solid var(--surface2); text-align:center; }
+  .modal-input { width:100%; padding:14px 18px; font-size:1.1rem; border:2px solid var(--surface2); border-radius:12px; background:var(--bg); color:var(--text); text-align:center; font-weight:600; margin:16px 0; }
+  .modal-input:focus { border-color:var(--accent); outline:none; }
+
+  /* ADMIN PANEL */
+  .admin-panel { background:var(--surface); border-radius:12px; border:1px solid var(--accent2); overflow:hidden; }
+  .admin-header { padding:16px 20px; background:linear-gradient(135deg, var(--accent), var(--accent2)); color:white; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
+  .admin-tabs { display:flex; border-bottom:1px solid var(--surface2); }
+  .admin-tab { padding:10px 20px; cursor:pointer; font-weight:600; font-size:0.85rem; color:var(--text3); border-bottom:2px solid transparent; transition:all 0.2s; background:none; border-top:none; border-left:none; border-right:none; }
+  .admin-tab:hover { color:var(--text); }
+  .admin-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .admin-content { padding:16px 20px; }
+  .online-user { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--surface2); }
+  .online-dot { width:8px; height:8px; border-radius:50%; background:var(--green); display:inline-block; margin-right:8px; animation:pulse 2s infinite; }
+  .offline-dot { width:8px; height:8px; border-radius:50%; background:var(--text3); display:inline-block; margin-right:8px; }
+
+  /* TOAST MESSAGES */
+  .toast-container { position:fixed; top:60px; right:16px; z-index:9998; display:flex; flex-direction:column; gap:8px; max-width:360px; }
+  .toast { padding:12px 16px; border-radius:12px; background:var(--surface); border:1px solid var(--accent2); box-shadow:0 4px 16px rgba(0,0,0,0.3); animation:slideIn 0.3s ease, fadeOut 0.5s ease 4.5s forwards; font-size:0.9rem; }
+  .toast-admin { border-color:var(--accent); background:linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1)); }
+  @keyframes slideIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+  @keyframes fadeOut { to{opacity:0;transform:translateY(-10px)} }
+
+  /* ONLINE BADGE */
+  .online-count-badge { position:fixed; bottom:80px; left:16px; padding:6px 12px; background:var(--surface); border:1px solid var(--surface2); border-radius:20px; font-size:0.8rem; color:var(--text2); z-index:100; cursor:pointer; display:flex; align-items:center; gap:6px; }
+  .online-count-badge:hover { border-color:var(--accent); }
 
   /* UPDATE BANNER */
   .update-banner { position:fixed; top:0; left:0; right:0; z-index:10000; background:linear-gradient(135deg, var(--accent), var(--accent2)); color:white; text-align:center; padding:10px 16px; font-size:0.9rem; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:10px; box-shadow:0 2px 12px rgba(0,0,0,0.4); animation:slideDown 0.4s ease; }
@@ -1328,6 +1361,8 @@ function getDefaultProgress() {
       openRouterKey: '',
       simVoice: '',           // preferred TTS voice name
       simModel: 'openai/gpt-4o-mini',  // OpenRouter model for sim
+      firebaseConfig: '',     // JSON string of Firebase config
+      adminUid: '',           // Firebase Auth UID of the admin
     }
   };
 }
@@ -5008,6 +5043,12 @@ function SettingsPage({ progress, setProgress }) {
       )
     ),
 
+    // Firebase / Admin
+    React.createElement('div', {className:'settings-section'},
+      React.createElement('h3', null, '\uD83D\uDD25 Firebase & Admin'),
+      React.createElement(FirebaseSetup, {settings, update})
+    ),
+
     // Data Management
     React.createElement('div', {className:'settings-section'},
       React.createElement('h3', null, 'Data Management'),
@@ -5037,12 +5078,445 @@ function SettingsPage({ progress, setProgress }) {
 }
 
 // ============================
+// FIREBASE + REAL-TIME SYSTEM
+// ============================
+const FIREBASE_SAVE_KEY = 'medmaster_firebase_config';
+
+// Initialize Firebase (called once when config is available)
+let firebaseApp = null;
+let firebaseDb = null;
+let firebaseAuth = null;
+
+function initFirebase(configStr) {
+  if (firebaseApp) return true;
+  try {
+    const config = typeof configStr === 'string' ? JSON.parse(configStr) : configStr;
+    if (!config || !config.apiKey) return false;
+    firebaseApp = firebase.initializeApp(config);
+    firebaseDb = firebase.database();
+    firebaseAuth = firebase.auth();
+    return true;
+  } catch(e) {
+    console.error('Firebase init failed:', e);
+    return false;
+  }
+}
+
+// Default Firebase config for MedMaster
+const DEFAULT_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAX1NCefZnch_UG18mIDfoMgYvpYxBgrXE",
+  authDomain: "medmaster-a2507.firebaseapp.com",
+  databaseURL: "https://medmaster-a2507-default-rtdb.firebaseio.com",
+  projectId: "medmaster-a2507",
+  storageBucket: "medmaster-a2507.firebasestorage.app",
+  messagingSenderId: "1005249061986",
+  appId: "1:1005249061986:web:75e0a090b87c84a1b2dd3b",
+  measurementId: "G-VFTXBSPFR7"
+};
+
+// Try to init from saved config on load, fall back to default
+(function() {
+  const saved = localStorage.getItem(FIREBASE_SAVE_KEY);
+  if (saved) {
+    initFirebase(saved);
+  } else {
+    const cfgStr = JSON.stringify(DEFAULT_FIREBASE_CONFIG);
+    if (initFirebase(cfgStr)) {
+      localStorage.setItem(FIREBASE_SAVE_KEY, cfgStr);
+      // Also save into progress settings so UI stays in sync
+      try {
+        const prog = JSON.parse(localStorage.getItem('medmaster_progress') || '{}');
+        if (!prog.settings) prog.settings = {};
+        prog.settings.firebaseConfig = cfgStr;
+        localStorage.setItem('medmaster_progress', JSON.stringify(prog));
+      } catch(e) {}
+    }
+  }
+})();
+
+// ============================
+// USERNAME MODAL
+// ============================
+function UsernameModal({ onSet }) {
+  const [name, setName] = useState('');
+  return React.createElement('div', {className:'modal-overlay'},
+    React.createElement('div', {className:'modal-box'},
+      React.createElement('div', {style:{fontSize:'2.5rem', marginBottom:8}}, '\uD83D\uDC4B'),
+      React.createElement('h2', {style:{marginBottom:4}}, 'Welcome to MedMaster'),
+      React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:4}}, 'Pick a display name to get started.'),
+      React.createElement('input', {className:'modal-input', placeholder:'Your name...', value:name, maxLength:20,
+        onChange:e=>setName(e.target.value),
+        onKeyDown:e=>{ if (e.key==='Enter' && name.trim().length >= 2) onSet(name.trim()); }
+      }),
+      React.createElement('button', {className:'btn btn-primary', style:{width:'100%', padding:'12px', fontSize:'1rem'},
+        disabled:name.trim().length < 2, onClick:()=>onSet(name.trim())}, 'Continue')
+    )
+  );
+}
+
+// ============================
+// PRESENCE SYSTEM HOOK
+// ============================
+function usePresence(username, firebaseReady) {
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const myIdRef = useRef(localStorage.getItem('medmaster_visitor_id') || null);
+
+  useEffect(() => {
+    if (!firebaseReady || !firebaseDb || !username) return;
+
+    // Generate or retrieve visitor ID
+    if (!myIdRef.current) {
+      myIdRef.current = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+      localStorage.setItem('medmaster_visitor_id', myIdRef.current);
+    }
+    const myId = myIdRef.current;
+    const presenceRef = firebaseDb.ref('presence/' + myId);
+    const allPresenceRef = firebaseDb.ref('presence');
+    const connectedRef = firebaseDb.ref('.info/connected');
+
+    // Set presence on connect
+    const onConnected = connectedRef.on('value', (snap) => {
+      if (snap.val() === true) {
+        presenceRef.set({
+          username: username,
+          online: true,
+          lastSeen: firebase.database.ServerValue.TIMESTAMP,
+          page: 'active'
+        });
+        presenceRef.onDisconnect().update({
+          online: false,
+          lastSeen: firebase.database.ServerValue.TIMESTAMP
+        });
+      }
+    });
+
+    // Listen to all presence
+    const onPresence = allPresenceRef.on('value', (snap) => {
+      const data = snap.val() || {};
+      const users = Object.entries(data).map(([id, u]) => ({id, ...u}));
+      setOnlineUsers(users);
+    });
+
+    // Update presence every 60s (heartbeat)
+    const heartbeat = setInterval(() => {
+      presenceRef.update({ lastSeen: firebase.database.ServerValue.TIMESTAMP });
+    }, 60000);
+
+    return () => {
+      connectedRef.off('value', onConnected);
+      allPresenceRef.off('value', onPresence);
+      clearInterval(heartbeat);
+      presenceRef.update({ online: false, lastSeen: firebase.database.ServerValue.TIMESTAMP });
+    };
+  }, [username, firebaseReady]);
+
+  return { onlineUsers, myId: myIdRef.current };
+}
+
+// ============================
+// MESSAGE SYSTEM HOOK
+// ============================
+function useMessages(firebaseReady) {
+  const [messages, setMessages] = useState([]);
+
+  useEffect(() => {
+    if (!firebaseReady || !firebaseDb) return;
+    const msgRef = firebaseDb.ref('messages');
+    // Only listen to messages from last 24 hours
+    const since = Date.now() - 86400000;
+    const query = msgRef.orderByChild('timestamp').startAt(since);
+
+    const onMsg = query.on('child_added', (snap) => {
+      const msg = {id: snap.key, ...snap.val()};
+      setMessages(prev => {
+        if (prev.find(m => m.id === msg.id)) return prev;
+        return [...prev, msg].slice(-50); // keep last 50
+      });
+    });
+
+    return () => query.off('child_added', onMsg);
+  }, [firebaseReady]);
+
+  const sendMessage = (text, type, target) => {
+    if (!firebaseDb) return;
+    firebaseDb.ref('messages').push({
+      text,
+      type: type || 'broadcast',
+      target: target || 'all',
+      from: 'admin',
+      timestamp: firebase.database.ServerValue.TIMESTAMP
+    });
+  };
+
+  return { messages, sendMessage };
+}
+
+// ============================
+// TOAST NOTIFICATIONS
+// ============================
+function ToastContainer({ messages, myId }) {
+  const [visible, setVisible] = useState([]);
+  const seenRef = useRef(new Set());
+
+  useEffect(() => {
+    const newMsgs = messages.filter(m => {
+      if (seenRef.current.has(m.id)) return false;
+      if (m.type === 'direct' && m.target !== myId) return false;
+      // Only show messages from last 10 seconds
+      if (m.timestamp && Date.now() - m.timestamp > 10000) {
+        seenRef.current.add(m.id);
+        return false;
+      }
+      return true;
+    });
+    if (newMsgs.length > 0) {
+      newMsgs.forEach(m => seenRef.current.add(m.id));
+      setVisible(prev => [...prev, ...newMsgs]);
+      // Auto-remove after 5s
+      setTimeout(() => {
+        setVisible(prev => prev.filter(m => !newMsgs.find(n => n.id === m.id)));
+      }, 5000);
+    }
+  }, [messages]);
+
+  if (visible.length === 0) return null;
+  return React.createElement('div', {className:'toast-container'},
+    visible.map(m => React.createElement('div', {key:m.id, className:'toast toast-admin'},
+      React.createElement('div', {style:{fontWeight:700, fontSize:'0.8rem', color:'var(--accent2)', marginBottom:4}}, '\uD83D\uDCE3 From Admin'),
+      React.createElement('div', null, m.text)
+    ))
+  );
+}
+
+// ============================
+// ADMIN PANEL
+// ============================
+function AdminPanel({ onlineUsers, sendMessage, myId }) {
+  const [tab, setTab] = useState('users');
+  const [msgText, setMsgText] = useState('');
+  const [directTarget, setDirectTarget] = useState('all');
+  const [msgHistory, setMsgHistory] = useState([]);
+
+  const online = onlineUsers.filter(u => u.online);
+  const offline = onlineUsers.filter(u => !u.online);
+  // Sort online first, then by lastSeen
+  const now = Date.now();
+
+  const sendMsg = () => {
+    if (!msgText.trim()) return;
+    sendMessage(msgText.trim(), directTarget === 'all' ? 'broadcast' : 'direct', directTarget);
+    setMsgHistory(prev => [...prev, {text: msgText.trim(), target: directTarget, time: new Date().toLocaleTimeString()}]);
+    setMsgText('');
+  };
+
+  return React.createElement('div', {className:'admin-panel'},
+    React.createElement('div', {className:'admin-header'},
+      React.createElement('span', null, '\uD83D\uDD12 Admin Panel'),
+      React.createElement('span', {style:{fontSize:'0.85rem', fontWeight:400}}, online.length + ' online')
+    ),
+    React.createElement('div', {className:'admin-tabs'},
+      ['users', 'message', 'history'].map(t =>
+        React.createElement('button', {key:t, className:'admin-tab'+(tab===t?' active':''), onClick:()=>setTab(t)},
+          t === 'users' ? '\uD83D\uDC65 Users (' + online.length + ')' : t === 'message' ? '\uD83D\uDCE3 Send Message' : '\uD83D\uDCDC History'
+        )
+      )
+    ),
+    React.createElement('div', {className:'admin-content'},
+
+      // USERS TAB
+      tab === 'users' && React.createElement('div', null,
+        online.length === 0 && React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}}, 'No one else online right now.'),
+        online.map(u => React.createElement('div', {key:u.id, className:'online-user'},
+          React.createElement('div', {style:{display:'flex', alignItems:'center'}},
+            React.createElement('span', {className:'online-dot'}),
+            React.createElement('span', {style:{fontWeight:600}}, u.username || 'Anonymous'),
+            u.id === myId && React.createElement('span', {style:{marginLeft:8, fontSize:'0.75rem', color:'var(--accent)', fontWeight:600}}, '(you)')
+          ),
+          React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--text3)'}}, 'online now')
+        )),
+        offline.length > 0 && React.createElement('details', {style:{marginTop:12}},
+          React.createElement('summary', {style:{cursor:'pointer', color:'var(--text3)', fontSize:'0.85rem'}}, 'Recently offline (' + offline.length + ')'),
+          offline.slice(0, 20).map(u => React.createElement('div', {key:u.id, className:'online-user'},
+            React.createElement('div', {style:{display:'flex', alignItems:'center'}},
+              React.createElement('span', {className:'offline-dot'}),
+              React.createElement('span', null, u.username || 'Anonymous')
+            ),
+            React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--text3)'}},
+              u.lastSeen ? new Date(u.lastSeen).toLocaleString() : 'unknown'
+            )
+          ))
+        )
+      ),
+
+      // MESSAGE TAB
+      tab === 'message' && React.createElement('div', null,
+        React.createElement('div', {style:{marginBottom:12}},
+          React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', display:'block', marginBottom:6}}, 'Send to:'),
+          React.createElement('select', {style:{padding:'8px 12px', background:'var(--bg)', border:'1px solid var(--surface2)', borderRadius:8, color:'var(--text)', fontSize:'0.9rem', width:'100%'},
+            value:directTarget, onChange:e=>setDirectTarget(e.target.value)},
+            React.createElement('option', {value:'all'}, '\uD83D\uDCE2 Everyone online'),
+            online.filter(u=>u.id!==myId).map(u => React.createElement('option', {key:u.id, value:u.id}, u.username || u.id))
+          )
+        ),
+        React.createElement('textarea', {
+          style:{width:'100%', padding:'12px', background:'var(--bg)', border:'1px solid var(--surface2)', borderRadius:10, color:'var(--text)', fontSize:'0.9rem', minHeight:80, resize:'vertical'},
+          placeholder:'Type your message...', value:msgText, onChange:e=>setMsgText(e.target.value),
+          onKeyDown:e=>{ if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); } }
+        }),
+        React.createElement('button', {className:'btn btn-primary', style:{marginTop:8, width:'100%'}, onClick:sendMsg, disabled:!msgText.trim()},
+          '\uD83D\uDCE3 Send ' + (directTarget === 'all' ? 'to Everyone' : 'to ' + (online.find(u=>u.id===directTarget)?.username || 'user'))
+        )
+      ),
+
+      // HISTORY TAB
+      tab === 'history' && React.createElement('div', null,
+        msgHistory.length === 0 && React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}}, 'No messages sent this session.'),
+        msgHistory.slice().reverse().map((m, i) => React.createElement('div', {key:i, style:{padding:'8px 0', borderBottom:'1px solid var(--surface2)', fontSize:'0.9rem'}},
+          React.createElement('div', {style:{display:'flex', justifyContent:'space-between'}},
+            React.createElement('span', {style:{fontWeight:600}}, m.target === 'all' ? '\uD83D\uDCE2 Broadcast' : '\uD83D\uDCE8 Direct'),
+            React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.8rem'}}, m.time)
+          ),
+          React.createElement('div', {style:{color:'var(--text2)', marginTop:2}}, m.text)
+        ))
+      )
+    )
+  );
+}
+
+// ============================
+// FIREBASE SETUP COMPONENT
+// ============================
+function FirebaseSetup({ settings, update }) {
+  const [configText, setConfigText] = useState(settings.firebaseConfig || '');
+  const [status, setStatus] = useState(settings.firebaseConfig ? 'saved' : 'empty');
+  const [authUser, setAuthUser] = useState(null);
+
+  useEffect(() => {
+    if (firebaseAuth) {
+      return firebaseAuth.onAuthStateChanged(user => setAuthUser(user));
+    }
+  }, []);
+
+  const saveConfig = () => {
+    try {
+      const parsed = JSON.parse(configText);
+      if (!parsed.apiKey || !parsed.databaseURL) {
+        setStatus('error');
+        return;
+      }
+      localStorage.setItem(FIREBASE_SAVE_KEY, configText);
+      update('firebaseConfig', configText);
+      if (initFirebase(configText)) {
+        setStatus('saved');
+      } else {
+        setStatus('error');
+      }
+    } catch {
+      setStatus('error');
+    }
+  };
+
+  const signIn = async () => {
+    if (!firebaseAuth) return;
+    try {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      const result = await firebaseAuth.signInWithPopup(provider);
+      setAuthUser(result.user);
+      // Auto-save UID as admin
+      update('adminUid', result.user.uid);
+    } catch(e) {
+      console.error('Sign-in error:', e);
+    }
+  };
+
+  const signOut = () => {
+    if (firebaseAuth) firebaseAuth.signOut();
+    setAuthUser(null);
+  };
+
+  return React.createElement(React.Fragment, null,
+    // Config input
+    React.createElement('div', {className:'setting-row', style:{flexDirection:'column', alignItems:'flex-start', gap:8}},
+      React.createElement('div', null,
+        React.createElement('div', {className:'setting-label'}, 'Firebase Config'),
+        React.createElement('div', {className:'setting-desc'}, 'Paste the firebaseConfig JSON object from your Firebase console')
+      ),
+      React.createElement('textarea', {
+        style:{width:'100%', padding:'10px 14px', background:'var(--bg)', border:'1px solid ' + (status==='error'?'var(--red)':'var(--surface2)'), borderRadius:8, color:'var(--text)', fontSize:'0.8rem', fontFamily:'monospace', minHeight:90, resize:'vertical'},
+        placeholder:'{\n  "apiKey": "...",\n  "authDomain": "...",\n  "databaseURL": "...",\n  "projectId": "...",\n  ....\n}',
+        value:configText, onChange:e=>{setConfigText(e.target.value); setStatus('changed');}
+      }),
+      React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+        React.createElement('button', {className:'btn btn-primary btn-sm', onClick:saveConfig}, 'Save & Connect'),
+        status === 'saved' && React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--green)'}}, '\u2705 Connected'),
+        status === 'error' && React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--red)'}}, '\u274C Invalid config — make sure databaseURL is included')
+      )
+    ),
+
+    // Auth section
+    status === 'saved' && React.createElement('div', {className:'setting-row', style:{marginTop:12, flexDirection:'column', alignItems:'flex-start', gap:8}},
+      React.createElement('div', null,
+        React.createElement('div', {className:'setting-label'}, 'Admin Sign-In'),
+        React.createElement('div', {className:'setting-desc'}, 'Sign in with Google to access the admin panel. Your UID becomes the admin key.')
+      ),
+      !authUser ? React.createElement('button', {className:'btn btn-primary', style:{display:'flex', alignItems:'center', gap:8}, onClick:signIn},
+        '\uD83D\uDD10 Sign in with Google'
+      ) : React.createElement('div', {style:{display:'flex', alignItems:'center', gap:12, flexWrap:'wrap'}},
+        React.createElement('div', null,
+          React.createElement('div', {style:{fontWeight:600}}, authUser.displayName),
+          React.createElement('div', {style:{fontSize:'0.8rem', color:'var(--text3)'}}, authUser.email)
+        ),
+        React.createElement('div', {style:{fontSize:'0.75rem', color:'var(--accent)', fontFamily:'monospace', background:'var(--bg)', padding:'4px 8px', borderRadius:6}}, 'UID: ' + authUser.uid.substring(0, 12) + '...'),
+        settings.adminUid === authUser.uid && React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--green)', fontWeight:600}}, '\u2705 Admin'),
+        React.createElement('button', {className:'btn btn-outline btn-sm', onClick:signOut}, 'Sign Out')
+      )
+    )
+  );
+}
+
+// ============================
 // MAIN APP
 // ============================
 function App() {
   const [page, setPage] = useState('home');
   const [showCalc, setShowCalc] = useState(false);
   const [progress, setProgress] = useProgress();
+
+  // Firebase state
+  const [username, setUsername] = useState(localStorage.getItem('medmaster_username') || '');
+  const [firebaseReady, setFirebaseReady] = useState(!!firebaseApp);
+
+  // Check Firebase readiness whenever settings change
+  useEffect(() => {
+    const cfg = progress.settings?.firebaseConfig;
+    if (cfg && !firebaseApp) {
+      const ok = initFirebase(cfg);
+      if (ok) setFirebaseReady(true);
+    } else if (firebaseApp) {
+      setFirebaseReady(true);
+    }
+  }, [progress.settings?.firebaseConfig]);
+
+  // Hooks only activate when username + firebase are ready
+  const { onlineUsers, myId } = usePresence(username, firebaseReady);
+  const { messages, sendMessage } = useMessages(firebaseReady);
+
+  // Check if current user is admin (Google Auth UID matches)
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    if (firebaseAuth) {
+      return firebaseAuth.onAuthStateChanged(user => {
+        setIsAdmin(user && progress.settings?.adminUid && user.uid === progress.settings.adminUid);
+      });
+    }
+  }, [progress.settings?.adminUid]);
+
+  const handleSetUsername = (name) => {
+    localStorage.setItem('medmaster_username', name);
+    setUsername(name);
+  };
+
+  const onlineCount = onlineUsers.filter(u => u.online).length;
 
   const renderPage = () => {
     switch(page) {
@@ -5058,11 +5532,25 @@ function App() {
       case 'labday': return React.createElement(LabDayTest, {progress, setProgress});
       case 'smart': return React.createElement(SmartStudy, {progress, setProgress});
       case 'settings': return React.createElement(SettingsPage, {progress, setProgress});
+      case 'admin': return isAdmin ? React.createElement(AdminPanel, {onlineUsers, sendMessage, myId}) : React.createElement(HomeScreen, {onNav: setPage, progress});
       default: return React.createElement(HomeScreen, {onNav: setPage, progress});
     }
   };
 
   return React.createElement('div', {className:'app'},
+    // Username modal (shows on first visit when Firebase is configured)
+    !username && firebaseReady && React.createElement(UsernameModal, {onSet: handleSetUsername}),
+
+    // Toast notifications for admin messages
+    firebaseReady && username && React.createElement(ToastContainer, {messages, myId}),
+
+    // Online count badge (floating)
+    firebaseReady && username && onlineCount > 0 && React.createElement('div', {className:'online-count-badge',
+      title: onlineCount + ' user' + (onlineCount !== 1 ? 's' : '') + ' online',
+      onClick: isAdmin ? ()=>setPage('admin') : undefined,
+      style: isAdmin ? {cursor:'pointer'} : {}
+    }, onlineCount + ' \uD83D\uDFE2'),
+
     React.createElement('nav', {className:'nav'},
       React.createElement('div', {className:'nav-brand', onClick:()=>setPage('home'), style:{cursor:'pointer'}}, 'MedMaster'),
       page !== 'home' && React.createElement(React.Fragment, null,
@@ -5078,6 +5566,7 @@ function App() {
         React.createElement('button', {className:'nav-btn'+(page==='missed'?' active':''), onClick:()=>setPage('missed')},
           'Missed', (progress.missedQuestions || []).length > 0 ? ' (' + progress.missedQuestions.length + ')' : ''
         ),
+        isAdmin && React.createElement('button', {className:'nav-btn'+(page==='admin'?' active':''), style:page==='admin'?{background:'linear-gradient(135deg, #f59e0b, #ef4444)'}:{background:'rgba(245,158,11,0.15)', color:'#f59e0b'}, onClick:()=>setPage('admin')}, '\uD83D\uDD12 Admin'),
         React.createElement('button', {className:'nav-btn'+(page==='settings'?' active':''), onClick:()=>setPage('settings')}, '\u2699\uFE0F')
       )
     ),
