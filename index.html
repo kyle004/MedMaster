@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
-<meta name="app-version" content="7">
+<meta name="app-version" content="8">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
@@ -386,6 +386,8 @@
   /* ONLINE BADGE */
   .online-count-badge { position:fixed; bottom:80px; left:16px; padding:6px 12px; background:var(--surface); border:1px solid var(--surface2); border-radius:20px; font-size:0.8rem; color:var(--text2); z-index:100; cursor:pointer; display:flex; align-items:center; gap:6px; }
   .online-count-badge:hover { border-color:var(--accent); }
+  .nav-greeting { font-size:0.8rem; color:var(--text3); font-weight:400; margin-left:-4px; margin-right:4px; white-space:nowrap; }
+  @keyframes toast-shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
 
   /* UPDATE BANNER */
   .update-banner { position:fixed; top:0; left:0; right:0; z-index:10000; background:linear-gradient(135deg, var(--accent), var(--accent2)); color:white; text-align:center; padding:10px 16px; font-size:0.9rem; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:10px; box-shadow:0 2px 12px rgba(0,0,0,0.4); animation:slideDown 0.4s ease; }
@@ -5157,9 +5159,11 @@ function UsernameModal({ onSet }) {
 // ============================
 // PRESENCE SYSTEM HOOK
 // ============================
-function usePresence(username, firebaseReady) {
+function usePresence(username, firebaseReady, currentPage) {
   const [onlineUsers, setOnlineUsers] = useState([]);
   const myIdRef = useRef(localStorage.getItem('medmaster_visitor_id') || null);
+  const presenceRefRef = useRef(null);
+  const connectedAtRef = useRef(Date.now());
 
   useEffect(() => {
     if (!firebaseReady || !firebaseDb || !username) return;
@@ -5171,8 +5175,10 @@ function usePresence(username, firebaseReady) {
     }
     const myId = myIdRef.current;
     const presenceRef = firebaseDb.ref('presence/' + myId);
+    presenceRefRef.current = presenceRef;
     const allPresenceRef = firebaseDb.ref('presence');
     const connectedRef = firebaseDb.ref('.info/connected');
+    connectedAtRef.current = Date.now();
 
     // Set presence on connect
     const onConnected = connectedRef.on('value', (snap) => {
@@ -5181,7 +5187,9 @@ function usePresence(username, firebaseReady) {
           username: username,
           online: true,
           lastSeen: firebase.database.ServerValue.TIMESTAMP,
-          page: 'active'
+          connectedAt: connectedAtRef.current,
+          page: currentPage || 'home',
+          device: /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop'
         });
         presenceRef.onDisconnect().update({
           online: false,
@@ -5202,6 +5210,14 @@ function usePresence(username, firebaseReady) {
       presenceRef.update({ lastSeen: firebase.database.ServerValue.TIMESTAMP });
     }, 60000);
 
+    // Log visit to analytics
+    try {
+      firebaseDb.ref('analytics/visits').push({
+        username, timestamp: firebase.database.ServerValue.TIMESTAMP,
+        device: /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop'
+      });
+    } catch(e) {}
+
     return () => {
       connectedRef.off('value', onConnected);
       allPresenceRef.off('value', onPresence);
@@ -5209,6 +5225,13 @@ function usePresence(username, firebaseReady) {
       presenceRef.update({ online: false, lastSeen: firebase.database.ServerValue.TIMESTAMP });
     };
   }, [username, firebaseReady]);
+
+  // Update page in presence when navigation changes
+  useEffect(() => {
+    if (presenceRefRef.current && currentPage) {
+      presenceRefRef.current.update({ page: currentPage });
+    }
+  }, [currentPage]);
 
   return { onlineUsers, myId: myIdRef.current };
 }
@@ -5258,10 +5281,17 @@ function ToastContainer({ messages, myId }) {
   const [visible, setVisible] = useState([]);
   const seenRef = useRef(new Set());
 
+  const toastStyles = {
+    info:    { icon: '\uD83D\uDCE3', color: 'var(--accent2)', label: 'Announcement' },
+    warning: { icon: '\u26A0\uFE0F', color: '#f59e0b', label: 'Warning' },
+    urgent:  { icon: '\uD83D\uDEA8', color: 'var(--red)', label: 'Urgent' },
+    success: { icon: '\u2705', color: 'var(--green)', label: 'Good News' },
+  };
+
   useEffect(() => {
     const newMsgs = messages.filter(m => {
       if (seenRef.current.has(m.id)) return false;
-      if (m.type === 'direct' && m.target !== myId) return false;
+      if (m.target && m.target !== 'all' && m.target !== myId) return false;
       // Only show messages from last 10 seconds
       if (m.timestamp && Date.now() - m.timestamp > 10000) {
         seenRef.current.add(m.id);
@@ -5272,19 +5302,28 @@ function ToastContainer({ messages, myId }) {
     if (newMsgs.length > 0) {
       newMsgs.forEach(m => seenRef.current.add(m.id));
       setVisible(prev => [...prev, ...newMsgs]);
-      // Auto-remove after 5s
-      setTimeout(() => {
-        setVisible(prev => prev.filter(m => !newMsgs.find(n => n.id === m.id)));
+      // Auto-remove: urgent stays 8s, others 5s
+      const urgentMsgs = newMsgs.filter(m => m.msgStyle === 'urgent');
+      const normalMsgs = newMsgs.filter(m => m.msgStyle !== 'urgent');
+      if (normalMsgs.length > 0) setTimeout(() => {
+        setVisible(prev => prev.filter(m => !normalMsgs.find(n => n.id === m.id)));
       }, 5000);
+      if (urgentMsgs.length > 0) setTimeout(() => {
+        setVisible(prev => prev.filter(m => !urgentMsgs.find(n => n.id === m.id)));
+      }, 8000);
     }
   }, [messages]);
 
   if (visible.length === 0) return null;
   return React.createElement('div', {className:'toast-container'},
-    visible.map(m => React.createElement('div', {key:m.id, className:'toast toast-admin'},
-      React.createElement('div', {style:{fontWeight:700, fontSize:'0.8rem', color:'var(--accent2)', marginBottom:4}}, '\uD83D\uDCE3 From Admin'),
-      React.createElement('div', null, m.text)
-    ))
+    visible.map(m => {
+      const style = toastStyles[m.msgStyle] || toastStyles.info;
+      return React.createElement('div', {key:m.id, className:'toast toast-admin',
+        style: m.msgStyle === 'urgent' ? {borderColor:'var(--red)', animation:'toast-shake 0.4s ease-in-out'} : {}},
+        React.createElement('div', {style:{fontWeight:700, fontSize:'0.8rem', color:style.color, marginBottom:4}}, style.icon + ' ' + style.label),
+        React.createElement('div', null, m.text)
+      );
+    })
   );
 }
 
@@ -5295,47 +5334,112 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
   const [tab, setTab] = useState('users');
   const [msgText, setMsgText] = useState('');
   const [directTarget, setDirectTarget] = useState('all');
+  const [msgStyle, setMsgStyle] = useState('info');
   const [msgHistory, setMsgHistory] = useState([]);
+  const [visitStats, setVisitStats] = useState(null);
 
   const online = onlineUsers.filter(u => u.online);
-  const offline = onlineUsers.filter(u => !u.online);
-  // Sort online first, then by lastSeen
+  const offline = onlineUsers.filter(u => !u.online).sort((a,b) => (b.lastSeen||0) - (a.lastSeen||0));
   const now = Date.now();
+
+  // Load visit analytics
+  useEffect(() => {
+    if (!firebaseDb) return;
+    firebaseDb.ref('analytics/visits').orderByChild('timestamp').startAt(Date.now() - 7*86400000).once('value', snap => {
+      const data = snap.val() || {};
+      const visits = Object.values(data);
+      const uniqueUsers = new Set(visits.map(v => v.username));
+      const today = visits.filter(v => v.timestamp > Date.now() - 86400000);
+      const todayUnique = new Set(today.map(v => v.username));
+      setVisitStats({
+        totalVisits7d: visits.length,
+        uniqueUsers7d: uniqueUsers.size,
+        todayVisits: today.length,
+        todayUnique: todayUnique.size,
+        peakOnline: onlineUsers.length // current snapshot as baseline
+      });
+    });
+  }, []);
+
+  const pageLabels = {home:'Home', learn:'Formula Lab', guided:'Guided Practice', challenge:'Challenge', test:'Test Mode', analyze:'Analyzer', dashboard:'Stats', missed:'Missed Bank', pharm:'Pharmacology', labday:'Lab Day', smart:'Smart Study', settings:'Settings', admin:'Admin'};
+
+  const formatDuration = (ms) => {
+    if (!ms || ms < 0) return 'just now';
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return '<1m';
+    if (mins < 60) return mins + 'm';
+    return Math.floor(mins/60) + 'h ' + (mins%60) + 'm';
+  };
 
   const sendMsg = () => {
     if (!msgText.trim()) return;
-    sendMessage(msgText.trim(), directTarget === 'all' ? 'broadcast' : 'direct', directTarget);
-    setMsgHistory(prev => [...prev, {text: msgText.trim(), target: directTarget, time: new Date().toLocaleTimeString()}]);
+    const type = directTarget === 'all' ? 'broadcast' : 'direct';
+    if (!firebaseDb) return;
+    firebaseDb.ref('messages').push({
+      text: msgText.trim(),
+      type: type,
+      msgStyle: msgStyle,
+      target: directTarget,
+      from: 'admin',
+      timestamp: firebase.database.ServerValue.TIMESTAMP
+    });
+    setMsgHistory(prev => [...prev, {text: msgText.trim(), target: directTarget, style: msgStyle, time: new Date().toLocaleTimeString()}]);
     setMsgText('');
   };
+
+  const quickMessages = [
+    { text: 'Study session starting now! Join in!', style: 'info', icon: '\uD83D\uDCDA' },
+    { text: 'Great work everyone! Keep it up!', style: 'success', icon: '\uD83C\uDF89' },
+    { text: 'New questions have been added. Refresh your page!', style: 'info', icon: '\u2728' },
+    { text: 'Review session in 10 minutes!', style: 'warning', icon: '\u23F0' },
+  ];
+
+  const cleanupStale = () => {
+    if (!firebaseDb) return;
+    const cutoff = Date.now() - 7 * 86400000; // 7 days
+    const stale = onlineUsers.filter(u => !u.online && u.lastSeen && u.lastSeen < cutoff);
+    stale.forEach(u => firebaseDb.ref('presence/' + u.id).remove());
+  };
+
+  const tabList = ['users', 'message', 'analytics', 'history'];
 
   return React.createElement('div', {className:'admin-panel'},
     React.createElement('div', {className:'admin-header'},
       React.createElement('span', null, '\uD83D\uDD12 Admin Panel'),
-      React.createElement('span', {style:{fontSize:'0.85rem', fontWeight:400}}, online.length + ' online')
+      React.createElement('span', {style:{fontSize:'0.85rem', fontWeight:400}}, online.length + ' online now')
     ),
     React.createElement('div', {className:'admin-tabs'},
-      ['users', 'message', 'history'].map(t =>
+      tabList.map(t =>
         React.createElement('button', {key:t, className:'admin-tab'+(tab===t?' active':''), onClick:()=>setTab(t)},
-          t === 'users' ? '\uD83D\uDC65 Users (' + online.length + ')' : t === 'message' ? '\uD83D\uDCE3 Send Message' : '\uD83D\uDCDC History'
+          t === 'users' ? '\uD83D\uDC65 Users (' + online.length + ')' : t === 'message' ? '\uD83D\uDCE3 Message' : t === 'analytics' ? '\uD83D\uDCCA Analytics' : '\uD83D\uDCDC History'
         )
       )
     ),
     React.createElement('div', {className:'admin-content'},
 
-      // USERS TAB
+      // USERS TAB — enhanced with page tracking and session duration
       tab === 'users' && React.createElement('div', null,
         online.length === 0 && React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}}, 'No one else online right now.'),
-        online.map(u => React.createElement('div', {key:u.id, className:'online-user'},
-          React.createElement('div', {style:{display:'flex', alignItems:'center'}},
-            React.createElement('span', {className:'online-dot'}),
-            React.createElement('span', {style:{fontWeight:600}}, u.username || 'Anonymous'),
-            u.id === myId && React.createElement('span', {style:{marginLeft:8, fontSize:'0.75rem', color:'var(--accent)', fontWeight:600}}, '(you)')
+        online.map(u => React.createElement('div', {key:u.id, className:'online-user', style:{flexDirection:'column', alignItems:'flex-start', gap:4}},
+          React.createElement('div', {style:{display:'flex', alignItems:'center', width:'100%', justifyContent:'space-between'}},
+            React.createElement('div', {style:{display:'flex', alignItems:'center', gap:8}},
+              React.createElement('span', {className:'online-dot'}),
+              React.createElement('span', {style:{fontWeight:600}}, u.username || 'Anonymous'),
+              u.id === myId && React.createElement('span', {style:{fontSize:'0.7rem', color:'var(--accent)', fontWeight:600, background:'rgba(99,102,241,0.15)', padding:'2px 6px', borderRadius:4}}, 'you'),
+              u.device === 'mobile' && React.createElement('span', {style:{fontSize:'0.75rem'}}, '\uD83D\uDCF1')
+            ),
+            React.createElement('span', {style:{fontSize:'0.75rem', color:'var(--text3)'}},
+              u.connectedAt ? formatDuration(now - u.connectedAt) + ' session' : 'online')
           ),
-          React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--text3)'}}, 'online now')
+          React.createElement('div', {style:{fontSize:'0.8rem', color:'var(--accent)', marginLeft:20}},
+            '\uD83D\uDCCD ' + (pageLabels[u.page] || u.page || 'unknown'))
         )),
         offline.length > 0 && React.createElement('details', {style:{marginTop:12}},
-          React.createElement('summary', {style:{cursor:'pointer', color:'var(--text3)', fontSize:'0.85rem'}}, 'Recently offline (' + offline.length + ')'),
+          React.createElement('summary', {style:{cursor:'pointer', color:'var(--text3)', fontSize:'0.85rem', display:'flex', justifyContent:'space-between', alignItems:'center'}},
+            React.createElement('span', null, 'Recently offline (' + offline.length + ')'),
+            offline.filter(u => u.lastSeen && u.lastSeen < now - 7*86400000).length > 0 &&
+              React.createElement('button', {className:'btn btn-outline btn-sm', style:{fontSize:'0.7rem', padding:'2px 8px'}, onClick:e=>{e.stopPropagation(); cleanupStale();}}, 'Cleanup stale')
+          ),
           offline.slice(0, 20).map(u => React.createElement('div', {key:u.id, className:'online-user'},
             React.createElement('div', {style:{display:'flex', alignItems:'center'}},
               React.createElement('span', {className:'offline-dot'}),
@@ -5348,8 +5452,22 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
         )
       ),
 
-      // MESSAGE TAB
+      // MESSAGE TAB — enhanced with message types and quick actions
       tab === 'message' && React.createElement('div', null,
+        // Quick action buttons
+        React.createElement('div', {style:{marginBottom:16}},
+          React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', display:'block', marginBottom:8}}, 'Quick Actions:'),
+          React.createElement('div', {style:{display:'grid', gridTemplateColumns:'1fr 1fr', gap:8}},
+            quickMessages.map((qm, i) =>
+              React.createElement('button', {key:i, className:'btn btn-outline btn-sm', style:{textAlign:'left', padding:'8px 10px', fontSize:'0.8rem'},
+                onClick:() => {
+                  setMsgText(qm.text); setMsgStyle(qm.style);
+                }
+              }, qm.icon + ' ' + qm.text.substring(0, 30) + (qm.text.length > 30 ? '...' : ''))
+            )
+          )
+        ),
+        // Target selector
         React.createElement('div', {style:{marginBottom:12}},
           React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', display:'block', marginBottom:6}}, 'Send to:'),
           React.createElement('select', {style:{padding:'8px 12px', background:'var(--bg)', border:'1px solid var(--surface2)', borderRadius:8, color:'var(--text)', fontSize:'0.9rem', width:'100%'},
@@ -5358,6 +5476,17 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
             online.filter(u=>u.id!==myId).map(u => React.createElement('option', {key:u.id, value:u.id}, u.username || u.id))
           )
         ),
+        // Message style selector
+        React.createElement('div', {style:{marginBottom:12}},
+          React.createElement('label', {style:{fontSize:'0.85rem', color:'var(--text2)', display:'block', marginBottom:6}}, 'Style:'),
+          React.createElement('div', {style:{display:'flex', gap:6, flexWrap:'wrap'}},
+            [{v:'info',l:'\uD83D\uDCE3 Info'},{v:'success',l:'\u2705 Success'},{v:'warning',l:'\u26A0\uFE0F Warning'},{v:'urgent',l:'\uD83D\uDEA8 Urgent'}].map(s =>
+              React.createElement('button', {key:s.v, className:'btn btn-sm' + (msgStyle===s.v?' btn-primary':' btn-outline'),
+                style:{fontSize:'0.8rem', padding:'4px 10px'}, onClick:()=>setMsgStyle(s.v)}, s.l)
+            )
+          )
+        ),
+        // Message input
         React.createElement('textarea', {
           style:{width:'100%', padding:'12px', background:'var(--bg)', border:'1px solid var(--surface2)', borderRadius:10, color:'var(--text)', fontSize:'0.9rem', minHeight:80, resize:'vertical'},
           placeholder:'Type your message...', value:msgText, onChange:e=>setMsgText(e.target.value),
@@ -5368,12 +5497,57 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
         )
       ),
 
+      // ANALYTICS TAB — new
+      tab === 'analytics' && React.createElement('div', null,
+        React.createElement('div', {style:{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:20}},
+          [{label:'Online Now', value: online.length, color:'var(--green)'},
+           {label:'Total Users (7d)', value: visitStats?.uniqueUsers7d || '...', color:'var(--accent)'},
+           {label:'Visits Today', value: visitStats?.todayVisits || '...', color:'var(--accent2)'},
+           {label:'Unique Today', value: visitStats?.todayUnique || '...', color:'#f59e0b'}
+          ].map((stat, i) =>
+            React.createElement('div', {key:i, style:{background:'var(--surface)', borderRadius:12, padding:16, textAlign:'center'}},
+              React.createElement('div', {style:{fontSize:'1.8rem', fontWeight:700, color:stat.color}}, stat.value),
+              React.createElement('div', {style:{fontSize:'0.8rem', color:'var(--text3)', marginTop:4}}, stat.label)
+            )
+          )
+        ),
+        // Current activity breakdown
+        React.createElement('h4', {style:{marginBottom:8, fontSize:'0.9rem'}}, 'Current Activity'),
+        React.createElement('div', {style:{display:'flex', flexWrap:'wrap', gap:8}},
+          Object.entries(online.reduce((acc, u) => { const p = u.page || 'unknown'; acc[p] = (acc[p]||0)+1; return acc; }, {}))
+            .sort((a,b) => b[1]-a[1])
+            .map(([page, count]) =>
+              React.createElement('div', {key:page, style:{background:'var(--surface)', borderRadius:8, padding:'6px 12px', fontSize:'0.85rem'}},
+                React.createElement('span', {style:{fontWeight:600}}, count),
+                ' on ', React.createElement('span', {style:{color:'var(--accent)'}}, pageLabels[page] || page)
+              )
+            )
+        ),
+        online.length === 0 && React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:12, fontSize:'0.85rem'}}, 'No one online right now.'),
+
+        // Device breakdown
+        online.length > 0 && React.createElement('div', {style:{marginTop:16}},
+          React.createElement('h4', {style:{marginBottom:8, fontSize:'0.9rem'}}, 'Devices'),
+          React.createElement('div', {style:{display:'flex', gap:12}},
+            React.createElement('div', {style:{background:'var(--surface)', borderRadius:8, padding:'8px 16px', fontSize:'0.85rem'}},
+              '\uD83D\uDCBB Desktop: ' + online.filter(u => u.device !== 'mobile').length),
+            React.createElement('div', {style:{background:'var(--surface)', borderRadius:8, padding:'8px 16px', fontSize:'0.85rem'}},
+              '\uD83D\uDCF1 Mobile: ' + online.filter(u => u.device === 'mobile').length)
+          )
+        )
+      ),
+
       // HISTORY TAB
       tab === 'history' && React.createElement('div', null,
         msgHistory.length === 0 && React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}}, 'No messages sent this session.'),
         msgHistory.slice().reverse().map((m, i) => React.createElement('div', {key:i, style:{padding:'8px 0', borderBottom:'1px solid var(--surface2)', fontSize:'0.9rem'}},
-          React.createElement('div', {style:{display:'flex', justifyContent:'space-between'}},
-            React.createElement('span', {style:{fontWeight:600}}, m.target === 'all' ? '\uD83D\uDCE2 Broadcast' : '\uD83D\uDCE8 Direct'),
+          React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center'}},
+            React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+              React.createElement('span', {style:{fontWeight:600}}, m.target === 'all' ? '\uD83D\uDCE2 Broadcast' : '\uD83D\uDCE8 Direct'),
+              React.createElement('span', {style:{fontSize:'0.7rem', padding:'2px 6px', borderRadius:4, background:
+                m.style==='urgent'?'rgba(239,68,68,0.15)':m.style==='warning'?'rgba(245,158,11,0.15)':m.style==='success'?'rgba(16,185,129,0.15)':'rgba(99,102,241,0.15)',
+                color:m.style==='urgent'?'var(--red)':m.style==='warning'?'#f59e0b':m.style==='success'?'var(--green)':'var(--accent)'}}, m.style || 'info')
+            ),
             React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.8rem'}}, m.time)
           ),
           React.createElement('div', {style:{color:'var(--text2)', marginTop:2}}, m.text)
@@ -5498,7 +5672,7 @@ function App() {
   }, [progress.settings?.firebaseConfig]);
 
   // Hooks only activate when username + firebase are ready
-  const { onlineUsers, myId } = usePresence(username, firebaseReady);
+  const { onlineUsers, myId } = usePresence(username, firebaseReady, page);
   const { messages, sendMessage } = useMessages(firebaseReady);
 
   // Check if current user is admin (Google Auth UID matches)
@@ -5553,6 +5727,7 @@ function App() {
 
     React.createElement('nav', {className:'nav'},
       React.createElement('div', {className:'nav-brand', onClick:()=>setPage('home'), style:{cursor:'pointer'}}, 'MedMaster'),
+      username && React.createElement('span', {className:'nav-greeting'}, 'Hi, ' + username),
       page !== 'home' && React.createElement(React.Fragment, null,
         React.createElement('button', {className:'nav-btn'+(page==='labday'?' active':''), style:page==='labday'?{background:'var(--red)'}:{background:'rgba(239,68,68,0.15)', color:'var(--red)'}, onClick:()=>setPage('labday')}, '\uD83E\uDDEA Lab Day'),
         React.createElement('button', {className:'nav-btn'+(page==='learn'?' active':''), onClick:()=>setPage('learn')}, 'Formulas'),
