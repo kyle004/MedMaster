@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
-<meta name="app-version" content="8">
+<meta name="app-version" content="9">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
@@ -375,6 +375,15 @@
   .online-user { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--surface2); }
   .online-dot { width:8px; height:8px; border-radius:50%; background:var(--green); display:inline-block; margin-right:8px; animation:pulse 2s infinite; }
   .offline-dot { width:8px; height:8px; border-radius:50%; background:var(--text3); display:inline-block; margin-right:8px; }
+  .online-user-clickable { transition:background 0.15s; border-radius:8px; padding:10px 8px !important; margin:0 -8px; }
+  .online-user-clickable:hover { background:rgba(99,102,241,0.08); }
+
+  /* USER DETAIL DRAWER */
+  .user-detail-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; display:flex; justify-content:flex-end; animation:fadeInOverlay 0.2s ease; }
+  .user-detail-drawer { width:420px; max-width:90vw; height:100vh; background:var(--bg); border-left:1px solid var(--surface2); padding:20px; overflow-y:auto; animation:slideDrawer 0.25s ease; }
+  .user-detail-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; padding-bottom:16px; border-bottom:1px solid var(--surface2); }
+  @keyframes fadeInOverlay { from{opacity:0} to{opacity:1} }
+  @keyframes slideDrawer { from{transform:translateX(100%)} to{transform:translateX(0)} }
 
   /* TOAST MESSAGES */
   .toast-container { position:fixed; top:60px; right:16px; z-index:9998; display:flex; flex-direction:column; gap:8px; max-width:360px; }
@@ -5164,6 +5173,7 @@ function usePresence(username, firebaseReady, currentPage) {
   const myIdRef = useRef(localStorage.getItem('medmaster_visitor_id') || null);
   const presenceRefRef = useRef(null);
   const connectedAtRef = useRef(Date.now());
+  const sessionKeyRef = useRef(null);
 
   useEffect(() => {
     if (!firebaseReady || !firebaseDb || !username) return;
@@ -5179,6 +5189,14 @@ function usePresence(username, firebaseReady, currentPage) {
     const allPresenceRef = firebaseDb.ref('presence');
     const connectedRef = firebaseDb.ref('.info/connected');
     connectedAtRef.current = Date.now();
+
+    // Check if banned
+    firebaseDb.ref('bannedUsers/' + myId).once('value', (snap) => {
+      if (snap.val()) {
+        console.warn('User is banned from presence.');
+        return;
+      }
+    });
 
     // Set presence on connect
     const onConnected = connectedRef.on('value', (snap) => {
@@ -5210,19 +5228,45 @@ function usePresence(username, firebaseReady, currentPage) {
       presenceRef.update({ lastSeen: firebase.database.ServerValue.TIMESTAMP });
     }, 60000);
 
-    // Log visit to analytics
+    // Log visit + session start to analytics
     try {
       firebaseDb.ref('analytics/visits').push({
-        username, timestamp: firebase.database.ServerValue.TIMESTAMP,
+        username, userId: myId, timestamp: firebase.database.ServerValue.TIMESTAMP,
         device: /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop'
       });
+      // Log session start
+      const sessRef = firebaseDb.ref('analytics/sessions').push({
+        userId: myId, username, startTime: firebase.database.ServerValue.TIMESTAMP,
+        device: /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop',
+        endTime: null, durationMs: null
+      });
+      sessionKeyRef.current = sessRef.key;
     } catch(e) {}
+
+    // On disconnect, log session end
+    if (sessionKeyRef.current) {
+      try {
+        const sessEndRef = firebaseDb.ref('analytics/sessions/' + sessionKeyRef.current);
+        sessEndRef.onDisconnect().update({
+          endTime: firebase.database.ServerValue.TIMESTAMP
+        });
+      } catch(e) {}
+    }
 
     return () => {
       connectedRef.off('value', onConnected);
       allPresenceRef.off('value', onPresence);
       clearInterval(heartbeat);
       presenceRef.update({ online: false, lastSeen: firebase.database.ServerValue.TIMESTAMP });
+      // Finalize session
+      if (sessionKeyRef.current) {
+        try {
+          firebaseDb.ref('analytics/sessions/' + sessionKeyRef.current).update({
+            endTime: firebase.database.ServerValue.TIMESTAMP,
+            durationMs: Date.now() - connectedAtRef.current
+          });
+        } catch(e) {}
+      }
     };
   }, [username, firebaseReady]);
 
@@ -5234,6 +5278,70 @@ function usePresence(username, firebaseReady, currentPage) {
   }, [currentPage]);
 
   return { onlineUsers, myId: myIdRef.current };
+}
+
+// ============================
+// PROGRESS SYNC HOOK — pushes study stats to Firebase
+// ============================
+function useProgressSync(progress, username, firebaseReady) {
+  const syncedRef = useRef(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    if (!firebaseReady || !firebaseDb || !username) return;
+    const myId = localStorage.getItem('medmaster_visitor_id');
+    if (!myId) return;
+
+    // Debounce: sync 3s after last progress change
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      const stats = progress.questionStats || {};
+      const totalAttempts = Object.values(stats).reduce((s, q) => s + q.attempts, 0);
+      const totalCorrect = Object.values(stats).reduce((s, q) => s + q.correct, 0);
+      const questionsAttempted = Object.keys(stats).length;
+      const accuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
+      const testHistory = progress.testHistory || [];
+      const lastTest = testHistory.length > 0 ? testHistory[testHistory.length - 1] : null;
+      const avgTestScore = testHistory.length > 0
+        ? Math.round(testHistory.reduce((s, t) => s + (t.score || 0), 0) / testHistory.length)
+        : null;
+      const missedCount = (progress.missedQuestions || []).length;
+      const completedCount = (progress.completedQuestions || []).length;
+
+      firebaseDb.ref('userStats/' + myId).set({
+        username,
+        lastSync: firebase.database.ServerValue.TIMESTAMP,
+        totalAttempts,
+        totalCorrect,
+        questionsAttempted,
+        accuracy,
+        testsCompleted: testHistory.length,
+        avgTestScore,
+        lastTestScore: lastTest ? lastTest.score : null,
+        lastTestDate: lastTest ? lastTest.date : null,
+        missedCount,
+        completedCount,
+        studyStreak: progress.studyStreak || 0
+      });
+    }, 3000);
+
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [progress, username, firebaseReady]);
+}
+
+// ============================
+// STUDY STREAK TRACKER
+// ============================
+function updateStudyStreak(progress, setProgress) {
+  const today = new Date().toDateString();
+  const lastStudy = progress.lastStudyDate;
+  if (lastStudy === today) return; // already logged today
+
+  const yesterday = new Date(Date.now() - 86400000).toDateString();
+  const currentStreak = progress.studyStreak || 0;
+  const newStreak = lastStudy === yesterday ? currentStreak + 1 : 1;
+
+  setProgress(p => ({...p, lastStudyDate: today, studyStreak: newStreak}));
 }
 
 // ============================
@@ -5328,6 +5436,209 @@ function ToastContainer({ messages, myId }) {
 }
 
 // ============================
+// USER DETAIL PANEL (slide-out drawer)
+// ============================
+function UserDetailPanel({ user, onClose, onAction, myId }) {
+  const [userStats, setUserStats] = useState(null);
+  const [sessions, setSessions] = useState([]);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [confirmAction, setConfirmAction] = useState(null);
+  const now = Date.now();
+
+  useEffect(() => {
+    if (!firebaseDb || !user) return;
+    // Load user stats
+    firebaseDb.ref('userStats/' + user.id).once('value', snap => {
+      setUserStats(snap.val());
+    });
+    // Load user sessions (last 20)
+    firebaseDb.ref('analytics/sessions').orderByChild('userId').equalTo(user.id).limitToLast(20).once('value', snap => {
+      const data = snap.val() || {};
+      const list = Object.values(data).sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
+      setSessions(list);
+    });
+  }, [user]);
+
+  if (!user) return null;
+
+  const pageLabels = {home:'Home', learn:'Formula Lab', guided:'Guided Practice', challenge:'Challenge', test:'Test Mode', analyze:'Analyzer', dashboard:'Stats', missed:'Missed Bank', pharm:'Pharmacology', labday:'Lab Day', smart:'Smart Study', settings:'Settings', admin:'Admin'};
+
+  const formatDuration = (ms) => {
+    if (!ms || ms <= 0) return '--';
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return '<1m';
+    if (mins < 60) return mins + 'm';
+    const h = Math.floor(mins / 60);
+    return h + 'h ' + (mins % 60) + 'm';
+  };
+
+  const formatDate = (ts) => ts ? new Date(ts).toLocaleDateString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '--';
+
+  const totalSessionTime = sessions.reduce((sum, s) => sum + (s.durationMs || (s.endTime && s.startTime ? s.endTime - s.startTime : 0)), 0);
+  const isMe = user.id === myId;
+
+  const doAction = (action) => {
+    if (confirmAction === action) {
+      onAction(action, user);
+      setConfirmAction(null);
+      if (action === 'kick' || action === 'ban') onClose();
+    } else {
+      setConfirmAction(action);
+      setTimeout(() => setConfirmAction(null), 3000); // auto-cancel confirm
+    }
+  };
+
+  return React.createElement('div', {className:'user-detail-overlay', onClick:e=>{ if (e.target.className==='user-detail-overlay') onClose(); }},
+    React.createElement('div', {className:'user-detail-drawer'},
+      // Header
+      React.createElement('div', {className:'user-detail-header'},
+        React.createElement('div', {style:{display:'flex', alignItems:'center', gap:10}},
+          React.createElement('div', {style:{width:40, height:40, borderRadius:'50%', background: user.online ? 'linear-gradient(135deg, var(--accent), var(--accent2))' : 'var(--surface2)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.1rem', fontWeight:700, color:'white'}},
+            (user.username || 'A').charAt(0).toUpperCase()
+          ),
+          React.createElement('div', null,
+            React.createElement('div', {style:{fontWeight:700, fontSize:'1.1rem'}}, user.username || 'Anonymous'),
+            React.createElement('div', {style:{fontSize:'0.8rem', color: user.online ? 'var(--green)' : 'var(--text3)', display:'flex', alignItems:'center', gap:4}},
+              React.createElement('span', {className: user.online ? 'online-dot' : 'offline-dot'}),
+              user.online ? 'Online now' : 'Last seen ' + formatDate(user.lastSeen),
+              user.device === 'mobile' ? ' \uD83D\uDCF1' : ' \uD83D\uDCBB'
+            )
+          )
+        ),
+        React.createElement('button', {onClick:onClose, style:{background:'none', border:'none', color:'var(--text3)', fontSize:'1.5rem', cursor:'pointer', padding:4}}, '\u2715')
+      ),
+
+      // Current Activity (if online)
+      user.online && React.createElement('div', {style:{background:'rgba(99,102,241,0.1)', borderRadius:10, padding:12, margin:'0 0 16px', display:'flex', justifyContent:'space-between', alignItems:'center'}},
+        React.createElement('div', null,
+          React.createElement('div', {style:{fontSize:'0.8rem', color:'var(--text3)'}}, 'Currently on'),
+          React.createElement('div', {style:{fontWeight:600, color:'var(--accent)'}}, pageLabels[user.page] || user.page || 'Home')
+        ),
+        user.connectedAt && React.createElement('div', {style:{textAlign:'right'}},
+          React.createElement('div', {style:{fontSize:'0.8rem', color:'var(--text3)'}}, 'Session'),
+          React.createElement('div', {style:{fontWeight:600}}, formatDuration(now - user.connectedAt))
+        )
+      ),
+
+      // Tabs
+      React.createElement('div', {style:{display:'flex', gap:4, marginBottom:16, borderBottom:'1px solid var(--surface2)', paddingBottom:8}},
+        ['overview', 'sessions', 'manage'].map(t =>
+          React.createElement('button', {key:t, style:{padding:'6px 14px', borderRadius:8, border:'none', fontSize:'0.85rem', cursor:'pointer',
+            background: activeTab===t ? 'var(--accent)' : 'transparent', color: activeTab===t ? 'white' : 'var(--text3)', fontWeight: activeTab===t ? 600 : 400},
+            onClick:()=>setActiveTab(t)},
+            t === 'overview' ? '\uD83D\uDCCA Stats' : t === 'sessions' ? '\uD83D\uDD52 Sessions' : '\u2699\uFE0F Manage'
+          )
+        )
+      ),
+
+      // OVERVIEW TAB
+      activeTab === 'overview' && React.createElement('div', null,
+        !userStats ? React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}}, 'No study data synced yet. Stats appear once this user answers questions.') :
+        React.createElement(React.Fragment, null,
+          // Stat grid
+          React.createElement('div', {style:{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginBottom:16}},
+            [{l:'Accuracy', v:(userStats.accuracy||0)+'%', c: (userStats.accuracy||0) >= 80 ? 'var(--green)' : (userStats.accuracy||0) >= 60 ? '#f59e0b' : 'var(--red)'},
+             {l:'Questions', v:userStats.questionsAttempted||0, c:'var(--accent)'},
+             {l:'Attempts', v:userStats.totalAttempts||0, c:'var(--accent2)'},
+             {l:'Tests Done', v:userStats.testsCompleted||0, c:'var(--accent)'},
+             {l:'Avg Test', v:userStats.avgTestScore != null ? userStats.avgTestScore+'%' : '--', c: (userStats.avgTestScore||0) >= 80 ? 'var(--green)' : '#f59e0b'},
+             {l:'Missed', v:userStats.missedCount||0, c: (userStats.missedCount||0) > 5 ? 'var(--red)' : 'var(--text3)'}
+            ].map((s, i) =>
+              React.createElement('div', {key:i, style:{background:'var(--surface)', borderRadius:8, padding:'10px 8px', textAlign:'center'}},
+                React.createElement('div', {style:{fontSize:'1.3rem', fontWeight:700, color:s.c}}, s.v),
+                React.createElement('div', {style:{fontSize:'0.7rem', color:'var(--text3)', marginTop:2}}, s.l)
+              )
+            )
+          ),
+          // Progress bar
+          React.createElement('div', {style:{marginBottom:16}},
+            React.createElement('div', {style:{display:'flex', justifyContent:'space-between', fontSize:'0.8rem', color:'var(--text3)', marginBottom:4}},
+              React.createElement('span', null, 'Completion'),
+              React.createElement('span', null, (userStats.completedCount||0) + ' / ' + QUESTIONS.length + ' questions')
+            ),
+            React.createElement('div', {style:{height:8, background:'var(--surface2)', borderRadius:4, overflow:'hidden'}},
+              React.createElement('div', {style:{height:'100%', width:Math.min(100, Math.round(((userStats.completedCount||0)/QUESTIONS.length)*100))+'%', background:'linear-gradient(90deg, var(--accent), var(--green))', borderRadius:4, transition:'width 0.3s'}})
+            )
+          ),
+          // Study streak & last test
+          React.createElement('div', {style:{display:'flex', gap:12, flexWrap:'wrap'}},
+            userStats.studyStreak > 0 && React.createElement('div', {style:{background:'var(--surface)', borderRadius:8, padding:'8px 14px', fontSize:'0.85rem'}},
+              '\uD83D\uDD25 ' + userStats.studyStreak + ' day streak'
+            ),
+            userStats.lastTestDate && React.createElement('div', {style:{background:'var(--surface)', borderRadius:8, padding:'8px 14px', fontSize:'0.85rem'}},
+              'Last test: ' + userStats.lastTestScore + '% on ' + new Date(userStats.lastTestDate).toLocaleDateString()
+            )
+          ),
+          // Total study time
+          React.createElement('div', {style:{marginTop:16, background:'var(--surface)', borderRadius:10, padding:14}},
+            React.createElement('div', {style:{fontSize:'0.8rem', color:'var(--text3)', marginBottom:4}}, 'Total Study Time (tracked sessions)'),
+            React.createElement('div', {style:{fontSize:'1.4rem', fontWeight:700, color:'var(--accent)'}}, formatDuration(totalSessionTime))
+          )
+        )
+      ),
+
+      // SESSIONS TAB
+      activeTab === 'sessions' && React.createElement('div', null,
+        sessions.length === 0 ? React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}}, 'No sessions recorded yet.') :
+        React.createElement(React.Fragment, null,
+          React.createElement('div', {style:{fontSize:'0.85rem', color:'var(--text3)', marginBottom:12}}, sessions.length + ' sessions recorded'),
+          sessions.map((s, i) =>
+            React.createElement('div', {key:i, style:{padding:'10px 0', borderBottom:'1px solid var(--surface2)', display:'flex', justifyContent:'space-between', alignItems:'center'}},
+              React.createElement('div', null,
+                React.createElement('div', {style:{fontSize:'0.9rem', fontWeight:500}}, formatDate(s.startTime)),
+                React.createElement('div', {style:{fontSize:'0.8rem', color:'var(--text3)'}}, (s.device === 'mobile' ? '\uD83D\uDCF1' : '\uD83D\uDCBB') + ' ' + (s.device || 'desktop'))
+              ),
+              React.createElement('div', {style:{textAlign:'right'}},
+                React.createElement('div', {style:{fontWeight:600, color:'var(--accent)'}}, formatDuration(s.durationMs || (s.endTime && s.startTime ? s.endTime - s.startTime : 0))),
+                !s.endTime && s.startTime && React.createElement('div', {style:{fontSize:'0.7rem', color:'var(--green)'}}, 'active now')
+              )
+            )
+          )
+        )
+      ),
+
+      // MANAGE TAB
+      activeTab === 'manage' && React.createElement('div', null,
+        React.createElement('div', {style:{marginBottom:20}},
+          React.createElement('h4', {style:{fontSize:'0.9rem', marginBottom:12}}, 'Quick Message'),
+          React.createElement('button', {className:'btn btn-primary btn-sm', style:{width:'100%'}, onClick:() => onAction('dm', user)},
+            '\uD83D\uDCE8 Send Direct Message to ' + (user.username || 'this user'))
+        ),
+        React.createElement('div', {style:{marginBottom:20}},
+          React.createElement('h4', {style:{fontSize:'0.9rem', marginBottom:8}}, 'User Info'),
+          React.createElement('div', {style:{fontSize:'0.8rem', color:'var(--text3)', background:'var(--surface)', borderRadius:8, padding:12, fontFamily:'monospace', wordBreak:'break-all'}},
+            'ID: ' + user.id,
+            React.createElement('br'),
+            'Device: ' + (user.device || 'unknown'),
+            React.createElement('br'),
+            'First seen: ' + (sessions.length > 0 ? formatDate(sessions[sessions.length-1].startTime) : 'unknown')
+          )
+        ),
+        !isMe && React.createElement(React.Fragment, null,
+          React.createElement('div', {style:{borderTop:'1px solid var(--surface2)', paddingTop:16}},
+            React.createElement('h4', {style:{fontSize:'0.9rem', marginBottom:12, color:'var(--red)'}}, 'Danger Zone'),
+            React.createElement('div', {style:{display:'flex', flexDirection:'column', gap:8}},
+              React.createElement('button', {className:'btn btn-outline btn-sm', style:{borderColor: confirmAction==='kick'?'var(--red)':'var(--surface2)', color: confirmAction==='kick'?'var(--red)':'var(--text2)'},
+                onClick:()=>doAction('kick')},
+                confirmAction === 'kick' ? '\u26A0\uFE0F Click again to confirm kick' : '\uD83D\uDC62 Kick User (remove from online)'
+              ),
+              React.createElement('button', {className:'btn btn-outline btn-sm', style:{borderColor: confirmAction==='ban'?'var(--red)':'var(--surface2)', color: confirmAction==='ban'?'var(--red)':'var(--text2)'},
+                onClick:()=>doAction('ban')},
+                confirmAction === 'ban' ? '\u26A0\uFE0F Click again to confirm ban' : '\uD83D\uDEAB Ban User (block from presence)'
+              ),
+              React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>doAction('clearStats')},
+                confirmAction === 'clearStats' ? '\u26A0\uFE0F Click again to confirm clear' : '\uD83D\uDDD1\uFE0F Clear User Stats'
+              )
+            )
+          )
+        ),
+        isMe && React.createElement('p', {style:{color:'var(--text3)', fontSize:'0.85rem', textAlign:'center', marginTop:16}}, 'This is you — management actions are disabled.')
+      )
+    )
+  );
+}
+
+// ============================
 // ADMIN PANEL
 // ============================
 function AdminPanel({ onlineUsers, sendMessage, myId }) {
@@ -5337,6 +5648,7 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
   const [msgStyle, setMsgStyle] = useState('info');
   const [msgHistory, setMsgHistory] = useState([]);
   const [visitStats, setVisitStats] = useState(null);
+  const [selectedUser, setSelectedUser] = useState(null);
 
   const online = onlineUsers.filter(u => u.online);
   const offline = onlineUsers.filter(u => !u.online).sort((a,b) => (b.lastSeen||0) - (a.lastSeen||0));
@@ -5401,9 +5713,29 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
     stale.forEach(u => firebaseDb.ref('presence/' + u.id).remove());
   };
 
+  const handleUserAction = (action, user) => {
+    if (!firebaseDb) return;
+    if (action === 'kick') {
+      firebaseDb.ref('presence/' + user.id).update({ online: false, lastSeen: firebase.database.ServerValue.TIMESTAMP });
+    } else if (action === 'ban') {
+      firebaseDb.ref('presence/' + user.id).update({ online: false, banned: true, lastSeen: firebase.database.ServerValue.TIMESTAMP });
+      firebaseDb.ref('bannedUsers/' + user.id).set({ username: user.username, bannedAt: firebase.database.ServerValue.TIMESTAMP });
+    } else if (action === 'clearStats') {
+      firebaseDb.ref('userStats/' + user.id).remove();
+    } else if (action === 'dm') {
+      setSelectedUser(null);
+      setTab('message');
+      setDirectTarget(user.id);
+    }
+  };
+
   const tabList = ['users', 'message', 'analytics', 'history'];
 
   return React.createElement('div', {className:'admin-panel'},
+    // User detail drawer
+    selectedUser && React.createElement(UserDetailPanel, {
+      user: selectedUser, onClose: ()=>setSelectedUser(null), onAction: handleUserAction, myId
+    }),
     React.createElement('div', {className:'admin-header'},
       React.createElement('span', null, '\uD83D\uDD12 Admin Panel'),
       React.createElement('span', {style:{fontSize:'0.85rem', fontWeight:400}}, online.length + ' online now')
@@ -5420,7 +5752,7 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
       // USERS TAB — enhanced with page tracking and session duration
       tab === 'users' && React.createElement('div', null,
         online.length === 0 && React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}}, 'No one else online right now.'),
-        online.map(u => React.createElement('div', {key:u.id, className:'online-user', style:{flexDirection:'column', alignItems:'flex-start', gap:4}},
+        online.map(u => React.createElement('div', {key:u.id, className:'online-user online-user-clickable', style:{flexDirection:'column', alignItems:'flex-start', gap:4, cursor:'pointer'}, onClick:()=>setSelectedUser(u)},
           React.createElement('div', {style:{display:'flex', alignItems:'center', width:'100%', justifyContent:'space-between'}},
             React.createElement('div', {style:{display:'flex', alignItems:'center', gap:8}},
               React.createElement('span', {className:'online-dot'}),
@@ -5440,7 +5772,7 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
             offline.filter(u => u.lastSeen && u.lastSeen < now - 7*86400000).length > 0 &&
               React.createElement('button', {className:'btn btn-outline btn-sm', style:{fontSize:'0.7rem', padding:'2px 8px'}, onClick:e=>{e.stopPropagation(); cleanupStale();}}, 'Cleanup stale')
           ),
-          offline.slice(0, 20).map(u => React.createElement('div', {key:u.id, className:'online-user'},
+          offline.slice(0, 20).map(u => React.createElement('div', {key:u.id, className:'online-user online-user-clickable', style:{cursor:'pointer'}, onClick:()=>setSelectedUser(u)},
             React.createElement('div', {style:{display:'flex', alignItems:'center'}},
               React.createElement('span', {className:'offline-dot'}),
               React.createElement('span', null, u.username || 'Anonymous')
@@ -5674,6 +6006,12 @@ function App() {
   // Hooks only activate when username + firebase are ready
   const { onlineUsers, myId } = usePresence(username, firebaseReady, page);
   const { messages, sendMessage } = useMessages(firebaseReady);
+  useProgressSync(progress, username, firebaseReady);
+
+  // Track study streak on load
+  useEffect(() => {
+    if (username) updateStudyStreak(progress, setProgress);
+  }, [username]);
 
   // Check if current user is admin (Google Auth UID matches)
   const [isAdmin, setIsAdmin] = useState(false);
