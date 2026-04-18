@@ -5177,6 +5177,20 @@ function AuthScreen({ onAuth }) {
 
   const clearForm = () => { setError(''); setLoading(false); };
 
+  const handleGoogleSignIn = async () => {
+    setLoading(true); setError('');
+    try {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      const cred = await firebaseAuth.signInWithPopup(provider);
+      onAuth(cred.user);
+    } catch(e) {
+      if (e.code !== 'auth/popup-closed-by-user') {
+        setError(e.message);
+      }
+    }
+    setLoading(false);
+  };
+
   const handleSignIn = async () => {
     if (!email.trim() || !password) { setError('Email and password are required.'); return; }
     setLoading(true); setError('');
@@ -5262,6 +5276,19 @@ function AuthScreen({ onAuth }) {
           style:{textAlign:'left', marginBottom:16, marginTop:0}, onChange:e=>setPassword(e.target.value), onKeyDown:handleKeyDown}),
         React.createElement('button', {className:'btn btn-primary', style:{width:'100%', padding:'12px', fontSize:'1rem', marginBottom:12},
           disabled:loading, onClick:handleSignIn}, loading ? 'Signing in...' : 'Sign In'),
+        // Divider
+        React.createElement('div', {style:{display:'flex', alignItems:'center', gap:12, margin:'4px 0 12px'}},
+          React.createElement('div', {style:{flex:1, height:1, background:'var(--surface2)'}}),
+          React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.8rem'}}, 'or'),
+          React.createElement('div', {style:{flex:1, height:1, background:'var(--surface2)'}})
+        ),
+        // Google sign-in button
+        React.createElement('button', {style:{width:'100%', padding:'12px', fontSize:'0.95rem', borderRadius:12, border:'1px solid var(--surface2)',
+          background:'var(--bg)', color:'var(--text)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:10, marginBottom:14},
+          disabled:loading, onClick:handleGoogleSignIn},
+          React.createElement('img', {src:'https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg', alt:'G', style:{width:20, height:20}}),
+          'Sign in with Google'
+        ),
         React.createElement('div', {style:{display:'flex', justifyContent:'space-between', fontSize:'0.85rem'}},
           React.createElement('span', {style:{color:'var(--accent)', cursor:'pointer'}, onClick:()=>{clearForm(); setMode('signup');}}, 'Create account'),
           React.createElement('span', {style:{color:'var(--text3)', cursor:'pointer'}, onClick:()=>{clearForm(); setMode('reset');}}, 'Forgot password?')
@@ -6342,15 +6369,17 @@ function App() {
     );
   }
 
-  return React.createElement('div', {className:'app'},
-    // Auth screen (shows when not signed in and Firebase is configured)
-    !authUser && firebaseReady && React.createElement(AuthScreen, {onAuth: handleAuth}),
+  // Auth gate — if not signed in, show ONLY the auth screen (no app behind it)
+  if (!authUser && firebaseReady) {
+    return React.createElement(AuthScreen, {onAuth: handleAuth});
+  }
 
+  return React.createElement('div', {className:'app'},
     // Toast notifications for admin messages
-    firebaseReady && authUser && React.createElement(ToastContainer, {messages, myId}),
+    firebaseReady && React.createElement(ToastContainer, {messages, myId}),
 
     // Online count badge (floating)
-    firebaseReady && authUser && onlineCount > 0 && React.createElement('div', {className:'online-count-badge',
+    firebaseReady && onlineCount > 0 && React.createElement('div', {className:'online-count-badge',
       title: onlineCount + ' user' + (onlineCount !== 1 ? 's' : '') + ' online',
       onClick: isAdmin ? ()=>setPage('admin') : undefined,
       style: isAdmin ? {cursor:'pointer'} : {}
@@ -6358,7 +6387,7 @@ function App() {
 
     React.createElement('nav', {className:'nav'},
       React.createElement('div', {className:'nav-brand', onClick:()=>setPage('home'), style:{cursor:'pointer'}}, 'MedMaster'),
-      authUser && React.createElement('span', {className:'nav-greeting'}, 'Hi, ' + username),
+      React.createElement('span', {className:'nav-greeting'}, 'Hi, ' + username),
       page !== 'home' && React.createElement(React.Fragment, null,
         React.createElement('button', {className:'nav-btn'+(page==='labday'?' active':''), style:page==='labday'?{background:'var(--red)'}:{background:'rgba(239,68,68,0.15)', color:'var(--red)'}, onClick:()=>setPage('labday')}, '\uD83E\uDDEA Lab Day'),
         React.createElement('button', {className:'nav-btn'+(page==='learn'?' active':''), onClick:()=>setPage('learn')}, 'Formulas'),
