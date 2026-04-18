@@ -4,10 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
-<meta name="app-version" content="9">
+<meta name="app-version" content="10">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
@@ -413,7 +412,7 @@
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel">
+<script>
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 // ============================
@@ -4909,7 +4908,7 @@ function SmartStudy({ progress, setProgress }) {
 // ============================
 // SETTINGS
 // ============================
-function SettingsPage({ progress, setProgress }) {
+function SettingsPage({ progress, setProgress, onSignOut, authUser }) {
   const settings = progress.settings || {};
 
   const update = (key, val) => {
@@ -5084,6 +5083,24 @@ function SettingsPage({ progress, setProgress }) {
         ),
         React.createElement('button', {className:'danger-btn', onClick:resetAllData}, '\uD83D\uDDD1 Reset')
       )
+    ),
+
+    // Account section
+    authUser && React.createElement('div', {className:'settings-section'},
+      React.createElement('h3', null, '\uD83D\uDC64 Account'),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Signed in as'),
+          React.createElement('div', {className:'setting-desc'}, (authUser.displayName || 'Anonymous') + ' \u2022 ' + (authUser.email || ''))
+        )
+      ),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Sign Out'),
+          React.createElement('div', {className:'setting-desc'}, 'Your progress is saved locally and will persist')
+        ),
+        onSignOut && React.createElement('button', {className:'btn btn-outline btn-sm', style:{color:'var(--red)', borderColor:'var(--red)'}, onClick:onSignOut}, 'Sign Out')
+      )
     )
   );
 }
@@ -5146,21 +5163,151 @@ const DEFAULT_FIREBASE_CONFIG = {
 })();
 
 // ============================
-// USERNAME MODAL
+// AUTH SCREEN (Sign Up / Sign In / Password Reset)
 // ============================
-function UsernameModal({ onSet }) {
-  const [name, setName] = useState('');
+function AuthScreen({ onAuth }) {
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup' | 'reset'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
+  const clearForm = () => { setError(''); setLoading(false); };
+
+  const handleSignIn = async () => {
+    if (!email.trim() || !password) { setError('Email and password are required.'); return; }
+    setLoading(true); setError('');
+    try {
+      const cred = await firebaseAuth.signInWithEmailAndPassword(email.trim(), password);
+      onAuth(cred.user);
+    } catch(e) {
+      const msgs = {
+        'auth/user-not-found': 'No account found with that email.',
+        'auth/wrong-password': 'Incorrect password.',
+        'auth/invalid-email': 'Invalid email address.',
+        'auth/too-many-requests': 'Too many attempts. Try again later.',
+        'auth/invalid-credential': 'Invalid email or password.'
+      };
+      setError(msgs[e.code] || e.message);
+    }
+    setLoading(false);
+  };
+
+  const handleSignUp = async () => {
+    if (!displayName.trim() || displayName.trim().length < 2) { setError('Display name must be at least 2 characters.'); return; }
+    if (!email.trim()) { setError('Email is required.'); return; }
+    if (password.length < 6) { setError('Password must be at least 6 characters.'); return; }
+    setLoading(true); setError('');
+    try {
+      const cred = await firebaseAuth.createUserWithEmailAndPassword(email.trim(), password);
+      await cred.user.updateProfile({ displayName: displayName.trim() });
+      onAuth(cred.user);
+    } catch(e) {
+      const msgs = {
+        'auth/email-already-in-use': 'An account already exists with that email.',
+        'auth/invalid-email': 'Invalid email address.',
+        'auth/weak-password': 'Password is too weak. Use at least 6 characters.'
+      };
+      setError(msgs[e.code] || e.message);
+    }
+    setLoading(false);
+  };
+
+  const handleReset = async () => {
+    if (!email.trim()) { setError('Enter your email to reset password.'); return; }
+    setLoading(true); setError('');
+    try {
+      await firebaseAuth.sendPasswordResetEmail(email.trim());
+      setResetSent(true);
+    } catch(e) {
+      const msgs = {
+        'auth/user-not-found': 'No account found with that email.',
+        'auth/invalid-email': 'Invalid email address.'
+      };
+      setError(msgs[e.code] || e.message);
+    }
+    setLoading(false);
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      if (mode === 'signin') handleSignIn();
+      else if (mode === 'signup') handleSignUp();
+      else if (mode === 'reset') handleReset();
+    }
+  };
+
+  // SIGN IN
+  if (mode === 'signin') {
+    return React.createElement('div', {className:'modal-overlay'},
+      React.createElement('div', {className:'modal-box'},
+        React.createElement('div', {style:{fontSize:'2.5rem', marginBottom:8}}, '\uD83D\uDC8A'),
+        React.createElement('h2', {style:{marginBottom:4}}, 'Welcome to MedMaster'),
+        React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:16}}, 'Sign in to track your progress.'),
+        error && React.createElement('div', {style:{background:'rgba(239,68,68,0.15)', color:'var(--red)', padding:'10px 14px', borderRadius:10, fontSize:'0.85rem', marginBottom:12, textAlign:'left'}}, error),
+        React.createElement('input', {className:'modal-input', placeholder:'Email', value:email, type:'email', autoComplete:'email',
+          style:{textAlign:'left', marginBottom:8, marginTop:0}, onChange:e=>setEmail(e.target.value), onKeyDown:handleKeyDown}),
+        React.createElement('input', {className:'modal-input', placeholder:'Password', value:password, type:'password', autoComplete:'current-password',
+          style:{textAlign:'left', marginBottom:16, marginTop:0}, onChange:e=>setPassword(e.target.value), onKeyDown:handleKeyDown}),
+        React.createElement('button', {className:'btn btn-primary', style:{width:'100%', padding:'12px', fontSize:'1rem', marginBottom:12},
+          disabled:loading, onClick:handleSignIn}, loading ? 'Signing in...' : 'Sign In'),
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', fontSize:'0.85rem'}},
+          React.createElement('span', {style:{color:'var(--accent)', cursor:'pointer'}, onClick:()=>{clearForm(); setMode('signup');}}, 'Create account'),
+          React.createElement('span', {style:{color:'var(--text3)', cursor:'pointer'}, onClick:()=>{clearForm(); setMode('reset');}}, 'Forgot password?')
+        )
+      )
+    );
+  }
+
+  // SIGN UP
+  if (mode === 'signup') {
+    return React.createElement('div', {className:'modal-overlay'},
+      React.createElement('div', {className:'modal-box'},
+        React.createElement('div', {style:{fontSize:'2.5rem', marginBottom:8}}, '\uD83C\uDF1F'),
+        React.createElement('h2', {style:{marginBottom:4}}, 'Create Your Account'),
+        React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:16}}, 'Join your classmates on MedMaster.'),
+        error && React.createElement('div', {style:{background:'rgba(239,68,68,0.15)', color:'var(--red)', padding:'10px 14px', borderRadius:10, fontSize:'0.85rem', marginBottom:12, textAlign:'left'}}, error),
+        React.createElement('input', {className:'modal-input', placeholder:'Display name (shown to classmates)', value:displayName, maxLength:20,
+          style:{textAlign:'left', marginBottom:8, marginTop:0}, onChange:e=>setDisplayName(e.target.value), onKeyDown:handleKeyDown}),
+        React.createElement('input', {className:'modal-input', placeholder:'Email', value:email, type:'email', autoComplete:'email',
+          style:{textAlign:'left', marginBottom:8, marginTop:0}, onChange:e=>setEmail(e.target.value), onKeyDown:handleKeyDown}),
+        React.createElement('input', {className:'modal-input', placeholder:'Password (6+ characters)', value:password, type:'password', autoComplete:'new-password',
+          style:{textAlign:'left', marginBottom:16, marginTop:0}, onChange:e=>setPassword(e.target.value), onKeyDown:handleKeyDown}),
+        React.createElement('button', {className:'btn btn-primary', style:{width:'100%', padding:'12px', fontSize:'1rem', marginBottom:12},
+          disabled:loading, onClick:handleSignUp}, loading ? 'Creating account...' : 'Sign Up'),
+        React.createElement('div', {style:{fontSize:'0.85rem', textAlign:'center'}},
+          React.createElement('span', {style:{color:'var(--text3)'}}, 'Already have an account? '),
+          React.createElement('span', {style:{color:'var(--accent)', cursor:'pointer'}, onClick:()=>{clearForm(); setMode('signin');}}, 'Sign in')
+        )
+      )
+    );
+  }
+
+  // PASSWORD RESET
   return React.createElement('div', {className:'modal-overlay'},
     React.createElement('div', {className:'modal-box'},
-      React.createElement('div', {style:{fontSize:'2.5rem', marginBottom:8}}, '\uD83D\uDC4B'),
-      React.createElement('h2', {style:{marginBottom:4}}, 'Welcome to MedMaster'),
-      React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:4}}, 'Pick a display name to get started.'),
-      React.createElement('input', {className:'modal-input', placeholder:'Your name...', value:name, maxLength:20,
-        onChange:e=>setName(e.target.value),
-        onKeyDown:e=>{ if (e.key==='Enter' && name.trim().length >= 2) onSet(name.trim()); }
-      }),
-      React.createElement('button', {className:'btn btn-primary', style:{width:'100%', padding:'12px', fontSize:'1rem'},
-        disabled:name.trim().length < 2, onClick:()=>onSet(name.trim())}, 'Continue')
+      React.createElement('div', {style:{fontSize:'2.5rem', marginBottom:8}}, '\uD83D\uDD11'),
+      React.createElement('h2', {style:{marginBottom:4}}, 'Reset Password'),
+      resetSent
+        ? React.createElement(React.Fragment, null,
+            React.createElement('div', {style:{background:'rgba(34,197,94,0.15)', color:'var(--green)', padding:'14px', borderRadius:10, fontSize:'0.9rem', marginBottom:16}},
+              'Password reset email sent! Check your inbox (and spam folder).'),
+            React.createElement('button', {className:'btn btn-primary', style:{width:'100%', padding:'12px', fontSize:'1rem'},
+              onClick:()=>{setResetSent(false); clearForm(); setMode('signin');}}, 'Back to Sign In')
+          )
+        : React.createElement(React.Fragment, null,
+            React.createElement('p', {style:{color:'var(--text2)', fontSize:'0.9rem', marginBottom:16}}, 'Enter your email and we\'ll send a reset link.'),
+            error && React.createElement('div', {style:{background:'rgba(239,68,68,0.15)', color:'var(--red)', padding:'10px 14px', borderRadius:10, fontSize:'0.85rem', marginBottom:12, textAlign:'left'}}, error),
+            React.createElement('input', {className:'modal-input', placeholder:'Email', value:email, type:'email', autoComplete:'email',
+              style:{textAlign:'left', marginBottom:16, marginTop:0}, onChange:e=>setEmail(e.target.value), onKeyDown:handleKeyDown}),
+            React.createElement('button', {className:'btn btn-primary', style:{width:'100%', padding:'12px', fontSize:'1rem', marginBottom:12},
+              disabled:loading, onClick:handleReset}, loading ? 'Sending...' : 'Send Reset Link'),
+            React.createElement('div', {style:{fontSize:'0.85rem', textAlign:'center'}},
+              React.createElement('span', {style:{color:'var(--accent)', cursor:'pointer'}, onClick:()=>{clearForm(); setMode('signin');}}, 'Back to Sign In')
+            )
+          )
     )
   );
 }
@@ -5168,22 +5315,21 @@ function UsernameModal({ onSet }) {
 // ============================
 // PRESENCE SYSTEM HOOK
 // ============================
-function usePresence(username, firebaseReady, currentPage) {
+function usePresence(authUser, firebaseReady, currentPage, isAdmin) {
   const [onlineUsers, setOnlineUsers] = useState([]);
-  const myIdRef = useRef(localStorage.getItem('medmaster_visitor_id') || null);
+  const [onlineCount, setOnlineCount] = useState(0);
+  const myIdRef = useRef(null);
   const presenceRefRef = useRef(null);
   const connectedAtRef = useRef(Date.now());
   const sessionKeyRef = useRef(null);
 
   useEffect(() => {
-    if (!firebaseReady || !firebaseDb || !username) return;
+    if (!firebaseReady || !firebaseDb || !authUser) return;
 
-    // Generate or retrieve visitor ID
-    if (!myIdRef.current) {
-      myIdRef.current = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
-      localStorage.setItem('medmaster_visitor_id', myIdRef.current);
-    }
+    // Use Firebase Auth UID as the user ID
+    myIdRef.current = authUser.uid;
     const myId = myIdRef.current;
+    const username = authUser.displayName || 'Anonymous';
     const presenceRef = firebaseDb.ref('presence/' + myId);
     presenceRefRef.current = presenceRef;
     const allPresenceRef = firebaseDb.ref('presence');
@@ -5216,31 +5362,53 @@ function usePresence(username, firebaseReady, currentPage) {
       }
     });
 
-    // Listen to all presence
-    const onPresence = allPresenceRef.on('value', (snap) => {
-      const data = snap.val() || {};
-      const users = Object.entries(data).map(([id, u]) => ({id, ...u}));
-      setOnlineUsers(users);
-    });
+    // Listen to presence — admin gets full list, regular users just get count
+    let onPresence;
+    let presenceListenRef = allPresenceRef; // what to .off() on cleanup
+    if (isAdmin) {
+      onPresence = allPresenceRef.on('value', (snap) => {
+        const data = snap.val() || {};
+        const users = Object.entries(data).map(([id, u]) => ({id, ...u}));
+        setOnlineUsers(users);
+        setOnlineCount(users.filter(u => u.online).length);
+      });
+    } else {
+      // Lightweight: only listen for online users to get count
+      presenceListenRef = allPresenceRef.orderByChild('online').equalTo(true);
+      onPresence = presenceListenRef.on('value', (snap) => {
+        const count = snap.numChildren();
+        setOnlineCount(count);
+      });
+    }
 
     // Update presence every 60s (heartbeat)
     const heartbeat = setInterval(() => {
       presenceRef.update({ lastSeen: firebase.database.ServerValue.TIMESTAMP });
     }, 60000);
 
-    // Log visit + session start to analytics
+    // Log visit + session start to analytics (throttled: 1 visit per session)
     try {
-      firebaseDb.ref('analytics/visits').push({
-        username, userId: myId, timestamp: firebase.database.ServerValue.TIMESTAMP,
-        device: /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop'
-      });
-      // Log session start
-      const sessRef = firebaseDb.ref('analytics/sessions').push({
-        userId: myId, username, startTime: firebase.database.ServerValue.TIMESTAMP,
-        device: /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop',
-        endTime: null, durationMs: null
-      });
-      sessionKeyRef.current = sessRef.key;
+      const visitKey = 'medmaster_visit_' + new Date().toDateString();
+      const visitCount = parseInt(sessionStorage.getItem(visitKey) || '0');
+      if (visitCount === 0) {
+        firebaseDb.ref('analytics/visits').push({
+          username, userId: myId, timestamp: firebase.database.ServerValue.TIMESTAMP,
+          device: /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop'
+        });
+      }
+      sessionStorage.setItem(visitKey, String(visitCount + 1));
+      // Log session start (one per browser session)
+      if (!sessionStorage.getItem('medmaster_session_logged')) {
+        const sessRef = firebaseDb.ref('analytics/sessions').push({
+          userId: myId, username, startTime: firebase.database.ServerValue.TIMESTAMP,
+          device: /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop',
+          endTime: null, durationMs: null
+        });
+        sessionKeyRef.current = sessRef.key;
+        sessionStorage.setItem('medmaster_session_logged', sessRef.key);
+      } else {
+        sessionKeyRef.current = sessionStorage.getItem('medmaster_session_logged');
+      }
     } catch(e) {}
 
     // On disconnect, log session end
@@ -5255,7 +5423,7 @@ function usePresence(username, firebaseReady, currentPage) {
 
     return () => {
       connectedRef.off('value', onConnected);
-      allPresenceRef.off('value', onPresence);
+      presenceListenRef.off('value', onPresence);
       clearInterval(heartbeat);
       presenceRef.update({ online: false, lastSeen: firebase.database.ServerValue.TIMESTAMP });
       // Finalize session
@@ -5268,7 +5436,7 @@ function usePresence(username, firebaseReady, currentPage) {
         } catch(e) {}
       }
     };
-  }, [username, firebaseReady]);
+  }, [authUser, firebaseReady, isAdmin]);
 
   // Update page in presence when navigation changes
   useEffect(() => {
@@ -5277,20 +5445,20 @@ function usePresence(username, firebaseReady, currentPage) {
     }
   }, [currentPage]);
 
-  return { onlineUsers, myId: myIdRef.current };
+  return { onlineUsers, onlineCount, myId: myIdRef.current };
 }
 
 // ============================
 // PROGRESS SYNC HOOK — pushes study stats to Firebase
 // ============================
-function useProgressSync(progress, username, firebaseReady) {
+function useProgressSync(progress, authUser, firebaseReady) {
   const syncedRef = useRef(false);
   const timerRef = useRef(null);
 
   useEffect(() => {
-    if (!firebaseReady || !firebaseDb || !username) return;
-    const myId = localStorage.getItem('medmaster_visitor_id');
-    if (!myId) return;
+    if (!firebaseReady || !firebaseDb || !authUser) return;
+    const myId = authUser.uid;
+    const username = authUser.displayName || 'Anonymous';
 
     // Debounce: sync 3s after last progress change
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -5326,7 +5494,7 @@ function useProgressSync(progress, username, firebaseReady) {
     }, 3000);
 
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [progress, username, firebaseReady]);
+  }, [progress, authUser, firebaseReady]);
 }
 
 // ============================
@@ -5983,14 +6151,50 @@ function FirebaseSetup({ settings, update }) {
 // ============================
 // MAIN APP
 // ============================
+// ============================
+// ERROR BOUNDARY
+// ============================
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error('MedMaster crashed:', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return React.createElement('div', {style:{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--text)', padding:32}},
+        React.createElement('div', {style:{textAlign:'center', maxWidth:400}},
+          React.createElement('div', {style:{fontSize:'3rem', marginBottom:16}}, '\uD83D\uDEE0\uFE0F'),
+          React.createElement('h2', {style:{marginBottom:8}}, 'Something went wrong'),
+          React.createElement('p', {style:{color:'var(--text2)', marginBottom:20, fontSize:'0.9rem'}}, 'MedMaster hit an unexpected error. Your progress is saved.'),
+          React.createElement('button', {className:'btn btn-primary', style:{padding:'12px 32px', fontSize:'1rem'},
+            onClick:() => window.location.reload()}, 'Reload App'),
+          React.createElement('details', {style:{marginTop:20, textAlign:'left', fontSize:'0.8rem', color:'var(--text3)'}},
+            React.createElement('summary', {style:{cursor:'pointer'}}, 'Error details'),
+            React.createElement('pre', {style:{marginTop:8, padding:12, background:'var(--surface)', borderRadius:8, overflow:'auto', maxHeight:200, whiteSpace:'pre-wrap'}},
+              this.state.error ? this.state.error.toString() : 'Unknown error')
+          )
+        )
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   const [page, setPage] = useState('home');
   const [showCalc, setShowCalc] = useState(false);
   const [progress, setProgress] = useProgress();
 
   // Firebase state
-  const [username, setUsername] = useState(localStorage.getItem('medmaster_username') || '');
   const [firebaseReady, setFirebaseReady] = useState(!!firebaseApp);
+  const [authUser, setAuthUser] = useState(null); // Firebase Auth user object
+  const [authLoading, setAuthLoading] = useState(true); // true until auth state resolves
 
   // Check Firebase readiness whenever settings change
   useEffect(() => {
@@ -6003,32 +6207,44 @@ function App() {
     }
   }, [progress.settings?.firebaseConfig]);
 
-  // Hooks only activate when username + firebase are ready
-  const { onlineUsers, myId } = usePresence(username, firebaseReady, page);
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    if (!firebaseReady || !firebaseAuth) { setAuthLoading(false); return; }
+    const unsub = firebaseAuth.onAuthStateChanged(user => {
+      setAuthUser(user);
+      setAuthLoading(false);
+    });
+    return unsub;
+  }, [firebaseReady]);
+
+  // Derived values
+  const username = authUser ? (authUser.displayName || 'Anonymous') : '';
+  const isAdmin = !!(authUser && progress.settings?.adminUid && authUser.uid === progress.settings.adminUid);
+
+  // Hooks only activate when auth user + firebase are ready
+  const { onlineUsers, onlineCount, myId } = usePresence(authUser, firebaseReady, page, isAdmin);
   const { messages, sendMessage } = useMessages(firebaseReady);
-  useProgressSync(progress, username, firebaseReady);
+  useProgressSync(progress, authUser, firebaseReady);
 
   // Track study streak on load
   useEffect(() => {
-    if (username) updateStudyStreak(progress, setProgress);
-  }, [username]);
+    if (authUser) updateStudyStreak(progress, setProgress);
+  }, [authUser]);
 
-  // Check if current user is admin (Google Auth UID matches)
-  const [isAdmin, setIsAdmin] = useState(false);
-  useEffect(() => {
-    if (firebaseAuth) {
-      return firebaseAuth.onAuthStateChanged(user => {
-        setIsAdmin(user && progress.settings?.adminUid && user.uid === progress.settings.adminUid);
-      });
+  const handleAuth = (user) => {
+    setAuthUser(user);
+    // Migrate old localStorage username if present
+    const oldName = localStorage.getItem('medmaster_username');
+    if (oldName && !user.displayName) {
+      user.updateProfile({ displayName: oldName }).catch(()=>{});
     }
-  }, [progress.settings?.adminUid]);
-
-  const handleSetUsername = (name) => {
-    localStorage.setItem('medmaster_username', name);
-    setUsername(name);
   };
 
-  const onlineCount = onlineUsers.filter(u => u.online).length;
+  const handleSignOut = () => {
+    firebaseAuth.signOut();
+    setAuthUser(null);
+    setPage('home');
+  };
 
   const renderPage = () => {
     switch(page) {
@@ -6043,21 +6259,31 @@ function App() {
       case 'pharm': return React.createElement(PharmHub, {progress, setProgress});
       case 'labday': return React.createElement(LabDayTest, {progress, setProgress});
       case 'smart': return React.createElement(SmartStudy, {progress, setProgress});
-      case 'settings': return React.createElement(SettingsPage, {progress, setProgress});
+      case 'settings': return React.createElement(SettingsPage, {progress, setProgress, onSignOut: handleSignOut, authUser});
       case 'admin': return isAdmin ? React.createElement(AdminPanel, {onlineUsers, sendMessage, myId}) : React.createElement(HomeScreen, {onNav: setPage, progress});
       default: return React.createElement(HomeScreen, {onNav: setPage, progress});
     }
   };
 
+  // Show loading spinner while auth state resolves
+  if (authLoading) {
+    return React.createElement('div', {className:'app', style:{display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh'}},
+      React.createElement('div', {style:{textAlign:'center', color:'var(--text3)'}},
+        React.createElement('div', {style:{fontSize:'2rem', marginBottom:12}}, '\uD83D\uDC8A'),
+        React.createElement('div', null, 'Loading MedMaster...')
+      )
+    );
+  }
+
   return React.createElement('div', {className:'app'},
-    // Username modal (shows on first visit when Firebase is configured)
-    !username && firebaseReady && React.createElement(UsernameModal, {onSet: handleSetUsername}),
+    // Auth screen (shows when not signed in and Firebase is configured)
+    !authUser && firebaseReady && React.createElement(AuthScreen, {onAuth: handleAuth}),
 
     // Toast notifications for admin messages
-    firebaseReady && username && React.createElement(ToastContainer, {messages, myId}),
+    firebaseReady && authUser && React.createElement(ToastContainer, {messages, myId}),
 
     // Online count badge (floating)
-    firebaseReady && username && onlineCount > 0 && React.createElement('div', {className:'online-count-badge',
+    firebaseReady && authUser && onlineCount > 0 && React.createElement('div', {className:'online-count-badge',
       title: onlineCount + ' user' + (onlineCount !== 1 ? 's' : '') + ' online',
       onClick: isAdmin ? ()=>setPage('admin') : undefined,
       style: isAdmin ? {cursor:'pointer'} : {}
@@ -6065,7 +6291,7 @@ function App() {
 
     React.createElement('nav', {className:'nav'},
       React.createElement('div', {className:'nav-brand', onClick:()=>setPage('home'), style:{cursor:'pointer'}}, 'MedMaster'),
-      username && React.createElement('span', {className:'nav-greeting'}, 'Hi, ' + username),
+      authUser && React.createElement('span', {className:'nav-greeting'}, 'Hi, ' + username),
       page !== 'home' && React.createElement(React.Fragment, null,
         React.createElement('button', {className:'nav-btn'+(page==='labday'?' active':''), style:page==='labday'?{background:'var(--red)'}:{background:'rgba(239,68,68,0.15)', color:'var(--red)'}, onClick:()=>setPage('labday')}, '\uD83E\uDDEA Lab Day'),
         React.createElement('button', {className:'nav-btn'+(page==='learn'?' active':''), onClick:()=>setPage('learn')}, 'Formulas'),
@@ -6088,21 +6314,21 @@ function App() {
   );
 }
 
-ReactDOM.render(React.createElement(App), document.getElementById('root'));
+ReactDOM.render(React.createElement(ErrorBoundary, null, React.createElement(App)), document.getElementById('root'));
 </script>
 
 <!-- Auto-update checker -->
 <script>
 (function() {
   var currentVersion = document.querySelector('meta[name="app-version"]').content;
-  var checkInterval = 30000; // check every 30 seconds
+  var checkInterval = 300000; // check every 5 minutes
 
   function checkForUpdate() {
-    fetch(window.location.href + '?_nocache=' + Date.now(), { cache: 'no-store' })
-      .then(function(r) { return r.text(); })
-      .then(function(html) {
-        var match = html.match(/name="app-version"\s+content="(\d+)"/);
-        if (match && match[1] !== currentVersion) {
+    var base = window.location.href.replace(/[^/]*$/, '');
+    fetch(base + 'version.json?_t=' + Date.now(), { cache: 'no-store' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data && data.version && data.version !== currentVersion) {
           showUpdateBanner();
         }
       })
