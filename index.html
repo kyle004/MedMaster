@@ -6959,6 +6959,7 @@ function App() {
   const [firebaseReady, setFirebaseReady] = useState(!!firebaseApp);
   const [authUser, setAuthUser] = useState(null); // Firebase Auth user object
   const [authLoading, setAuthLoading] = useState(true); // true until auth state resolves
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Check Firebase readiness whenever settings change
   useEffect(() => {
@@ -7077,8 +7078,6 @@ function App() {
     return React.createElement(AuthScreen, {onAuth: handleAuth});
   }
 
-  // Sidebar state
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const missedCount = (progress.missedQuestions || []).length;
 
   const navTo = (p) => { setPage(p); setSidebarOpen(false); };
