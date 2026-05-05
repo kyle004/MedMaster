@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
-<meta name="app-version" content="16">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b82f6'/%3E%3Cstop offset='1' stop-color='%236366f1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M32 12c-2.5 0-4.5 1-4.5 3v9h-7c-2 0-3 2-3 4.5s1 4.5 3 4.5h7v9h-7c-2 0-3 2-3 4.5s1 4.5 3 4.5h7v1c0 2 2 3.5 4.5 3.5s4.5-1.5 4.5-3.5v-1h7c2 0 3-2 3-4.5s-1-4.5-3-4.5h-7v-9h7c2 0 3-2 3-4.5s-1-4.5-3-4.5h-7v-9c0-2-2-3-4.5-3z' fill='white' opacity='0.95'/%3E%3C/svg%3E">
+<meta name="app-version" content="17">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <!-- Firebase SDK -->
@@ -134,17 +135,37 @@
   .mc-letter { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; background:var(--surface2); font-size:0.85rem; flex-shrink:0; }
 
   /* CALCULATOR */
-  .calc-toggle { position:fixed; bottom:20px; right:20px; width:56px; height:56px; border-radius:50%; background:var(--accent); color:white; border:none; cursor:pointer; font-size:1.4rem; box-shadow:0 4px 20px rgba(59,130,246,0.4); z-index:100; display:flex; align-items:center; justify-content:center; }
-  .calculator { position:fixed; bottom:90px; right:20px; width:280px; background:var(--surface); border-radius:16px; box-shadow:0 8px 32px rgba(0,0,0,0.5); z-index:100; overflow:hidden; border:1px solid var(--surface2); }
-  .calc-display { padding:16px; text-align:right; }
-  .calc-expr { font-size:0.8rem; color:var(--text3); min-height:20px; }
-  .calc-value { font-size:1.8rem; font-weight:700; font-family:'Courier New',monospace; word-break:break-all; }
-  .calc-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:2px; padding:2px; }
-  .calc-btn { padding:14px; border:none; cursor:pointer; font-size:1rem; font-weight:600; background:var(--bg); color:var(--text); transition:background 0.1s; }
-  .calc-btn:hover { background:var(--surface2); }
-  .calc-btn.op { color:var(--accent); }
-  .calc-btn.eq { background:var(--accent); color:white; }
-  .calc-btn.clear { color:var(--red); }
+  .calc-toggle { position:fixed; bottom:20px; right:20px; width:56px; height:56px; border-radius:16px; background:var(--bg); color:var(--text); border:1px solid var(--surface2); cursor:pointer; font-size:1rem; box-shadow:0 4px 20px rgba(0,0,0,0.3); z-index:100; display:flex; align-items:center; justify-content:center; transition:transform 0.15s,box-shadow 0.15s; }
+  .calc-toggle:hover { transform:scale(1.08); box-shadow:0 6px 24px rgba(0,0,0,0.4); }
+  .calc-toggle:active { transform:scale(0.95); }
+  .calc-toggle svg { width:28px; height:28px; }
+  .calculator { position:fixed; bottom:90px; right:20px; width:320px; background:#1c1c1e; border-radius:20px; box-shadow:0 12px 48px rgba(0,0,0,0.6); z-index:100; overflow:hidden; border:1px solid rgba(255,255,255,0.08); display:flex; flex-direction:column; max-height:min(580px,calc(100vh - 120px)); }
+  .calc-header { display:flex; justify-content:space-between; align-items:center; padding:10px 14px 0; }
+  .calc-header button { background:none; border:none; color:var(--text3); cursor:pointer; font-size:0.8rem; padding:4px 8px; border-radius:6px; }
+  .calc-header button:hover { background:rgba(255,255,255,0.08); color:var(--text); }
+  .calc-display { padding:8px 20px 4px; text-align:right; }
+  .calc-expr { font-size:0.85rem; color:rgba(255,255,255,0.4); min-height:22px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .calc-value { font-size:2.6rem; font-weight:300; font-family:-apple-system,system-ui,sans-serif; word-break:break-all; color:#fff; line-height:1.15; min-height:48px; letter-spacing:-1px; }
+  .calc-history { max-height:0; overflow:hidden; transition:max-height 0.3s ease; }
+  .calc-history.open { max-height:160px; }
+  .calc-history-inner { padding:0 14px 8px; max-height:150px; overflow-y:auto; }
+  .calc-history-item { display:flex; justify-content:space-between; padding:4px 6px; font-size:0.78rem; color:rgba(255,255,255,0.35); border-bottom:1px solid rgba(255,255,255,0.04); }
+  .calc-history-item:hover { color:rgba(255,255,255,0.6); cursor:pointer; }
+  .calc-history-expr { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .calc-history-result { font-weight:600; color:rgba(255,255,255,0.5); margin-left:8px; white-space:nowrap; }
+  .calc-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; padding:4px 8px 10px; }
+  .calc-btn { height:52px; border:none; border-radius:50%; cursor:pointer; font-size:1.25rem; font-weight:400; background:rgba(255,255,255,0.08); color:#fff; transition:background 0.1s,transform 0.08s; display:flex; align-items:center; justify-content:center; margin:3px; user-select:none; -webkit-user-select:none; font-family:-apple-system,system-ui,sans-serif; }
+  .calc-btn:hover { background:rgba(255,255,255,0.15); }
+  .calc-btn:active { transform:scale(0.92); background:rgba(255,255,255,0.2); }
+  .calc-btn.op { background:rgba(59,130,246,0.2); color:var(--accent); font-size:1.4rem; }
+  .calc-btn.op:hover { background:rgba(59,130,246,0.35); }
+  .calc-btn.op.active { background:var(--accent); color:#fff; }
+  .calc-btn.eq { background:var(--accent); color:white; font-size:1.4rem; }
+  .calc-btn.eq:hover { background:#4b91f7; }
+  .calc-btn.fn { background:rgba(255,255,255,0.04); color:rgba(255,255,255,0.7); font-size:1rem; }
+  .calc-btn.fn:hover { background:rgba(255,255,255,0.1); }
+  .calc-btn.zero { border-radius:26px; grid-column:span 2; justify-content:flex-start; padding-left:22px; }
+  @media(max-width:600px) { .calculator { right:10px; left:10px; width:auto; bottom:80px; } }
 
   /* PROGRESS BAR */
   .progress-bar { height:6px; background:var(--surface2); border-radius:3px; overflow:hidden; margin-bottom:16px; }
@@ -1869,50 +1890,96 @@ function recordAttempt(progress, qId, wasCorrect) {
 // ============================
 function Calculator({ show, onToggle }) {
   const [display, setDisplay] = useState('0');
-  const [history, setHistory] = useState('');
+  const [expr, setExpr] = useState('');
   const [prevValue, setPrevValue] = useState(null);
   const [operator, setOperator] = useState(null);
   const [newNum, setNewNum] = useState(true);
+  const [calcHistory, setCalcHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [lastOp, setLastOp] = useState(null);
+  const [lastNum, setLastNum] = useState(null);
 
   const doMath = (a, op, b) => {
-    const na = parseFloat(a);
-    const nb = parseFloat(b);
+    const na = parseFloat(a); const nb = parseFloat(b);
     if (isNaN(na) || isNaN(nb)) return 'Error';
     switch(op) {
-      case '+': return na + nb;
-      case '-': return na - nb;
-      case '×': return na * nb;
-      case '÷': return nb === 0 ? 'Error' : na / nb;
+      case '+': return na + nb; case '-': return na - nb;
+      case '×': return na * nb; case '÷': return nb === 0 ? 'Error' : na / nb;
       default: return nb;
     }
   };
 
+  const fmt = (n) => {
+    if (typeof n !== 'number' || isNaN(n)) return String(n);
+    const r = Math.round(n * 100000000) / 100000000;
+    const s = String(r);
+    if (s.length > 12) return r.toPrecision(10).replace(/\.?0+$/, '');
+    return s;
+  };
+
+  const addHist = (expression, result) => {
+    setCalcHistory(h => [{expr: expression, result: String(result), time: Date.now()}, ...h].slice(0, 30));
+  };
+
   const press = (val) => {
-    if (val === 'C') {
-      setDisplay('0'); setHistory(''); setPrevValue(null); setOperator(null); setNewNum(true);
+    if (val === 'AC') {
+      setDisplay('0'); setExpr(''); setPrevValue(null); setOperator(null); setNewNum(true); setLastOp(null); setLastNum(null);
+      return;
+    }
+    if (val === '⌫') {
+      if (newNum) return;
+      const next = display.slice(0, -1);
+      setDisplay(next === '' || next === '-' ? '0' : next);
+      if (next === '' || next === '-') setNewNum(true);
+      return;
+    }
+    if (val === '±') {
+      if (display === '0' || display === 'Error') return;
+      setDisplay(display.startsWith('-') ? display.slice(1) : '-' + display);
+      return;
+    }
+    if (val === '%') {
+      const n = parseFloat(display);
+      if (isNaN(n)) return;
+      if (prevValue !== null && (operator === '+' || operator === '-')) {
+        setDisplay(fmt(parseFloat(prevValue) * n / 100));
+      } else {
+        setDisplay(fmt(n / 100));
+      }
+      setNewNum(true);
       return;
     }
     if (val === '=') {
       if (prevValue !== null && operator) {
         const result = doMath(prevValue, operator, display);
-        const rounded = typeof result === 'number' ? Math.round(result * 10000) / 10000 : result;
-        setHistory(prevValue + ' ' + operator + ' ' + display + ' =');
-        setDisplay(String(rounded));
-        setPrevValue(null);
-        setOperator(null);
+        const r = typeof result === 'number' ? fmt(result) : String(result);
+        const expression = prevValue + ' ' + operator + ' ' + display;
+        setExpr(expression + ' =');
+        setDisplay(r);
+        addHist(expression, r);
+        setLastOp(operator); setLastNum(display);
+        setPrevValue(null); setOperator(null); setNewNum(true);
+      } else if (lastOp && lastNum) {
+        const result = doMath(display, lastOp, lastNum);
+        const r = typeof result === 'number' ? fmt(result) : String(result);
+        const expression = display + ' ' + lastOp + ' ' + lastNum;
+        setExpr(expression + ' =');
+        setDisplay(r);
+        addHist(expression, r);
         setNewNum(true);
       }
       return;
     }
     if (['+','-','×','÷'].includes(val)) {
+      setLastOp(null); setLastNum(null);
       if (prevValue !== null && operator && !newNum) {
         const result = doMath(prevValue, operator, display);
-        const rounded = typeof result === 'number' ? Math.round(result * 10000) / 10000 : result;
-        setHistory(String(rounded) + ' ' + val);
-        setDisplay(String(rounded));
-        setPrevValue(String(rounded));
+        const r = typeof result === 'number' ? fmt(result) : String(result);
+        setExpr(r + ' ' + val);
+        setDisplay(r);
+        setPrevValue(r);
       } else {
-        setHistory(display + ' ' + val);
+        setExpr(display + ' ' + val);
         setPrevValue(display);
       }
       setOperator(val);
@@ -1924,32 +1991,107 @@ function Calculator({ show, onToggle }) {
       setDisplay(val === '.' ? '0.' : val);
       setNewNum(false);
     } else {
+      if (display.replace(/[^0-9]/g,'').length >= 15) return;
       setDisplay(display === '0' && val !== '.' ? val : display + val);
     }
   };
 
-  const buttons = ['C','÷','×','-','7','8','9','+','4','5','6','=','1','2','3','.','0',''];
+  // Keyboard support
+  useEffect(() => {
+    if (!show) return;
+    const handleKey = (e) => {
+      const k = e.key;
+      if (k >= '0' && k <= '9') press(k);
+      else if (k === '.') press('.');
+      else if (k === '+') press('+');
+      else if (k === '-') press('-');
+      else if (k === '*') press('×');
+      else if (k === '/') { e.preventDefault(); press('÷'); }
+      else if (k === 'Enter' || k === '=') press('=');
+      else if (k === 'Backspace') press('⌫');
+      else if (k === 'Escape') press('AC');
+      else if (k === '%') press('%');
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [show, display, prevValue, operator, newNum, lastOp, lastNum]);
 
-  if (!show) return React.createElement('button', {className:'calc-toggle', onClick:onToggle}, '\u{1F5A9}');
+  const displaySize = display.length > 12 ? '1.6rem' : display.length > 9 ? '2rem' : display.length > 7 ? '2.3rem' : '2.6rem';
 
-  return React.createElement(React.Fragment, null,
-    React.createElement('button', {className:'calc-toggle', onClick:onToggle}, '\u2715'),
-    React.createElement('div', {className:'calculator'},
-      React.createElement('div', {className:'calc-display'},
-        React.createElement('div', {className:'calc-expr'}, history || '\u00A0'),
-        React.createElement('div', {className:'calc-value'}, display)
+  // Calculator icon SVG
+  const calcIcon = React.createElement('svg', {viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:1.5, strokeLinecap:'round', strokeLinejoin:'round'},
+    React.createElement('rect', {x:4, y:2, width:16, height:20, rx:2}),
+    React.createElement('rect', {x:7, y:5, width:10, height:4, rx:1, fill:'currentColor', stroke:'none', opacity:0.3}),
+    React.createElement('circle', {cx:8.5, cy:12.5, r:0.8, fill:'currentColor', stroke:'none'}),
+    React.createElement('circle', {cx:12, cy:12.5, r:0.8, fill:'currentColor', stroke:'none'}),
+    React.createElement('circle', {cx:15.5, cy:12.5, r:0.8, fill:'currentColor', stroke:'none'}),
+    React.createElement('circle', {cx:8.5, cy:16, r:0.8, fill:'currentColor', stroke:'none'}),
+    React.createElement('circle', {cx:12, cy:16, r:0.8, fill:'currentColor', stroke:'none'}),
+    React.createElement('circle', {cx:15.5, cy:16, r:0.8, fill:'currentColor', stroke:'none'}),
+    React.createElement('circle', {cx:8.5, cy:19.5, r:0.8, fill:'currentColor', stroke:'none'}),
+    React.createElement('circle', {cx:12, cy:19.5, r:0.8, fill:'currentColor', stroke:'none'}),
+    React.createElement('circle', {cx:15.5, cy:19.5, r:0.8, fill:'currentColor', stroke:'none'})
+  );
+
+  const closeIcon = React.createElement('svg', {viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:2, strokeLinecap:'round', width:20, height:20},
+    React.createElement('line', {x1:18, y1:6, x2:6, y2:18}),
+    React.createElement('line', {x1:6, y1:6, x2:18, y2:18})
+  );
+
+  if (!show) return React.createElement('button', {className:'calc-toggle', onClick:onToggle, title:'Calculator'}, calcIcon);
+
+  const ce = React.createElement;
+  const btn = (label, cls, extra) => ce('button', {
+    key: label, className: 'calc-btn' + (cls ? ' ' + cls : '') + (cls === 'op' && operator === label && newNum ? ' active' : ''),
+    onClick: () => press(label), ...(extra || {})
+  }, label);
+
+  return ce(React.Fragment, null,
+    ce('button', {className:'calc-toggle', onClick:onToggle, title:'Close calculator'}, closeIcon),
+    ce('div', {className:'calculator'},
+      ce('div', {className:'calc-header'},
+        ce('button', {onClick:()=>setShowHistory(h=>!h)}, showHistory ? 'Hide History' : 'History (' + calcHistory.length + ')'),
+        ce('button', {onClick:()=>{setCalcHistory([]); setShowHistory(false);}}, 'Clear')
       ),
-      React.createElement('div', {className:'calc-grid'},
-        buttons.map((b, i) => b ?
-          React.createElement('button', {
-            key:i, className:'calc-btn' + (['+','-','×','÷'].includes(b) ? ' op' : b === '=' ? ' eq' : b === 'C' ? ' clear' : ''),
-            onClick:() => press(b), style: b === '0' ? {gridColumn:'span 2'} : {}
-          }, b) : null
+      ce('div', {className:'calc-history' + (showHistory ? ' open' : '')},
+        ce('div', {className:'calc-history-inner'},
+          calcHistory.length === 0
+            ? ce('div', {style:{fontSize:'0.78rem', color:'rgba(255,255,255,0.25)', padding:'8px 6px', textAlign:'center'}}, 'No history yet')
+            : calcHistory.map((h, i) =>
+                ce('div', {key:i, className:'calc-history-item', onClick:()=>{setDisplay(h.result); setNewNum(true); setShowHistory(false);}},
+                  ce('span', {className:'calc-history-expr'}, h.expr),
+                  ce('span', {className:'calc-history-result'}, '= ' + h.result)
+                )
+              )
+        )
+      ),
+      ce('div', {className:'calc-display'},
+        ce('div', {className:'calc-expr'}, expr || ' '),
+        ce('div', {className:'calc-value', style:{fontSize:displaySize}}, display)
+      ),
+      ce('div', {className:'calc-grid'},
+        btn('AC', 'fn'), btn('±', 'fn'), btn('%', 'fn'), btn('÷', 'op'),
+        btn('7'), btn('8'), btn('9'), btn('×', 'op'),
+        btn('4'), btn('5'), btn('6'), btn('-', 'op'),
+        btn('1'), btn('2'), btn('3'), btn('+', 'op'),
+        ce('button', {key:'0', className:'calc-btn zero', onClick:()=>press('0')}, '0'),
+        btn('.'), btn('=', 'eq')
+      ),
+      ce('div', {style:{display:'flex', justifyContent:'center', padding:'0 8px 8px'}},
+        ce('button', {className:'calc-btn fn', style:{width:'100%', borderRadius:12, height:36, fontSize:'0.85rem', gap:6, display:'flex', alignItems:'center', justifyContent:'center'},
+          onClick:()=>press('⌫')},
+          ce('svg', {viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:1.5, strokeLinecap:'round', strokeLinejoin:'round', width:16, height:16},
+            ce('path', {d:'M21 4H8l-7 8 7 8h13a2 2 0 002-2V6a2 2 0 00-2-2z'}),
+            ce('line', {x1:18, y1:9, x2:12, y2:15}),
+            ce('line', {x1:12, y1:9, x2:18, y2:15})
+          ),
+          ' Delete'
         )
       )
     )
   );
 }
+
 
 // ============================
 // HOME SCREEN
