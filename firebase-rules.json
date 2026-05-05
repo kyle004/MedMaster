@@ -8,24 +8,25 @@
     },
     "messages": {
       ".read": "auth != null",
-      ".write": "auth != null && root.child('admins').child(auth.uid).val() === true",
+      ".write": "auth != null && auth.token.email === 'codingky@gmail.com'",
       ".indexOn": ["timestamp"]
     },
     "analytics": {
       "visits": {
-        ".read": "auth != null && root.child('admins').child(auth.uid).val() === true",
+        ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
         ".write": "auth != null",
         ".indexOn": ["timestamp"]
       },
       "sessions": {
-        ".read": "auth != null && root.child('admins').child(auth.uid).val() === true",
+        ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
         ".write": "auth != null",
         ".indexOn": ["userId", "timestamp"]
       }
     },
     "userStats": {
+      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || root.child('admins').child(auth.uid).val() === true)",
+        ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
@@ -47,7 +48,7 @@
     },
     "bannedUsers": {
       ".read": "auth != null",
-      ".write": "auth != null && root.child('admins').child(auth.uid).val() === true"
+      ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
     },
     "admins": {
       ".read": "auth != null",
@@ -56,11 +57,11 @@
     "appConfig": {
       "inviteCode": {
         ".read": true,
-        ".write": "auth != null && root.child('admins').child(auth.uid).val() === true"
+        ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
       },
       "siteConfig": {
         ".read": "auth != null",
-        ".write": "auth != null && root.child('admins').child(auth.uid).val() === true"
+        ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
       }
     }
   }
