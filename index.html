@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
-<meta name="app-version" content="14">
+<meta name="app-version" content="15">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <!-- Firebase SDK -->
@@ -7399,7 +7399,22 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
   const [newInviteCode, setNewInviteCode] = useState('');
   const [inviteCodeSaved, setInviteCodeSaved] = useState(false);
 
-  // Load current invite code
+  // Site config state for admin editing
+  const DEFAULT_SITE_CONFIG = {
+    features: {
+      home: true, learn: true, guided: true, challenge: true, smart: true,
+      test: true, labday: true, analyze: true,
+      pharm: true, missed: true, dashboard: true,
+      flashcards: true, formulas: true,
+      leaderboard: true, rooms: true
+    },
+    appearance: { appName: 'MedMaster', appEmoji: '💊', subtitle: '', accentColor: '', welcomeMessage: '' },
+    maintenance: { enabled: false, message: 'Site is under maintenance. Check back soon!' },
+    announcement: { enabled: false, text: '', style: 'info' }
+  };
+  const [adminSiteConfig, setAdminSiteConfig] = useState(DEFAULT_SITE_CONFIG);
+
+  // Load current invite code + site config
   useEffect(() => {
     if (!firebaseDb) return;
     firebaseDb.ref('appConfig/inviteCode').on('value', snap => {
@@ -7407,7 +7422,17 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
       setCurrentInviteCode(code);
       setNewInviteCode(code);
     });
-    return () => firebaseDb.ref('appConfig/inviteCode').off();
+    firebaseDb.ref('appConfig/siteConfig').on('value', snap => {
+      const val = snap.val();
+      if (!val) { setAdminSiteConfig(DEFAULT_SITE_CONFIG); return; }
+      setAdminSiteConfig({
+        features: { ...DEFAULT_SITE_CONFIG.features, ...(val.features || {}) },
+        appearance: { ...DEFAULT_SITE_CONFIG.appearance, ...(val.appearance || {}) },
+        maintenance: { ...DEFAULT_SITE_CONFIG.maintenance, ...(val.maintenance || {}) },
+        announcement: { ...DEFAULT_SITE_CONFIG.announcement, ...(val.announcement || {}) }
+      });
+    });
+    return () => { firebaseDb.ref('appConfig/inviteCode').off(); firebaseDb.ref('appConfig/siteConfig').off(); };
   }, []);
 
   return React.createElement('div', {className:'admin-panel'},
@@ -7741,46 +7766,180 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
       ),
 
       // CONFIG TAB
-      tab === 'config' && React.createElement('div', null,
-        React.createElement('h3', {style:{fontSize:'1rem', marginBottom:16}}, 'App Configuration'),
+      tab === 'config' && (() => {
+        const sc = adminSiteConfig;
+        const updateConfig = (path, value) => firebaseDb.ref('appConfig/siteConfig/' + path).set(value);
+        const cardStyle = {background:'var(--surface)', borderRadius:12, padding:16, marginBottom:16};
+        const labelStyle = {fontWeight:600, marginBottom:8, display:'flex', alignItems:'center', gap:8};
+        const descStyle = {color:'var(--text3)', fontSize:'0.85rem', marginBottom:12};
+        const toggleStyle = (on) => ({
+          width:44, height:24, borderRadius:12, border:'none', cursor:'pointer', position:'relative',
+          background: on ? 'var(--green)' : 'var(--surface2)', transition:'background 0.2s'
+        });
+        const dotStyle = (on) => ({
+          width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3,
+          left: on ? 23 : 3, transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.3)'
+        });
+        const Toggle = (on, onChange) => React.createElement('button', {style:toggleStyle(on), onClick:()=>onChange(!on)},
+          React.createElement('div', {style:dotStyle(on)})
+        );
+        const featureLabels = {
+          home:'Home', learn:'Formula Lab', guided:'Guided Practice', challenge:'Challenge', smart:'Smart Study',
+          test:'Test Mode', labday:'Lab Day', analyze:'Analyzer',
+          pharm:'Pharmacology', missed:'Missed Questions', dashboard:'My Stats',
+          flashcards:'Flashcards', formulas:'Formula Builder',
+          leaderboard:'Leaderboard', rooms:'Study Rooms'
+        };
+        const featureSections = {
+          Study: ['home','learn','guided','challenge','smart'],
+          Test: ['test','labday','analyze'],
+          Review: ['pharm','missed','dashboard'],
+          Tools: ['flashcards','formulas'],
+          Social: ['leaderboard','rooms']
+        };
 
-        // Invite Code Section
-        React.createElement('div', {style:{background:'var(--surface)', borderRadius:12, padding:16, marginBottom:16}},
-          React.createElement('div', {style:{fontWeight:600, marginBottom:8}}, '\uD83D\uDD11 Invite Code'),
-          React.createElement('p', {style:{color:'var(--text3)', fontSize:'0.85rem', marginBottom:12}}, 'Students need this code to create an account. Share it with your cohort.'),
-          currentInviteCode
-            ? React.createElement('div', {style:{background:'var(--bg)', borderRadius:8, padding:'12px 16px', marginBottom:12, display:'flex', justifyContent:'space-between', alignItems:'center'}},
-                React.createElement('span', {style:{fontFamily:'monospace', fontSize:'1.2rem', letterSpacing:3, fontWeight:700, color:'var(--accent)'}}, currentInviteCode),
-                React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--green)'}}, 'Active')
-              )
-            : React.createElement('div', {style:{background:'rgba(239,68,68,0.1)', borderRadius:8, padding:'12px 16px', marginBottom:12, color:'var(--red)', fontSize:'0.9rem'}}, 'No invite code set. Anyone can sign up.'),
-          React.createElement('div', {style:{display:'flex', gap:8}},
-            React.createElement('input', {className:'modal-input', placeholder:'Enter new code...', value:newInviteCode,
-              style:{textAlign:'left', margin:0, flex:1, textTransform:'uppercase', letterSpacing:2, fontFamily:'monospace'},
-              onChange:e=>{ setNewInviteCode(e.target.value); setInviteCodeSaved(false); }}),
-            React.createElement('button', {className:'btn btn-primary', style:{padding:'10px 20px', whiteSpace:'nowrap'},
-              onClick:() => {
-                firebaseDb.ref('appConfig/inviteCode').set(newInviteCode.trim().toUpperCase());
-                setInviteCodeSaved(true);
-                setTimeout(() => setInviteCodeSaved(false), 2000);
-              }}, inviteCodeSaved ? '\u2705 Saved' : 'Update')
+        return React.createElement('div', null,
+          React.createElement('h3', {style:{fontSize:'1rem', marginBottom:16}}, 'Site Configuration'),
+          React.createElement('p', {style:{...descStyle, marginBottom:20}}, 'All changes apply instantly to all users.'),
+
+          // === MAINTENANCE MODE ===
+          React.createElement('div', {style:{...cardStyle, border: sc.maintenance.enabled ? '2px solid var(--red)' : '1px solid var(--surface2)'}},
+            React.createElement('div', {style:{...labelStyle, justifyContent:'space-between'}},
+              React.createElement('span', null, '\uD83D\uDEE0\uFE0F Maintenance Mode'),
+              Toggle(sc.maintenance.enabled, (v) => updateConfig('maintenance/enabled', v))
+            ),
+            React.createElement('p', {style:descStyle}, 'When enabled, non-admin users see a maintenance screen and cannot use the app.'),
+            sc.maintenance.enabled && React.createElement('input', {
+              className:'modal-input', placeholder:'Custom maintenance message...',
+              value:sc.maintenance.message, style:{textAlign:'left', margin:0, width:'100%'},
+              onChange:e => updateConfig('maintenance/message', e.target.value)
+            })
           ),
-          React.createElement('div', {style:{marginTop:10, display:'flex', gap:8}},
-            React.createElement('button', {className:'btn btn-outline btn-sm', onClick:() => {
-              const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-              let code = '';
-              for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-              setNewInviteCode(code);
-              setInviteCodeSaved(false);
-            }}, '\uD83C\uDFB2 Generate Random'),
+
+          // === ANNOUNCEMENT BANNER ===
+          React.createElement('div', {style:{...cardStyle, border: sc.announcement.enabled ? '2px solid var(--accent)' : '1px solid var(--surface2)'}},
+            React.createElement('div', {style:{...labelStyle, justifyContent:'space-between'}},
+              React.createElement('span', null, '\uD83D\uDCE2 Announcement Banner'),
+              Toggle(sc.announcement.enabled, (v) => updateConfig('announcement/enabled', v))
+            ),
+            React.createElement('p', {style:descStyle}, 'Show a banner at the top of every page for all users.'),
+            sc.announcement.enabled && React.createElement('div', null,
+              React.createElement('input', {
+                className:'modal-input', placeholder:'Announcement text...',
+                value:sc.announcement.text, style:{textAlign:'left', margin:0, marginBottom:8, width:'100%'},
+                onChange:e => updateConfig('announcement/text', e.target.value)
+              }),
+              React.createElement('div', {style:{display:'flex', gap:6, flexWrap:'wrap'}},
+                ['info','success','warning','error'].map(s =>
+                  React.createElement('button', {key:s, className:'btn btn-sm' + (sc.announcement.style === s ? ' btn-primary' : ' btn-outline'),
+                    style:{textTransform:'capitalize', fontSize:'0.8rem', padding:'4px 12px'},
+                    onClick:() => updateConfig('announcement/style', s)
+                  }, s === 'info' ? '\u2139\uFE0F Info' : s === 'success' ? '\u2705 Success' : s === 'warning' ? '\u26A0\uFE0F Warning' : '\uD83D\uDEA8 Error')
+                )
+              )
+            )
+          ),
+
+          // === FEATURE TOGGLES ===
+          React.createElement('div', {style:cardStyle},
+            React.createElement('div', {style:labelStyle}, '\uD83C\uDF9B\uFE0F Feature Toggles'),
+            React.createElement('p', {style:descStyle}, 'Enable or disable sidebar sections. Disabled features are hidden from students but still visible to admins.'),
+            React.createElement('div', {style:{display:'flex', gap:6, marginBottom:14}},
+              React.createElement('button', {className:'btn btn-outline btn-sm', onClick:() => {
+                const all = {}; Object.keys(featureLabels).forEach(k => all[k] = true);
+                updateConfig('features', all);
+              }}, 'Enable All'),
+              React.createElement('button', {className:'btn btn-outline btn-sm', style:{color:'var(--red)', borderColor:'var(--red)'}, onClick:() => {
+                const none = {}; Object.keys(featureLabels).forEach(k => none[k] = false);
+                updateConfig('features', none);
+              }}, 'Disable All')
+            ),
+            Object.entries(featureSections).map(([section, keys]) =>
+              React.createElement('div', {key:section, style:{marginBottom:12}},
+                React.createElement('div', {style:{fontSize:'0.8rem', fontWeight:600, color:'var(--text3)', textTransform:'uppercase', marginBottom:6}}, section),
+                keys.map(k =>
+                  React.createElement('div', {key:k, style:{display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid var(--surface2)'}},
+                    React.createElement('span', {style:{fontSize:'0.9rem', color: sc.features[k] !== false ? 'var(--text)' : 'var(--text3)'}}, featureLabels[k]),
+                    Toggle(sc.features[k] !== false, (v) => updateConfig('features/' + k, v))
+                  )
+                )
+              )
+            )
+          ),
+
+          // === SITE APPEARANCE ===
+          React.createElement('div', {style:cardStyle},
+            React.createElement('div', {style:labelStyle}, '\uD83C\uDFA8 Site Appearance'),
+            React.createElement('p', {style:descStyle}, 'Customize the app name, emoji, and welcome message.'),
+            React.createElement('div', {style:{display:'grid', gridTemplateColumns:'auto 1fr', gap:'8px 12px', alignItems:'center', marginBottom:12}},
+              React.createElement('label', {style:{fontSize:'0.85rem', fontWeight:600, color:'var(--text2)'}}, 'App Emoji'),
+              React.createElement('input', {className:'modal-input', value:sc.appearance.appEmoji,
+                style:{textAlign:'left', margin:0, width:60}, maxLength:4,
+                onChange:e => updateConfig('appearance/appEmoji', e.target.value)}),
+              React.createElement('label', {style:{fontSize:'0.85rem', fontWeight:600, color:'var(--text2)'}}, 'App Name'),
+              React.createElement('input', {className:'modal-input', value:sc.appearance.appName,
+                style:{textAlign:'left', margin:0}, maxLength:30,
+                onChange:e => updateConfig('appearance/appName', e.target.value)}),
+              React.createElement('label', {style:{fontSize:'0.85rem', fontWeight:600, color:'var(--text2)'}}, 'Subtitle'),
+              React.createElement('input', {className:'modal-input', value:sc.appearance.subtitle, placeholder:'Optional subtitle...',
+                style:{textAlign:'left', margin:0}, maxLength:60,
+                onChange:e => updateConfig('appearance/subtitle', e.target.value)})
+            ),
+            React.createElement('label', {style:{fontSize:'0.85rem', fontWeight:600, color:'var(--text2)', display:'block', marginBottom:6}}, 'Welcome Message'),
+            React.createElement('textarea', {className:'modal-input', value:sc.appearance.welcomeMessage, placeholder:'Shown on the home page for all users...',
+              style:{textAlign:'left', margin:0, width:'100%', minHeight:60, resize:'vertical', fontFamily:'inherit'},
+              maxLength:300, onChange:e => updateConfig('appearance/welcomeMessage', e.target.value)}),
+            React.createElement('div', {style:{textAlign:'right', fontSize:'0.75rem', color:'var(--text3)', marginTop:4}},
+              (sc.appearance.welcomeMessage || '').length + '/300')
+          ),
+
+          // === INVITE CODE (existing) ===
+          React.createElement('div', {style:cardStyle},
+            React.createElement('div', {style:labelStyle}, '\uD83D\uDD11 Invite Code'),
+            React.createElement('p', {style:descStyle}, 'Students need this code to create an account. Share it with your cohort.'),
+            currentInviteCode
+              ? React.createElement('div', {style:{background:'var(--bg)', borderRadius:8, padding:'12px 16px', marginBottom:12, display:'flex', justifyContent:'space-between', alignItems:'center'}},
+                  React.createElement('span', {style:{fontFamily:'monospace', fontSize:'1.2rem', letterSpacing:3, fontWeight:700, color:'var(--accent)'}}, currentInviteCode),
+                  React.createElement('span', {style:{fontSize:'0.8rem', color:'var(--green)'}}, 'Active')
+                )
+              : React.createElement('div', {style:{background:'rgba(239,68,68,0.1)', borderRadius:8, padding:'12px 16px', marginBottom:12, color:'var(--red)', fontSize:'0.9rem'}}, 'No invite code set. Anyone can sign up.'),
+            React.createElement('div', {style:{display:'flex', gap:8}},
+              React.createElement('input', {className:'modal-input', placeholder:'Enter new code...', value:newInviteCode,
+                style:{textAlign:'left', margin:0, flex:1, textTransform:'uppercase', letterSpacing:2, fontFamily:'monospace'},
+                onChange:e=>{ setNewInviteCode(e.target.value); setInviteCodeSaved(false); }}),
+              React.createElement('button', {className:'btn btn-primary', style:{padding:'10px 20px', whiteSpace:'nowrap'},
+                onClick:() => {
+                  firebaseDb.ref('appConfig/inviteCode').set(newInviteCode.trim().toUpperCase());
+                  setInviteCodeSaved(true);
+                  setTimeout(() => setInviteCodeSaved(false), 2000);
+                }}, inviteCodeSaved ? '\u2705 Saved' : 'Update')
+            ),
+            React.createElement('div', {style:{marginTop:10, display:'flex', gap:8}},
+              React.createElement('button', {className:'btn btn-outline btn-sm', onClick:() => {
+                const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+                let code = '';
+                for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+                setNewInviteCode(code);
+                setInviteCodeSaved(false);
+              }}, '\uD83C\uDFB2 Generate Random'),
+              React.createElement('button', {className:'btn btn-outline btn-sm', style:{color:'var(--red)', borderColor:'var(--red)'},
+                onClick:() => {
+                  firebaseDb.ref('appConfig/inviteCode').remove();
+                  setNewInviteCode('');
+                }}, '\uD83D\uDDD1\uFE0F Remove Code')
+            )
+          ),
+
+          // === RESET CONFIG ===
+          React.createElement('div', {style:{...cardStyle, border:'1px solid rgba(239,68,68,0.3)'}},
+            React.createElement('div', {style:labelStyle}, '\u26A0\uFE0F Reset Configuration'),
+            React.createElement('p', {style:descStyle}, 'Reset all site config to defaults. This will re-enable all features, clear announcements, and reset appearance.'),
             React.createElement('button', {className:'btn btn-outline btn-sm', style:{color:'var(--red)', borderColor:'var(--red)'},
-              onClick:() => {
-                firebaseDb.ref('appConfig/inviteCode').remove();
-                setNewInviteCode('');
-              }}, '\uD83D\uDDD1\uFE0F Remove Code')
+              onClick:() => { if(confirm('Reset ALL site configuration to defaults? This cannot be undone.')) firebaseDb.ref('appConfig/siteConfig').remove(); }
+            }, 'Reset to Defaults')
           )
-        )
-      )
+        );
+      })()
     )
   );
 }
@@ -7960,6 +8119,42 @@ function App() {
     return () => adminRef.off('value', onVal);
   }, [authUser, firebaseReady]);
 
+  // Site config — live from Firebase, controls features/appearance/maintenance/announcements
+  const DEFAULT_SITE_CONFIG = {
+    features: {
+      home: true, learn: true, guided: true, challenge: true, smart: true,
+      test: true, labday: true, analyze: true,
+      pharm: true, missed: true, dashboard: true,
+      flashcards: true, formulas: true,
+      leaderboard: true, rooms: true
+    },
+    appearance: {
+      appName: 'MedMaster',
+      appEmoji: '💊',
+      subtitle: '',
+      accentColor: '',
+      welcomeMessage: ''
+    },
+    maintenance: { enabled: false, message: 'Site is under maintenance. Check back soon!' },
+    announcement: { enabled: false, text: '', style: 'info' }
+  };
+  const [siteConfig, setSiteConfig] = useState(DEFAULT_SITE_CONFIG);
+  useEffect(() => {
+    if (!firebaseReady || !firebaseDb) return;
+    const ref = firebaseDb.ref('appConfig/siteConfig');
+    const onVal = ref.on('value', snap => {
+      const val = snap.val();
+      if (!val) { setSiteConfig(DEFAULT_SITE_CONFIG); return; }
+      setSiteConfig({
+        features: { ...DEFAULT_SITE_CONFIG.features, ...(val.features || {}) },
+        appearance: { ...DEFAULT_SITE_CONFIG.appearance, ...(val.appearance || {}) },
+        maintenance: { ...DEFAULT_SITE_CONFIG.maintenance, ...(val.maintenance || {}) },
+        announcement: { ...DEFAULT_SITE_CONFIG.announcement, ...(val.announcement || {}) }
+      });
+    });
+    return () => ref.off('value', onVal);
+  }, [firebaseReady]);
+
   // Hooks only activate when auth user + firebase are ready
   const { onlineUsers, onlineCount, myId } = usePresence(authUser, firebaseReady, page, isAdmin);
   const { messages, sendMessage } = useMessages(firebaseReady);
@@ -8006,6 +8201,14 @@ function App() {
   };
 
   const renderPage = () => {
+    // Block non-admin access to disabled features
+    if (!isAdmin && siteConfig.features[page] === false && page !== 'home' && page !== 'settings' && page !== 'admin') {
+      return React.createElement('div', {style:{textAlign:'center', padding:60, color:'var(--text3)'}},
+        React.createElement('div', {style:{fontSize:'2.5rem', marginBottom:12}}, '🚫'),
+        React.createElement('div', {style:{fontSize:'1.1rem', marginBottom:8}}, 'This feature is currently unavailable'),
+        React.createElement('button', {className:'btn btn-primary', style:{marginTop:12}, onClick:()=>setPage('home')}, 'Go Home')
+      );
+    }
     switch(page) {
       case 'home': return React.createElement(HomeScreen, {onNav: setPage, progress});
       case 'learn': return React.createElement(FormulaLab);
@@ -8043,6 +8246,18 @@ function App() {
     return React.createElement(AuthScreen, {onAuth: handleAuth});
   }
 
+  // Maintenance mode gate — block non-admins
+  if (siteConfig.maintenance.enabled && !isAdmin) {
+    return React.createElement('div', {className:'app', style:{display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh'}},
+      React.createElement('div', {style:{textAlign:'center', maxWidth:420, padding:32}},
+        React.createElement('div', {style:{fontSize:'3rem', marginBottom:16}}, '🛠️'),
+        React.createElement('h2', {style:{marginBottom:12, color:'var(--text)'}}, 'Under Maintenance'),
+        React.createElement('p', {style:{color:'var(--text3)', lineHeight:1.6}}, siteConfig.maintenance.message),
+        React.createElement('button', {className:'btn btn-outline', style:{marginTop:24}, onClick: handleSignOut}, 'Sign Out')
+      )
+    );
+  }
+
   const missedCount = (progress.missedQuestions || []).length;
 
   const navTo = (p) => { setPage(p); setSidebarOpen(false); };
@@ -8068,42 +8283,59 @@ function App() {
     React.createElement('aside', {className:'sidebar' + (sidebarOpen ? ' open' : '')},
       // Brand
       React.createElement('div', {className:'sidebar-brand'},
-        React.createElement('h1', {onClick:()=>navTo('home')}, '\uD83D\uDC8A MedMaster'),
+        React.createElement('h1', {onClick:()=>navTo('home')}, (siteConfig.appearance.appEmoji || '\uD83D\uDC8A') + ' ' + (siteConfig.appearance.appName || 'MedMaster')),
         onlineCount > 0 && React.createElement('span', {style:{fontSize:'0.75rem', color:'var(--green)', fontWeight:600}}, onlineCount + ' online')
       ),
       React.createElement('div', {className:'sidebar-user'}, 'Hi, ' + username),
 
-      // Nav items
+      // Nav items \u2014 filtered by siteConfig.features (admins always see everything)
       React.createElement('div', {className:'sidebar-nav'},
-        React.createElement('div', {className:'sidebar-section'}, 'Study'),
-        sidebarItem('home', '\uD83C\uDFE0', 'Home'),
-        sidebarItem('learn', '\uD83D\uDCD0', 'Formula Lab'),
-        sidebarItem('guided', '\uD83C\uDFAF', 'Guided Practice'),
-        sidebarItem('challenge', '\u26A1', 'Challenge'),
-        sidebarItem('smart', '\uD83E\uDDE0', 'Smart Study'),
-
-        React.createElement('div', {className:'sidebar-section'}, 'Test'),
-        sidebarItem('test', '\uD83D\uDCDD', 'Test Mode'),
-        sidebarItem('labday', '\uD83E\uDDEA', 'Lab Day'),
-        sidebarItem('analyze', '\uD83D\uDD2C', 'Analyzer'),
-
-        React.createElement('div', {className:'sidebar-section'}, 'Review'),
-        sidebarItem('pharm', '\uD83D\uDC8A', 'Pharmacology'),
-        sidebarItem('missed', '\u274C', 'Missed Questions', missedCount > 0 ? missedCount : null),
-        sidebarItem('dashboard', '\uD83D\uDCCA', 'My Stats'),
-
-        React.createElement('div', {className:'sidebar-section'}, 'Tools'),
-        sidebarItem('flashcards', '\uD83D\uDCDD', 'Flashcards'),
-        sidebarItem('formulas', '\u2728', 'Formula Builder'),
-
-        React.createElement('div', {className:'sidebar-section'}, 'Social'),
-        sidebarItem('leaderboard', '\uD83C\uDFC6', 'Leaderboard'),
-        sidebarItem('rooms', '\uD83D\uDC65', 'Study Rooms'),
-
-        isAdmin && React.createElement(React.Fragment, null,
-          React.createElement('div', {className:'sidebar-section'}, 'Admin'),
-          sidebarItem('admin', '\uD83D\uDD12', 'Admin Panel')
-        )
+        (() => {
+          const f = siteConfig.features;
+          const show = (id) => isAdmin || f[id] !== false;
+          const items = [];
+          // Study section
+          const studyItems = [
+            show('home') && sidebarItem('home', '\uD83C\uDFE0', 'Home'),
+            show('learn') && sidebarItem('learn', '\uD83D\uDCD0', 'Formula Lab'),
+            show('guided') && sidebarItem('guided', '\uD83C\uDFAF', 'Guided Practice'),
+            show('challenge') && sidebarItem('challenge', '\u26A1', 'Challenge'),
+            show('smart') && sidebarItem('smart', '\uD83E\uDDE0', 'Smart Study')
+          ].filter(Boolean);
+          if (studyItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-study'}, 'Study')); items.push(...studyItems); }
+          // Test section
+          const testItems = [
+            show('test') && sidebarItem('test', '\uD83D\uDCDD', 'Test Mode'),
+            show('labday') && sidebarItem('labday', '\uD83E\uDDEA', 'Lab Day'),
+            show('analyze') && sidebarItem('analyze', '\uD83D\uDD2C', 'Analyzer')
+          ].filter(Boolean);
+          if (testItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-test'}, 'Test')); items.push(...testItems); }
+          // Review section
+          const reviewItems = [
+            show('pharm') && sidebarItem('pharm', '\uD83D\uDC8A', 'Pharmacology'),
+            show('missed') && sidebarItem('missed', '\u274C', 'Missed Questions', missedCount > 0 ? missedCount : null),
+            show('dashboard') && sidebarItem('dashboard', '\uD83D\uDCCA', 'My Stats')
+          ].filter(Boolean);
+          if (reviewItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-review'}, 'Review')); items.push(...reviewItems); }
+          // Tools section
+          const toolItems = [
+            show('flashcards') && sidebarItem('flashcards', '\uD83D\uDCDD', 'Flashcards'),
+            show('formulas') && sidebarItem('formulas', '\u2728', 'Formula Builder')
+          ].filter(Boolean);
+          if (toolItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-tools'}, 'Tools')); items.push(...toolItems); }
+          // Social section
+          const socialItems = [
+            show('leaderboard') && sidebarItem('leaderboard', '\uD83C\uDFC6', 'Leaderboard'),
+            show('rooms') && sidebarItem('rooms', '\uD83D\uDC65', 'Study Rooms')
+          ].filter(Boolean);
+          if (socialItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-social'}, 'Social')); items.push(...socialItems); }
+          // Admin section \u2014 always visible for admins
+          if (isAdmin) {
+            items.push(React.createElement('div', {className:'sidebar-section', key:'s-admin'}, 'Admin'));
+            items.push(sidebarItem('admin', '\uD83D\uDD12', 'Admin Panel'));
+          }
+          return items;
+        })()
       ),
 
       // Bottom section
@@ -8117,6 +8349,32 @@ function App() {
 
     // Main content
     React.createElement('main', {className:'app-main'},
+      // Announcement banner
+      siteConfig.announcement.enabled && siteConfig.announcement.text && React.createElement('div', {
+        style:{
+          padding:'10px 16px', marginBottom:16, borderRadius:10, fontSize:'0.9rem', lineHeight:1.5,
+          display:'flex', alignItems:'center', gap:10,
+          background: siteConfig.announcement.style === 'warning' ? 'rgba(245,158,11,0.15)' :
+                     siteConfig.announcement.style === 'success' ? 'rgba(34,197,94,0.15)' :
+                     siteConfig.announcement.style === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.15)',
+          color: siteConfig.announcement.style === 'warning' ? '#f59e0b' :
+                 siteConfig.announcement.style === 'success' ? 'var(--green)' :
+                 siteConfig.announcement.style === 'error' ? 'var(--red)' : 'var(--accent)',
+          border: '1px solid ' + (siteConfig.announcement.style === 'warning' ? 'rgba(245,158,11,0.3)' :
+                 siteConfig.announcement.style === 'success' ? 'rgba(34,197,94,0.3)' :
+                 siteConfig.announcement.style === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(59,130,246,0.3)')
+        }
+      },
+        React.createElement('span', {style:{fontSize:'1.1rem'}},
+          siteConfig.announcement.style === 'warning' ? '⚠️' :
+          siteConfig.announcement.style === 'success' ? '✅' :
+          siteConfig.announcement.style === 'error' ? '🚨' : 'ℹ️'),
+        React.createElement('span', {style:{flex:1}}, siteConfig.announcement.text)
+      ),
+      // Welcome message (if set)
+      page === 'home' && siteConfig.appearance.welcomeMessage && React.createElement('div', {
+        style:{padding:'12px 16px', marginBottom:16, borderRadius:10, background:'var(--surface)', border:'1px solid var(--surface2)', fontSize:'0.92rem', color:'var(--text2)', lineHeight:1.5}
+      }, siteConfig.appearance.welcomeMessage),
       renderPage()
     ),
 
