@@ -1,0 +1,44 @@
+# ============================================================================
+# MedMaster (medmaster.guru) — Netlify configuration
+# ----------------------------------------------------------------------------
+# Static site, no build step. The only server-side code is the AI proxy in
+# netlify/functions/ai.js, which holds the Anthropic API key.
+# ============================================================================
+
+[build]
+  # The site is plain static files at the repo root.
+  publish = "."
+  command = ""
+  functions = "netlify/functions"
+
+[functions]
+  # Node 18+ gives us global fetch / AbortController / TextDecoder.
+  node_bundler = "esbuild"
+
+[functions."ai"]
+  # Long-form generations (case debriefs, question sets) can take a while.
+  included_files = []
+
+# Friendly URL the client calls: POST /api/ai
+[[redirects]]
+  from = "/api/ai"
+  to = "/.netlify/functions/ai"
+  status = 200
+  force = true
+
+# Single-page app fallback. Keep this LAST so /api/* is matched first.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    Cache-Control = "no-store"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

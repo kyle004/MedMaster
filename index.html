@@ -5,13 +5,57 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MedMaster</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b82f6'/%3E%3Cstop offset='1' stop-color='%236366f1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M32 12c-2.5 0-4.5 1-4.5 3v9h-7c-2 0-3 2-3 4.5s1 4.5 3 4.5h7v9h-7c-2 0-3 2-3 4.5s1 4.5 3 4.5h7v1c0 2 2 3.5 4.5 3.5s4.5-1.5 4.5-3.5v-1h7c2 0 3-2 3-4.5s-1-4.5-3-4.5h-7v-9h7c2 0 3-2 3-4.5s-1-4.5-3-4.5h-7v-9c0-2-2-3-4.5-3z' fill='white' opacity='0.95'/%3E%3C/svg%3E">
-<meta name="app-version" content="21">
+<meta name="app-version" content="22">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+
+<!-- ==========================================================
+     MedMaster module bootstrap
+     window.MM is the shared runtime bridge between the main app
+     and the feature modules. Created here so modules can attach
+     to it as they load; the App component fills it in at startup.
+     See _staging/MODULE_CONTRACT.md
+     ========================================================== -->
+<script>
+  window.MM = window.MM || {
+    authUser: null, isSuperAdmin: false, isAdmin: false,
+    userTier: 'free', myId: '', db: null, firebaseReady: false,
+    siteConfig: {},
+    getProgress: function () { return {}; },
+    setProgress: function () {},
+    navigate: function () {},
+    toast: function (m) { try { console.log('[MM]', m); } catch (e) {} }
+  };
+</script>
+
+<!-- SCENARIO + REFERENCE DATA -->
+<script src="data/scenarios-ms2a.js"></script>
+<script src="data/scenarios-ms2b.js"></script>
+<script src="data/scenarios-ob.js"></script>
+<script src="data/scenarios-peds.js"></script>
+<script src="data/medadmin.js"></script>
+
+<!-- FEATURE MODULES (core first, then consumers) -->
+<script src="js/ai.js"></script>
+<script src="js/voice.js"></script>
+<script src="js/sim-engine.js"></script>
+<script src="js/medadmin-trainer.js"></script>
+<script src="js/community.js"></script>
+<script src="js/ai-admin.js"></script>
+<script src="js/ai-tutor.js"></script>
+
+<!-- Concatenate all scenario sources into one array for the modules -->
+<script>
+  window.ALL_SCENARIOS = []
+    .concat(window.SCENARIOS_MS2A || [])
+    .concat(window.SCENARIOS_MS2B || [])
+    .concat(window.SCENARIOS_OB || [])
+    .concat(window.SCENARIOS_PEDS || []);
+</script>
 <style>
   :root {
     --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
@@ -8151,7 +8195,7 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
     }
   };
 
-  const tabList = ['users', 'auth', 'rooms', 'message', 'analytics', 'history', 'config'];
+  const tabList = ['users', 'auth', 'rooms', 'message', 'analytics', 'history', 'config', 'ai'];
 
   // --- Auth/verification tab state ---
   const [pendingUsers, setPendingUsers] = useState([]);
@@ -8301,9 +8345,10 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
     features: {
       home: true, learn: true, guided: true, challenge: true, smart: true,
       test: true, labday: true, analyze: true,
+      simulations: true, medadmin: true,
       pharm: true, missed: true, dashboard: true,
-      flashcards: true, formulas: true,
-      leaderboard: true, rooms: true
+      flashcards: true, formulas: true, tutor: true,
+      leaderboard: true, rooms: true, community: true
     },
     appearance: { appName: 'MedMaster', appEmoji: '💊', subtitle: '', accentColor: '', welcomeMessage: '' },
     maintenance: { enabled: false, message: 'Site is under maintenance. Check back soon!' },
@@ -8906,16 +8951,18 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
         const featureLabels = {
           home:'Home', learn:'Formula Lab', guided:'Guided Practice', challenge:'Challenge', smart:'Smart Study',
           test:'Test Mode', labday:'Lab Day', analyze:'Analyzer',
+          simulations:'Clinical Simulations', medadmin:'Med Admin Signoff',
           pharm:'Pharmacology', missed:'Missed Questions', dashboard:'My Stats',
-          flashcards:'Flashcards', formulas:'Formula Builder',
-          leaderboard:'Leaderboard', rooms:'Study Rooms'
+          flashcards:'Flashcards', formulas:'Formula Builder', tutor:'AI Tutor',
+          leaderboard:'Leaderboard', rooms:'Study Rooms', community:'Community'
         };
         const featureSections = {
           Study: ['home','learn','guided','challenge','smart'],
+          Clinical: ['simulations','medadmin'],
           Test: ['test','labday','analyze'],
           Review: ['pharm','missed','dashboard'],
-          Tools: ['flashcards','formulas'],
-          Social: ['leaderboard','rooms']
+          Tools: ['flashcards','formulas','tutor'],
+          Social: ['leaderboard','rooms','community']
         };
 
         return React.createElement('div', null,
@@ -9059,7 +9106,20 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
             }, 'Reset to Defaults')
           )
         );
-      })()
+      })(),
+
+      // AI TAB — tier/model access control, usage, and user tier management.
+      // Lives in js/ai-admin.js so the admin panel stays manageable.
+      tab === 'ai' && (
+        typeof window.AIAdminPanel === 'function'
+          ? React.createElement(window.AIAdminPanel, {firebaseDb, authUser: (window.MM && window.MM.authUser) || null})
+          : React.createElement('div', {style:{textAlign:'center', padding:40, color:'var(--text3)'}},
+              React.createElement('div', {style:{fontSize:'2rem', marginBottom:10}}, '📦'),
+              React.createElement('div', {style:{color:'var(--text)', fontWeight:600, marginBottom:6}}, 'AI admin module not loaded'),
+              React.createElement('div', {style:{fontSize:'0.88rem'}}, 'js/ai-admin.js failed to download. Reload to try again.'),
+              React.createElement('button', {className:'btn btn-primary', style:{marginTop:14}, onClick:()=>window.location.reload()}, 'Reload')
+            )
+      )
     )
   );
 }
@@ -9375,9 +9435,10 @@ function App() {
     features: {
       home: true, learn: true, guided: true, challenge: true, smart: true,
       test: true, labday: true, analyze: true,
+      simulations: true, medadmin: true,
       pharm: true, missed: true, dashboard: true,
-      flashcards: true, formulas: true,
-      leaderboard: true, rooms: true
+      flashcards: true, formulas: true, tutor: true,
+      leaderboard: true, rooms: true, community: true
     },
     appearance: {
       appName: 'MedMaster',
@@ -9430,6 +9491,40 @@ function App() {
   const { messages, sendMessage } = useMessages(firebaseReady);
   useProgressSync(progress, setProgress, authUser, firebaseReady);
 
+  // ============================================================
+  // MM BRIDGE — shared runtime handed to the feature modules
+  // (sim-engine, medadmin-trainer, ai, voice, community).
+  // Kept in a ref-free plain object that we refresh every render
+  // so modules always read current auth/progress/config values.
+  // See _staging/MODULE_CONTRACT.md
+  // ============================================================
+  const progressRef = useRef(progress);
+  progressRef.current = progress;
+  useEffect(() => {
+    const MM = window.MM || (window.MM = {});
+    MM.authUser = authUser;
+    MM.isSuperAdmin = !!isSuperAdmin;
+    MM.isAdmin = !!isAdmin;
+    MM.myId = myId || (authUser ? authUser.uid : '');
+    MM.db = firebaseDb || null;
+    MM.firebaseReady = !!firebaseReady;
+    MM.siteConfig = siteConfig;
+    MM.getProgress = function () { return progressRef.current; };
+    MM.setProgress = function (u) { setProgress(u); };
+    MM.navigate = function (p) { setPage(p); };
+    MM.toast = function (msg, type) {
+      try {
+        if (typeof window.__mmToast === 'function') { window.__mmToast(msg, type); return; }
+      } catch (e) {}
+      try { console.log('[MM:' + (type || 'info') + ']', msg); } catch (e) {}
+    };
+    MM.recordActivity = function (type, detail) {
+      try { if (authUser) postActivity(authUser, type, detail || {}); } catch (e) {}
+    };
+    // Let the AI module refresh its tier/config now that auth is known
+    try { if (MM.ai && typeof MM.ai.refresh === 'function') MM.ai.refresh(); } catch (e) {}
+  }, [authUser, isSuperAdmin, isAdmin, myId, firebaseReady, siteConfig, progress]);
+
   // Track study streak on load + post streak activity
   useEffect(() => {
     if (authUser) {
@@ -9479,9 +9574,30 @@ function App() {
         React.createElement('button', {className:'btn btn-primary', style:{marginTop:12}, onClick:()=>setPage('home')}, 'Go Home')
       );
     }
+    // Module pages live in separate .js files. If a file failed to load
+    // (network hiccup, bad deploy) show a clear message instead of a blank
+    // screen or a hard crash.
+    const modulePage = (globalName, label, props) => {
+      const Comp = window[globalName];
+      if (typeof Comp !== 'function') {
+        return React.createElement('div', {style:{textAlign:'center', padding:60, color:'var(--text3)'}},
+          React.createElement('div', {style:{fontSize:'2.5rem', marginBottom:12}}, '📦'),
+          React.createElement('div', {style:{fontSize:'1.1rem', marginBottom:8, color:'var(--text)'}}, label + ' could not load'),
+          React.createElement('div', {style:{fontSize:'0.9rem', marginBottom:16}}, 'This module failed to download. Check your connection and reload.'),
+          React.createElement('button', {className:'btn btn-primary', onClick:()=>window.location.reload()}, 'Reload'),
+          React.createElement('button', {className:'btn btn-outline', style:{marginLeft:8}, onClick:()=>setPage('home')}, 'Go Home')
+        );
+      }
+      return React.createElement(Comp, props || {});
+    };
+
     switch(page) {
       case 'home': return React.createElement(HomeScreen, {onNav: setPage, progress});
       case 'learn': return React.createElement(FormulaLab);
+      case 'simulations': return modulePage('SimulationHub', 'Clinical Simulations', {progress, setProgress, authUser});
+      case 'medadmin': return modulePage('MedAdminTrainer', 'Med Admin Trainer', {progress, setProgress, authUser});
+      case 'community': return modulePage('CommunityHub', 'Community', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
+      case 'tutor': return modulePage('AITutorPage', 'AI Tutor', {progress, setProgress, authUser});
       case 'guided': return React.createElement(GuidedPractice, {progress, setProgress});
       case 'challenge': return React.createElement(ChallengePractice, {progress, setProgress});
       case 'test': return React.createElement(TestMode, {progress, setProgress});
@@ -9580,6 +9696,12 @@ function App() {
             show('smart') && sidebarItem('smart', '\uD83E\uDDE0', 'Smart Study')
           ].filter(Boolean);
           if (studyItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-study'}, 'Study')); items.push(...studyItems); }
+          // Clinical section — simulations + med admin signoff
+          const clinicalItems = [
+            show('simulations') && sidebarItem('simulations', '🩺', 'Simulations'),
+            show('medadmin') && sidebarItem('medadmin', '💉', 'Med Admin')
+          ].filter(Boolean);
+          if (clinicalItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-clinical'}, 'Clinical')); items.push(...clinicalItems); }
           // Test section
           const testItems = [
             show('test') && sidebarItem('test', '\uD83D\uDCDD', 'Test Mode'),
@@ -9597,13 +9719,15 @@ function App() {
           // Tools section
           const toolItems = [
             show('flashcards') && sidebarItem('flashcards', '\uD83D\uDCDD', 'Flashcards'),
-            show('formulas') && sidebarItem('formulas', '\u2728', 'Formula Builder')
+            show('formulas') && sidebarItem('formulas', '\u2728', 'Formula Builder'),
+            show('tutor') && sidebarItem('tutor', '\uD83C\uDF93', 'AI Tutor')
           ].filter(Boolean);
           if (toolItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-tools'}, 'Tools')); items.push(...toolItems); }
           // Social section
           const socialItems = [
             show('leaderboard') && sidebarItem('leaderboard', '\uD83C\uDFC6', 'Leaderboard'),
-            show('rooms') && sidebarItem('rooms', '\uD83D\uDC65', 'Study Rooms')
+            show('rooms') && sidebarItem('rooms', '\uD83D\uDC65', 'Study Rooms'),
+            show('community') && sidebarItem('community', '\uD83C\uDF10', 'Community')
           ].filter(Boolean);
           if (socialItems.length) { items.push(React.createElement('div', {className:'sidebar-section', key:'s-social'}, 'Social')); items.push(...socialItems); }
           // Admin section \u2014 only visible to super admin (codingky@gmail.com)

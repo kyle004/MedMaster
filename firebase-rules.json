@@ -82,6 +82,97 @@
       "siteConfig": {
         ".read": "auth != null",
         ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
+      },
+      "aiConfig": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
+      }
+    },
+
+    "userTiers": {
+      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
+        ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
+      }
+    },
+
+    "aiUsage": {
+      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
+        "$day": {
+          ".write": "auth != null && auth.uid === $uid"
+        }
+      }
+    },
+
+    "community": {
+      "profiles": {
+        ".read": "auth != null",
+        "$uid": { ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')" }
+      },
+      "questions": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".indexOn": ["createdAt", "authorId", "status", "score"]
+      },
+      "scenarios": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".indexOn": ["createdAt", "authorId", "status", "score"]
+      },
+      "threads": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".indexOn": ["createdAt", "authorId", "lastReplyAt", "category"]
+      },
+      "comments": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "$target": { ".indexOn": ["createdAt"] }
+      },
+      "decks": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".indexOn": ["createdAt", "authorId", "score"]
+      },
+      "studyGroups": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".indexOn": ["createdAt", "ownerId"]
+      },
+      "votes": {
+        ".read": "auth != null",
+        "$target": {
+          "$uid": { ".write": "auth != null && auth.uid === $uid" }
+        }
+      },
+      "activity": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".indexOn": ["timestamp"]
+      },
+      "stats": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      },
+      "notifications": {
+        "$uid": {
+          ".read": "auth != null && auth.uid === $uid",
+          ".write": "auth != null",
+          ".indexOn": ["timestamp"]
+        }
+      },
+      "reports": {
+        ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' || root.child('admins').child(auth.uid).val() === true)",
+        ".write": "auth != null",
+        ".indexOn": ["createdAt", "status"]
+      },
+      "moderationLog": {
+        ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' || root.child('admins').child(auth.uid).val() === true)",
+        ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' || root.child('admins').child(auth.uid).val() === true)",
+        ".indexOn": ["timestamp"]
       }
     }
   }
