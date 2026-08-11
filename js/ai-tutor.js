@@ -25,68 +25,221 @@
     var st = document.createElement('style');
     st.id = 'ai-tutor-styles';
     st.textContent = [
-      '.tutor-wrap{display:flex;flex-direction:column;height:calc(100vh - 40px);max-height:900px}',
-      '.tutor-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}',
-      '.tutor-persona-strip{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 10px;scrollbar-width:thin}',
-      '.tutor-persona{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;',
-      'border:2px solid var(--surface2);background:var(--surface);cursor:pointer;color:var(--text2);',
-      'font-size:0.85rem;font-weight:600;transition:border-color .15s,color .15s;white-space:nowrap}',
+      /* height: `vh` first as the fallback, then `dvh` so iOS Safari measures the
+         SMALL viewport (URL bar + keyboard visible) and the composer stays on
+         screen. DR06 CRITICAL #1. */
+      '.tutor-wrap{display:flex;flex-direction:column;height:calc(100vh - var(--sp-10, 40px));',
+      'height:calc(100dvh - var(--sp-10, 40px));max-height:900px}',
+      '.tutor-head{display:flex;align-items:center;gap:var(--sp-2,8px);flex-wrap:wrap;margin-bottom:var(--sp-3,12px)}',
+      '.tutor-persona-strip{display:flex;gap:var(--sp-2,8px);overflow-x:auto;padding:var(--sp-1,4px) 2px var(--sp-3,12px);',
+      'scrollbar-width:thin;scroll-snap-type:x proximity;',
+      '-webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 24px),transparent 100%);',
+      'mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 24px),transparent 100%)}',
+      /* Fixed min-width + a permanently rendered second line: selecting a pill
+         never changes its size, so the strip cannot reflow under a finger. */
+      '.tutor-persona{flex:0 0 auto;scroll-snap-align:start;display:flex;align-items:center;gap:var(--sp-2,8px);',
+      'padding:var(--sp-2,8px) var(--sp-3,12px);min-height:44px;min-width:150px;border-radius:var(--r-full,999px);',
+      'border:2px solid var(--border,#334155);background:var(--surface);cursor:pointer;color:var(--text2);',
+      'font-size:var(--fs-sm,13px);font-weight:var(--fw-semi,600);white-space:nowrap;text-align:left;',
+      'transition:border-color var(--dur-fast,.12s),color var(--dur-fast,.12s),background var(--dur-fast,.12s)}',
       '.tutor-persona:hover{border-color:var(--accent)}',
       '.tutor-persona:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
-      '.tutor-persona.active{border-color:var(--accent);color:var(--text);background:rgba(59,130,246,0.12)}',
+      '.tutor-persona:active{transform:scale(.975)}',
+      '.tutor-persona.active{border-color:var(--accent);color:var(--text);background:var(--tint-accent,rgba(59,130,246,0.12))}',
+      '.tutor-persona[aria-checked="true"]{border-color:var(--accent);color:var(--text);background:var(--tint-accent,rgba(59,130,246,0.12))}',
       '.tutor-persona-av{font-size:1.15rem;line-height:1}',
+      '.tutor-persona-txt{display:flex;flex-direction:column;align-items:flex-start;line-height:var(--lh-tight,1.2);min-width:0}',
+      '.tutor-persona-name{font-weight:var(--fw-bold,700)}',
+      '.tutor-persona-tag{font-size:var(--fs-2xs,11px);font-weight:var(--fw-semi,600);color:var(--text3)}',
+      '.tutor-persona.active .tutor-persona-tag,.tutor-persona[aria-checked="true"] .tutor-persona-tag{color:var(--text2)}',
       '.tutor-body{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--surface);',
-      'border:1px solid var(--surface2);border-radius:14px;overflow:hidden}',
-      '.tutor-msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}',
-      '.tutor-msg{display:flex;gap:10px;max-width:88%}',
+      'border:1px solid var(--border,#334155);border-radius:var(--r-lg,14px);overflow:hidden}',
+      '.tutor-msgs{flex:1;overflow-y:auto;padding:var(--sp-4,16px);display:flex;flex-direction:column;gap:var(--sp-3,12px)}',
+      '.tutor-msgs:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}',
+      '.tutor-msg{display:flex;gap:var(--sp-3,12px);max-width:88%}',
       '.tutor-msg.user{align-self:flex-end;flex-direction:row-reverse}',
-      '.tutor-bubble{padding:10px 14px;border-radius:14px;font-size:0.92rem;line-height:1.55;white-space:pre-wrap;word-break:break-word}',
-      '.tutor-msg.ai .tutor-bubble{background:var(--surface2);color:var(--text);border-bottom-left-radius:4px}',
-      '.tutor-msg.user .tutor-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:4px}',
-      '.tutor-av{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;',
-      'background:var(--surface2);font-size:1.05rem;flex:0 0 auto}',
+      '.tutor-bubble{padding:var(--sp-3,12px) var(--sp-4,16px);border-radius:var(--r-lg,14px);font-size:var(--fs-md,16px);',
+      'line-height:var(--lh-body,1.65);word-break:break-word}',
+      '.tutor-msg.ai .tutor-bubble{background:var(--surface3,#334155);color:var(--text);border-bottom-left-radius:var(--r-sm,6px)}',
+      '.tutor-msg.user .tutor-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:var(--r-sm,6px)}',
+      /* rich text inside a bubble — same grammar community.js renders */
+      '.tutor-bubble p{margin:0 0 var(--sp-2,8px);line-height:var(--lh-body,1.65)}',
+      '.tutor-bubble p:last-child{margin-bottom:0}',
+      '.tutor-bubble ul{margin:var(--sp-1,4px) 0 var(--sp-2,8px);padding-left:var(--sp-5,20px)}',
+      '.tutor-bubble li{margin-bottom:var(--sp-1,4px);line-height:var(--lh-body,1.65)}',
+      '.tutor-bubble code{background:var(--bg);border:1px solid var(--border,#334155);border-radius:var(--r-sm,6px);',
+      'padding:1px 6px;font-family:"Courier New",monospace;font-size:0.88em;color:var(--orange-fg,#fbbf24)}',
+      '.tutor-bubble strong{font-weight:var(--fw-black,800)}',
+      '.tutor-caret{display:inline-block;width:8px;color:var(--accent-fg,#60a5fa);animation:tutorCaret 1s steps(2) infinite}',
+      '@keyframes tutorCaret{0%,49%{opacity:1}50%,100%{opacity:.15}}',
+      '.tutor-av{width:32px;height:32px;border-radius:var(--r-full,999px);display:flex;align-items:center;justify-content:center;',
+      'background:var(--surface3,#334155);font-size:1.05rem;flex:0 0 auto}',
       '.tutor-msg.user .tutor-av{background:var(--accent2)}',
-      '.tutor-meta{font-size:0.7rem;color:var(--text3);margin-top:4px}',
-      '.tutor-input-row{display:flex;gap:8px;padding:12px;border-top:1px solid var(--surface2);align-items:flex-end;background:var(--bg)}',
-      '.tutor-input{flex:1;min-height:44px;max-height:140px;resize:none;padding:11px 13px;border-radius:11px;',
-      'border:2px solid var(--surface2);background:var(--surface);color:var(--text);font-size:0.92rem;font-family:inherit;line-height:1.45}',
-      '.tutor-input:focus{outline:none;border-color:var(--accent)}',
-      '.tutor-send{min-width:44px;min-height:44px;border-radius:11px;border:none;background:var(--accent);',
-      'color:#fff;font-size:1.05rem;cursor:pointer;font-weight:700}',
+      '.tutor-meta{font-size:var(--fs-2xs,11px);color:var(--text3);margin-top:var(--sp-1,4px)}',
+      '.tutor-input-row{display:flex;gap:var(--sp-2,8px);padding:var(--sp-3,12px);border-top:1px solid var(--border,#334155);',
+      'align-items:flex-end;background:var(--bg);padding-bottom:calc(var(--sp-3,12px) + env(safe-area-inset-bottom,0px))}',
+      /* 16px minimum: anything smaller makes iOS Safari zoom the whole page on focus. */
+      '.tutor-input{flex:1;min-height:44px;max-height:140px;resize:none;padding:11px 13px;border-radius:var(--r-md,10px);',
+      'border:2px solid var(--border,#334155);background:var(--surface);color:var(--text);font-size:var(--fs-md,16px);',
+      'font-family:inherit;line-height:var(--lh-normal,1.5)}',
+      '.tutor-input:focus{border-color:var(--accent)}',
+      '.tutor-input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
+      '.tutor-input::placeholder{color:var(--text3)}',
+      '.tutor-send{min-width:44px;min-height:44px;border-radius:var(--r-md,10px);border:none;background:var(--accent);',
+      'color:#fff;font-size:1.05rem;cursor:pointer;font-weight:var(--fw-bold,700)}',
       '.tutor-send:disabled{opacity:.45;cursor:not-allowed}',
+      '.tutor-send:active{transform:scale(.975)}',
       '.tutor-send:focus-visible{outline:2px solid var(--text);outline-offset:2px}',
-      '.tutor-quick{display:flex;gap:6px;flex-wrap:wrap;padding:10px 12px 0}',
-      '.tutor-chip{padding:6px 11px;border-radius:999px;border:1px solid var(--surface2);background:var(--surface);',
-      'color:var(--text2);font-size:0.78rem;cursor:pointer;font-weight:600}',
+      '.tutor-stop{min-width:44px;min-height:44px;padding:0 var(--sp-3,12px);border-radius:var(--r-md,10px);',
+      'border:2px solid var(--red,#ef4444);background:transparent;color:var(--red-fg,#f87171);cursor:pointer;',
+      'font-size:var(--fs-sm,13px);font-weight:var(--fw-bold,700)}',
+      '.tutor-stop:hover{background:var(--tint-red,rgba(239,68,68,0.12))}',
+      '.tutor-stop:active{transform:scale(.975)}',
+      '.tutor-stop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
+      '.tutor-quick{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;padding:var(--sp-3,12px) var(--sp-3,12px) 0;align-items:center}',
+      '.tutor-quick-lab{font-size:var(--fs-2xs,11px);color:var(--text3);font-weight:var(--fw-semi,600);',
+      'text-transform:uppercase;letter-spacing:.5px}',
+      '.tutor-chip{padding:var(--sp-2,8px) var(--sp-3,12px);min-height:44px;border-radius:var(--r-full,999px);',
+      'border:1px solid var(--border,#334155);background:var(--surface);color:var(--text2);font-size:var(--fs-sm,13px);',
+      'cursor:pointer;font-weight:var(--fw-semi,600);display:inline-flex;align-items:center}',
       '.tutor-chip:hover{border-color:var(--accent);color:var(--text)}',
+      '.tutor-chip:active{transform:scale(.975)}',
       '.tutor-chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
       '.tutor-typing{display:inline-flex;gap:3px;align-items:center}',
-      '.tutor-dot{width:6px;height:6px;border-radius:50%;background:var(--text3);animation:tutorBounce 1.2s infinite}',
+      '.tutor-dot{width:6px;height:6px;border-radius:var(--r-full,999px);background:var(--text3);animation:tutorBounce 1.2s infinite}',
       '.tutor-dot:nth-child(2){animation-delay:.15s}.tutor-dot:nth-child(3){animation-delay:.3s}',
       '@keyframes tutorBounce{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}',
-      '.tutor-empty{text-align:center;color:var(--text3);padding:32px 18px;margin:auto}',
-      '.tutor-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:0.78rem;color:var(--text3);',
-      'padding:8px 12px;border-top:1px solid var(--surface2)}',
-      '.tutor-sel{padding:5px 9px;border-radius:8px;border:1px solid var(--surface2);background:var(--surface);',
-      'color:var(--text2);font-size:0.78rem}',
-      '.tutor-err{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:var(--red);',
-      'padding:10px 13px;border-radius:10px;font-size:0.86rem;margin:8px 12px}',
+      '.tutor-bar{display:flex;align-items:center;gap:var(--sp-2,8px);flex-wrap:wrap;font-size:var(--fs-xs,12px);',
+      'color:var(--text3);padding:var(--sp-2,8px) var(--sp-3,12px);border-top:1px solid var(--border,#334155)}',
+      '.tutor-bar label{display:inline-flex;align-items:center;gap:var(--sp-1,4px)}',
+      '.tutor-sel{padding:var(--sp-1,4px) var(--sp-2,8px);min-height:32px;border-radius:var(--r-sm,6px);',
+      'border:1px solid var(--border,#334155);background:var(--surface);color:var(--text2);font-size:var(--fs-md,16px);max-width:190px}',
+      '.tutor-err{background:var(--tint-red,rgba(239,68,68,0.1));border:1px solid var(--red,#ef4444);color:var(--text);',
+      'padding:var(--sp-3,12px);border-radius:var(--r-md,10px);font-size:var(--fs-base,14px);margin:var(--sp-2,8px) var(--sp-3,12px);',
+      'line-height:var(--lh-normal,1.5)}',
+      '.tutor-err-act{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;margin-top:var(--sp-2,8px)}',
+      '.tutor-lock-note{color:var(--text3);font-size:var(--fs-base,14px);line-height:var(--lh-body,1.65);',
+      'max-width:44ch;margin:0 auto var(--sp-4,16px)}',
+      '.tutor-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;',
+      'clip:rect(0 0 0 0);white-space:nowrap;border:0}',
       '@media(max-width:640px){',
-      '.tutor-wrap{height:calc(100vh - 20px)}',
+      '.tutor-wrap{height:calc(100vh - 56px);height:calc(100dvh - 56px)}',
       '.tutor-msg{max-width:95%}',
-      '.tutor-persona-strip{gap:6px}',
-      '.tutor-persona{padding:7px 10px;font-size:0.8rem}',
+      '.tutor-persona-strip{gap:var(--sp-2,8px)}',
+      '.tutor-persona{min-width:138px;padding:7px 10px;font-size:var(--fs-xs,12px)}',
+      '.tutor-input,.tutor-sel{font-size:16px}',
       '}',
-      '@media(prefers-reduced-motion:reduce){.tutor-dot{animation:none}}'
+      '@media(prefers-reduced-motion:reduce){',
+      '.tutor-dot{animation:none;opacity:.7}',
+      '.tutor-caret{animation:none}',
+      '.tutor-persona,.tutor-chip,.tutor-send,.tutor-stop{transition:none}',
+      '.tutor-persona:active,.tutor-chip:active,.tutor-send:active,.tutor-stop:active{transform:none}',
+      '}'
     ].join('');
     document.head.appendChild(st);
   }
 
   // ------------------------------------------------------------- utilities
+  function MMx() { return window.MM || {}; }
   function ai() { return (window.MM && window.MM.ai) ? window.MM.ai : null; }
   function voice() { return (window.MM && window.MM.voice) ? window.MM.voice : null; }
 
   function esc(s) { return String(s == null ? '' : s); }
+
+  function navTo(page) {
+    try { if (MMx().navigate) MMx().navigate(page); } catch (e) { /* ignore */ }
+  }
+
+  /* The shell renders its sign-in screen whenever nobody is signed in, so a
+     reload is a real (if blunt) sign-in path. Prefer a hook if the shell
+     provides one. */
+  function requestSignIn() {
+    var m = MMx();
+    try { if (typeof m.signIn === 'function') { m.signIn(); return; } } catch (e) { /* ignore */ }
+    try { if (typeof m.requestSignIn === 'function') { m.requestSignIn(); return; } } catch (e) { /* ignore */ }
+    try { window.location.reload(); } catch (e) { /* ignore */ }
+  }
+
+  /* `QUESTIONS` is a top-level `const` in the shell, so it is a lexical global
+     rather than a property of `window`. Read it both ways. */
+  function allQuestions() {
+    try { if (window.QUESTIONS && window.QUESTIONS.length) return window.QUESTIONS; } catch (e) { /* ignore */ }
+    try { if (typeof QUESTIONS !== 'undefined' && QUESTIONS) return QUESTIONS; } catch (e) { /* ignore */ }
+    return [];
+  }
+
+  /* -------------------------------------------------- markdown-ish output
+     Every persona prompt tells the model to use bullets and bold. Rendering
+     the raw characters made students read literal `**` and `-`. This is the
+     same inline grammar community.js uses, plus list handling. Everything is
+     emitted as React elements with TEXT children — never innerHTML. */
+
+  var INLINE_RE = /(\*\*[^*\n]{1,300}\*\*|`[^`\n]{1,300}`)/g;
+
+  function renderInline(line, keyBase) {
+    var out = [];
+    var last = 0, m, i = 0;
+    INLINE_RE.lastIndex = 0;
+    while ((m = INLINE_RE.exec(line)) !== null) {
+      if (m.index > last) out.push(line.slice(last, m.index));
+      var tok = m[0];
+      if (tok.charAt(0) === '*') {
+        out.push(ce('strong', { key: keyBase + '-b' + (i++) }, tok.slice(2, -2)));
+      } else {
+        out.push(ce('code', { key: keyBase + '-c' + (i++) }, tok.slice(1, -1)));
+      }
+      last = m.index + tok.length;
+    }
+    if (last < line.length) out.push(line.slice(last));
+    return out;
+  }
+
+  var BULLET_RE = /^\s*([-*•]|\d{1,2}[.)])\s+(.*)$/;
+
+  function richBlocks(text, keyPrefix) {
+    var lines = String(text == null ? '' : text).split('\n');
+    var out = [];
+    var bullets = null;
+    var n = 0;
+
+    function flush() {
+      if (bullets && bullets.length) {
+        out.push(ce('ul', { key: keyPrefix + '-u' + (n++) }, bullets));
+      }
+      bullets = null;
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i];
+      var mb = BULLET_RE.exec(ln);
+      if (mb) {
+        if (!bullets) bullets = [];
+        bullets.push(ce('li', { key: keyPrefix + '-li' + i }, renderInline(mb[2], keyPrefix + 'i' + i)));
+        continue;
+      }
+      flush();
+      if (!ln.replace(/\s/g, '')) continue;
+      out.push(ce('p', { key: keyPrefix + '-p' + i }, renderInline(ln, keyPrefix + 'p' + i)));
+    }
+    flush();
+    return out;
+  }
+
+  /** Markdown characters read as noise in a screen reader. Strip for announcing. */
+  function plain(text) {
+    return String(text == null ? '' : text)
+      .replace(/\*\*/g, '')
+      .replace(/`/g, '')
+      .replace(/^\s*[-*•]\s+/gm, '')
+      .replace(/\n{2,}/g, '\n')
+      .trim();
+  }
+
+  function Rich(props) {
+    var body = richBlocks(props.text, props.k || 'r');
+    if (props.caret) body = body.concat([ce('span', { key: 'caret', className: 'tutor-caret', 'aria-hidden': 'true' }, '▍')]);
+    return ce('div', { className: 'tutor-bubble' }, body.length ? body : esc(props.text));
+  }
 
   /* Build a compact snapshot of how the student is doing so the tutor can
      personalise. Kept short on purpose — this is prepended to every request. */
@@ -95,6 +248,7 @@
     var out = [];
     var stats = progress.questionStats || {};
     var ids = Object.keys(stats);
+    var bank = allQuestions();
     if (ids.length) {
       var weak = [];
       var byCat = {};
@@ -103,8 +257,8 @@
         if (!s || !s.attempts) return;
         var q = null;
         try {
-          q = (window.QUESTIONS || []).filter(function (x) { return x.id === id; })[0];
-        } catch (e) {}
+          q = bank.filter(function (x) { return x.id === id; })[0];
+        } catch (e) { /* ignore */ }
         var cat = q && q.category ? q.category : 'General';
         if (!byCat[cat]) byCat[cat] = { c: 0, a: 0 };
         byCat[cat].c += (s.correct || 0);
@@ -145,6 +299,58 @@
     { id: 'priority', label: 'Priority questions', prompt: 'Drill me on NCLEX priority-setting questions. Which patient do I see first, and why? One at a time.' }
   ];
 
+  /* One noun per persona. Without this the strip is seven proper nouns the
+     student has never heard, and the credential only rendered on the pill they
+     had already picked. */
+  var SHORT_TAG = {
+    'ed-attending': 'Priorities & emergencies',
+    'np-preceptor': 'Why the body does that',
+    'nursing-professor': 'NCLEX strategy',
+    'ati-coach': 'ATI exam prep',
+    'ob-instructor': 'OB & newborn',
+    'picu-educator': 'Peds',
+    'pharm-calc-coach': 'Dosage & pharm'
+  };
+
+  /* ai.js already hands back a friendly-but-generic sentence for every code.
+     When the *backend* diagnosed something specific ("the account funding this
+     is out of credits") it arrives on e.message instead, and that is far more
+     useful than anything we could write here — so only fall back to our own
+     copy when the message is one of ai.js's generics. */
+  var AI_GENERIC = {
+    'Sign in to use the AI tutor.': 1,
+    'That model is not included in your plan.': 1,
+    'You have used all of your AI messages for today.': 1,
+    'AI features are turned off right now.': 1,
+    'Could not reach the AI service. Check your connection.': 1,
+    'Something went wrong on our end. Try again in a moment.': 1,
+    'AI is not available right now.': 1
+  };
+
+  var OUR_COPY = {
+    'no-auth': 'You need to be signed in for this. Your work here is saved — signing in will not lose it.',
+    'tier-denied': 'That model is not included in your plan. Pick another model below, or ask your instructor for access.',
+    'quota-exceeded': 'You have used all of your tutor messages for today. They reset at midnight Eastern.',
+    'ai-disabled': 'AI is switched off site-wide right now. The scripted simulations and everything else still work.',
+    'network': 'Could not reach the tutor. Your message is still in the box — hit Retry when you are back on wifi.',
+    'server': 'The tutor did not answer that one. Try again in a moment.'
+  };
+
+  function aiErrText(e) {
+    var code = (e && e.code) ? String(e.code) : 'server';
+    var msg = (e && e.message) ? String(e.message) : '';
+    if (msg && !AI_GENERIC[msg]) return msg;          // real backend diagnosis
+    if (OUR_COPY[code]) return OUR_COPY[code];
+    return OUR_COPY.server;
+  }
+
+  var TAIL = 'Everything else in MedMaster still works.';
+
+  function withTail(s) {
+    if (!s) return TAIL;
+    return s.indexOf(TAIL) >= 0 ? s : (s + ' ' + TAIL);
+  }
+
   // ============================================================ main page
   function AITutorPage(props) {
     var progress = (props && props.progress) || (window.MM && window.MM.getProgress ? window.MM.getProgress() : {});
@@ -157,16 +363,18 @@
     var _m = useState([]); var msgs = _m[0], setMsgs = _m[1];
     var _i = useState(''); var input = _i[0], setInput = _i[1];
     var _b = useState(false); var busy = _b[0], setBusy = _b[1];
-    var _e = useState(''); var err = _e[0], setErr = _e[1];
+    var _e = useState(null); var err = _e[0], setErr = _e[1];
     var _s = useState(''); var streaming = _s[0], setStreaming = _s[1];
     var _a = useState(false); var autoSpeak = _a[0], setAutoSpeak = _a[1];
     var _sc = useState(''); var scenarioId = _sc[0], setScenarioId = _sc[1];
     var _u = useState(null); var usage = _u[0], setUsage = _u[1];
     var _mo = useState(''); var model = _mo[0], setModel = _mo[1];
+    var _an = useState(''); var announce = _an[0], setAnnounce = _an[1];
 
     var scrollRef = useRef(null);
     var inputRef = useRef(null);
     var abortRef = useRef(false);
+    var lastSentRef = useRef('');
 
     var persona = useMemo(function () {
       for (var i = 0; i < personas.length; i++) if (personas[i].id === personaId) return personas[i];
@@ -178,8 +386,8 @@
     // Load usage + selected model
     useEffect(function () {
       if (!A) return;
-      try { if (A.getUsage) Promise.resolve(A.getUsage()).then(setUsage).catch(function () {}); } catch (e) {}
-      try { if (A.getSelectedModel) setModel(A.getSelectedModel() || ''); } catch (e) {}
+      try { if (A.getUsage) Promise.resolve(A.getUsage()).then(setUsage)['catch'](function () {}); } catch (e) { /* ignore */ }
+      try { if (A.getSelectedModel) setModel(A.getSelectedModel() || ''); } catch (e) { /* ignore */ }
     }, [busy]);
 
     // Auto-scroll to newest
@@ -188,40 +396,79 @@
       if (el) el.scrollTop = el.scrollHeight;
     }, [msgs.length, streaming]);
 
+    function greetMsg() {
+      if (!persona) return null;
+      return {
+        role: 'assistant', greeting: true,
+        content: persona.greeting || ('Hi, I am ' + persona.name + '. What are we working on today?'),
+        persona: persona.id
+      };
+    }
+
     // Greeting when persona changes and chat is empty
     useEffect(function () {
       if (!persona || msgs.length) return;
-      setMsgs([{ role: 'assistant', content: persona.greeting || ('Hi, I am ' + persona.name + '. What are we working on today?'), persona: persona.id }]);
+      var g = greetMsg();
+      if (g) setMsgs([g]);
     }, [personaId]);
 
     // Stop any speech when leaving
     useEffect(function () {
-      return function () { try { if (V && V.stopSpeaking) V.stopSpeaking(); } catch (e) {} };
+      return function () { try { if (V && V.stopSpeaking) V.stopSpeaking(); } catch (e) { /* ignore */ } };
     }, []);
 
     function switchPersona(id) {
-      if (busy) return;
-      try { if (V && V.stopSpeaking) V.stopSpeaking(); } catch (e) {}
+      if (busy || id === personaId) return;
+      // "Clear chat" confirms; switching instructors used to wipe the
+      // conversation silently. Same destruction, same confirm.
+      if (msgs.length > 1) {
+        var ok = true;
+        try { ok = window.confirm('Switching instructors starts a new conversation. Clear this one?'); }
+        catch (e) { ok = true; }
+        if (!ok) return;
+      }
+      try { if (V && V.stopSpeaking) V.stopSpeaking(); } catch (e) { /* ignore */ }
       setPersonaId(id);
       setMsgs([]);
-      setErr('');
+      setErr(null);
     }
 
     function speakIfWanted(text) {
       if (!autoSpeak || !V || !V.speak) return;
       try {
         V.speak(text, { voice: (persona && persona.voiceHint) ? persona.voiceHint : 'instructor' })
-          .catch(function () {});
-      } catch (e) {}
+          ['catch'](function () {});
+      } catch (e) { /* ignore */ }
+    }
+
+    function stopGeneration() {
+      if (!busy) return;
+      abortRef.current = true;
+      var partial = streaming;
+      setStreaming('');
+      setBusy(false);
+      if (partial) {
+        setMsgs(function (prev) {
+          return prev.concat([{
+            role: 'assistant', content: partial, stopped: true,
+            persona: persona ? persona.id : ''
+          }]);
+        });
+      }
+      setAnnounce('Stopped.');
     }
 
     function send(overrideText) {
       var text = (overrideText != null ? overrideText : input).trim();
       if (!text || busy) return;
-      if (!available) { setErr('AI is not available on your account right now.'); return; }
+      if (!available) {
+        setErr({ text: 'The tutor is not available on your account right now.', retry: false });
+        return;
+      }
 
-      setErr('');
+      setErr(null);
       setInput('');
+      lastSentRef.current = text;
       abortRef.current = false;
 
       var nextMsgs = msgs.concat([{ role: 'user', content: text }]);
@@ -238,7 +485,7 @@
         var all = window.ALL_SCENARIOS || [];
         for (var i = 0; i < all.length; i++) if (all[i].id === scenarioId) { sc = all[i]; break; }
         if (sc && A.buildScenarioContext) {
-          try { sys += '\n\nCURRENT CASE THE STUDENT IS STUDYING:\n' + A.buildScenarioContext(sc); } catch (e) {}
+          try { sys += '\n\nCURRENT CASE THE STUDENT IS STUDYING:\n' + A.buildScenarioContext(sc); } catch (e) { /* ignore */ }
         }
       }
 
@@ -264,20 +511,25 @@
         });
         setStreaming('');
         setBusy(false);
-        speakIfWanted(finalText);
-      }).catch(function (e) {
+        setAnnounce(plain(finalText));
+        speakIfWanted(plain(finalText));
+      })['catch'](function (e) {
         if (abortRef.current) return;
         setStreaming('');
         setBusy(false);
-        var code = e && e.code ? e.code : 'server';
-        var msg;
-        if (code === 'no-auth') msg = 'You need to be signed in to use the AI tutor.';
-        else if (code === 'tier-denied') msg = 'Your account tier does not include this model. Try a different model or ask your instructor for access.';
-        else if (code === 'quota-exceeded') msg = 'You have used all your AI messages for today. They reset at midnight.';
-        else if (code === 'ai-disabled') msg = 'The AI tutor is turned off right now.';
-        else if (code === 'network') msg = 'Network problem reaching the tutor. Check your connection and try again.';
-        else msg = 'Something went wrong reaching the tutor. Please try again.';
-        setErr(msg);
+        var code = (e && e.code) ? e.code : 'server';
+        // The turn never happened: take the unanswered message back out of the
+        // transcript and put the text back in the box so nobody retypes it.
+        setMsgs(function (prev) {
+          if (prev.length && prev[prev.length - 1].role === 'user') return prev.slice(0, prev.length - 1);
+          return prev;
+        });
+        setInput(lastSentRef.current);
+        setErr({
+          text: aiErrText(e),
+          retry: code === 'network' || code === 'server',
+          reason: (e && e.reason) ? String(e.reason) : ''
+        });
       });
     }
 
@@ -290,115 +542,240 @@
       return ce('div', null,
         ce('h2', { style: { marginBottom: 6 } }, '🎓 AI Tutor'),
         ce('div', { className: 'card', style: { textAlign: 'center', padding: 34 } },
-          ce('div', { style: { fontSize: '2.2rem', marginBottom: 10 } }, '📦'),
+          ce('div', { style: { fontSize: '2.2rem', marginBottom: 10 }, 'aria-hidden': 'true' }, '📦'),
           ce('div', { style: { fontWeight: 700, marginBottom: 6 } }, 'AI module not loaded'),
-          ce('p', { style: { color: 'var(--text3)', fontSize: '0.9rem' } },
-            'The AI tutor module failed to download. Reload the page to try again.'),
-          ce('button', { className: 'btn btn-primary', style: { marginTop: 14 }, onClick: function () { window.location.reload(); } }, 'Reload')
+          ce('p', { className: 'tutor-lock-note' },
+            'The AI tutor module failed to download. Reload the page to try again. ' +
+            'If this keeps happening, your network may be blocking our scripts.'),
+          ce('button', { className: 'btn btn-primary', onClick: function () { window.location.reload(); } }, 'Reload')
         )
       );
     }
 
     if (!available) {
+      // Say WHY. "You are not signed in", "the owner turned it off" and "come
+      // back tomorrow" are three different states and must not read the same.
+      var why = null;
+      try { why = (A.unavailableReason && A.unavailableReason()) || null; } catch (e) { why = null; }
+      var code = (why && why.code) ? String(why.code) : '';
+      var rawMsg = (why && why.message) ? String(why.message) : '';
+
+      // ai.js reuses 'not-configured' for two different situations: no model
+      // assigned yet (a setup step) and a plan that deliberately has no AI.
+      if (code === 'not-configured' && /no AI messages allocated|not included in your plan/i.test(rawMsg)) {
+        code = 'plan-excluded';
+      }
+
+      var tier = '';
+      try { tier = A.getTier ? String(A.getTier()) : ''; } catch (e) { tier = ''; }
+
+      var lockIcon = '🔒';
+      var lockTitle = (why && why.title) ? why.title : 'The AI tutor is not available on your account';
+      // The one-line guard for the sentence that shipped twice: ai.js's
+      // ai-disabled message already ends with it.
+      var lockMsg = withTail(rawMsg || 'Your current plan does not include the AI tutor, or it is temporarily switched off.');
+      var lockNote = '';
+      var actions = [];
+
+      if (code === 'signed-out') {
+        lockIcon = '👋';
+        lockTitle = 'Sign in and your tutor is ready';
+        lockMsg = 'Your tutor uses what you have already studied — your missed questions, your sim scores, ' +
+                  'your weak areas — so it can skip what you already know. That needs an account.';
+        lockNote = 'Nothing is locked away. Everything you have done on this device is saved and will still be here.';
+        actions.push(ce('button', { key: 'in', className: 'btn btn-primary', onClick: requestSignIn }, 'Sign in'));
+      } else if (code === 'ai-disabled') {
+        lockIcon = '🛠';
+        lockTitle = 'The tutor is off right now';
+        lockMsg = withTail(rawMsg || 'Whoever runs your MedMaster has AI turned off.');
+        lockNote = 'This is not something on your account and there is nothing for you to fix. Check back later.';
+      } else if (code === 'not-configured') {
+        lockIcon = '🛠';
+        lockTitle = 'The tutor is not switched on for your plan yet';
+        lockMsg = withTail(rawMsg);
+        lockNote = 'This one is on us, not you. If your school gave you MedMaster, your instructor can turn it on.';
+      } else if (code === 'plan-excluded') {
+        lockIcon = '🔒';
+        lockTitle = 'The AI tutor is not part of the ' + (tier || 'free') + ' plan';
+        lockMsg = rawMsg || 'This plan has no AI tutor messages.';
+        lockNote = 'Everything else — 40+ simulations, med admin, smart study and the whole question bank — stays included.';
+      } else if (code === 'quota-exceeded') {
+        lockIcon = '⏳';
+        lockTitle = 'That is all your tutor messages for today';
+        var hrs = 0;
+        if (usage && usage.resetsAt) hrs = Math.max(1, Math.round((usage.resetsAt - Date.now()) / 3600000));
+        lockMsg = (rawMsg || 'You have used all of today\'s tutor messages.') +
+                  (hrs ? (' That is about ' + hrs + ' ' + (hrs === 1 ? 'hour' : 'hours') + ' from now.') : '');
+        lockNote = 'Honestly — the best thing right after a tutor session is drilling what you just covered.';
+        actions.push(ce('button', {
+          key: 'drill', className: 'btn btn-primary', onClick: function () { navTo('smart'); }
+        }, 'Drill my missed questions'));
+      }
+
+      var support = '';
+      try {
+        var cfg = MMx().siteConfig;
+        support = (cfg && cfg.supportEmail) ? String(cfg.supportEmail) : '';
+      } catch (e) { support = ''; }
+      if (support && (code === 'not-configured' || code === 'plan-excluded')) {
+        actions.push(ce('a', {
+          key: 'tell', className: 'btn btn-outline',
+          href: 'mailto:' + support + '?subject=' + encodeURIComponent('MedMaster: AI tutor is not switched on')
+        }, 'Tell my instructor'));
+      }
+
+      actions.push(ce('button', {
+        key: 'sim', className: 'btn btn-outline', onClick: function () { navTo('simulations'); }
+      }, 'Go to Simulations'));
+      if (code !== 'quota-exceeded') {
+        actions.push(ce('button', {
+          key: 'smart', className: 'btn btn-outline', onClick: function () { navTo('smart'); }
+        }, 'Smart Study'));
+      }
+
       return ce('div', null,
         ce('h2', { style: { marginBottom: 6 } }, '🎓 AI Tutor'),
         ce('div', { className: 'card', style: { textAlign: 'center', padding: 34 } },
-          ce('div', { style: { fontSize: '2.2rem', marginBottom: 10 } }, '🔒'),
-          ce('div', { style: { fontWeight: 700, marginBottom: 6 } }, 'AI tutoring is not enabled on your account'),
-          ce('p', { style: { color: 'var(--text3)', fontSize: '0.9rem', maxWidth: 420, margin: '0 auto 14px' } },
-            'Your current plan does not include the AI tutor, or it is temporarily switched off. Everything else in MedMaster still works.'),
-          ce('div', { style: { display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' } },
-            ce('button', { className: 'btn btn-outline', onClick: function () { if (window.MM.navigate) window.MM.navigate('simulations'); } }, 'Go to Simulations'),
-            ce('button', { className: 'btn btn-outline', onClick: function () { if (window.MM.navigate) window.MM.navigate('smart'); } }, 'Smart Study')
-          )
+          ce('div', { style: { fontSize: '2.2rem', marginBottom: 10 }, 'aria-hidden': 'true' }, lockIcon),
+          ce('div', { style: { fontWeight: 700, marginBottom: 6, fontSize: 'var(--fs-lg, 19px)' } }, lockTitle),
+          ce('p', { className: 'tutor-lock-note' }, lockMsg),
+          lockNote ? ce('p', { className: 'tutor-lock-note', style: { marginTop: -8 } }, lockNote) : null,
+          ce('div', { style: { display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' } }, actions),
+          tier ? ce('p', { className: 'tutor-meta', style: { marginTop: 14 } }, 'Your plan: ' + tier.toUpperCase()) : null
         )
       );
     }
 
     // ------------------------------------------------------------- main UI
     var models = [];
-    try { models = (A.getModels && A.getModels()) || []; } catch (e) {}
+    try { models = (A.getModels && A.getModels()) || []; } catch (e) { /* ignore */ }
     var allowChoice = models.length > 1;
 
     var scenarios = window.ALL_SCENARIOS || [];
+    var scenariosByCat = {};
+    var catOrder = [];
+    scenarios.forEach(function (s) {
+      var c = s.category || 'Other';
+      if (!scenariosByCat[c]) { scenariosByCat[c] = []; catOrder.push(c); }
+      scenariosByCat[c].push(s);
+    });
+
+    var lastMsg = msgs.length ? msgs[msgs.length - 1] : null;
+    /* The chips used to be gated on `msgs.length <= 1` and the greeting *is*
+       message 1 — so the tutor's best affordance appeared for exactly one turn.
+       Show them whenever the ball is in the student's court and they have not
+       started typing: they are suggestions, not an onboarding step. */
+    var showQuick = !busy && !streaming && !input.replace(/\s/g, '') &&
+                    (!lastMsg || lastMsg.role === 'assistant');
 
     return ce('div', { className: 'tutor-wrap' },
       ce('div', { className: 'tutor-head' },
-        ce('h2', { style: { margin: 0, fontSize: '1.3rem' } }, '🎓 AI Tutor'),
-        usage && usage.limit > 0 ? ce('span', { className: 'tag tag-blue', style: { fontSize: '0.72rem' } },
+        ce('h2', { style: { margin: 0, fontSize: 'var(--fs-xl, 22px)' } }, '🎓 AI Tutor'),
+        usage && usage.limit > 0 ? ce('span', { className: 'tag tag-blue', style: { fontSize: 'var(--fs-xs, 12px)' } },
           usage.used + ' / ' + usage.limit + ' today') : null,
-        A.getTier ? ce('span', { className: 'tag', style: { fontSize: '0.72rem', background: 'var(--surface2)', color: 'var(--text2)' } },
+        A.getTier ? ce('span', { className: 'tag', style: { fontSize: 'var(--fs-xs, 12px)', background: 'var(--surface3, #334155)', color: 'var(--text2)' } },
           String(A.getTier()).toUpperCase()) : null
       ),
 
-      // Persona picker
-      ce('div', { className: 'tutor-persona-strip', role: 'tablist', 'aria-label': 'Choose an instructor' },
+      // Persona picker. A radiogroup, not a tablist: there are no tabpanels,
+      // and this is a single choice out of seven. (DR07 MAJOR-6)
+      ce('div', {
+        className: 'tutor-persona-strip', role: 'radiogroup',
+        'aria-label': 'Choose an instructor'
+      },
         personas.map(function (p) {
-          var on = persona && p.id === persona.id;
+          var on = !!(persona && p.id === persona.id);
           return ce('button', {
             key: p.id, className: 'tutor-persona' + (on ? ' active' : ''),
-            role: 'tab', 'aria-selected': on ? 'true' : 'false',
+            type: 'button', role: 'radio', 'aria-checked': on ? 'true' : 'false',
+            title: p.credential || p.name,
             onClick: function () { switchPersona(p.id); }, disabled: busy
           },
-            ce('span', { className: 'tutor-persona-av' }, p.avatar || '👤'),
-            ce('span', null, p.name),
-            on ? ce('span', { style: { fontSize: '0.68rem', opacity: 0.75 } }, p.credential || '') : null
+            ce('span', { className: 'tutor-persona-av', 'aria-hidden': 'true' }, p.avatar || '👤'),
+            ce('span', { className: 'tutor-persona-txt' },
+              ce('span', { className: 'tutor-persona-name' }, p.name),
+              ce('span', { className: 'tutor-persona-tag' }, SHORT_TAG[p.id] || p.specialty || ''))
           );
         })
       ),
 
       ce('div', { className: 'tutor-body' },
-        // Messages
-        ce('div', { className: 'tutor-msgs', ref: scrollRef, 'aria-live': 'polite' },
-          msgs.length === 0 && !streaming
-            ? ce('div', { className: 'tutor-empty' },
-                ce('div', { style: { fontSize: '2rem', marginBottom: 8 } }, persona ? (persona.avatar || '🎓') : '🎓'),
-                ce('div', { style: { fontWeight: 700, color: 'var(--text)', marginBottom: 4 } }, persona ? persona.name : 'Your tutor'),
-                ce('div', { style: { fontSize: '0.86rem' } }, persona ? persona.specialty : ''))
-            : null,
+        // Messages. aria-live lives on a dedicated off-screen node instead of
+        // the whole scroller, which used to re-announce on every token.
+        ce('div', {
+          className: 'tutor-msgs', ref: scrollRef, tabIndex: 0,
+          role: 'region', 'aria-label': 'Conversation with your tutor'
+        },
           msgs.map(function (m, i) {
             var isUser = m.role === 'user';
             var p = null;
             if (!isUser && m.persona) {
               for (var k = 0; k < personas.length; k++) if (personas[k].id === m.persona) { p = personas[k]; break; }
             }
+            var meta = [];
+            // The specialty line used to live in an unreachable `.tutor-empty`
+            // block. It belongs on the greeting, which always renders.
+            if (m.greeting && p) {
+              var bits = [];
+              if (p.credential) bits.push(p.credential);
+              if (p.specialty) bits.push(p.specialty);
+              if (bits.length) meta.push(ce('div', { key: 'sp', className: 'tutor-meta' }, bits.join(' · ')));
+            }
+            if (m.stopped) meta.push(ce('div', { key: 'st', className: 'tutor-meta' }, 'You stopped this reply.'));
+            if (!isUser && V && V.speak && window.SpeakButton) {
+              meta.push(ce('div', { key: 'sb', className: 'tutor-meta' },
+                ce(window.SpeakButton, { text: m.content, voice: (p && p.voiceHint) || 'instructor', label: 'Listen' })));
+            }
             return ce('div', { key: i, className: 'tutor-msg ' + (isUser ? 'user' : 'ai') },
-              ce('div', { className: 'tutor-av' }, isUser ? '🧑‍⚕️' : (p ? (p.avatar || '🎓') : '🎓')),
+              ce('div', { className: 'tutor-av', 'aria-hidden': 'true' }, isUser ? '🧑‍⚕️' : (p ? (p.avatar || '🎓') : '🎓')),
               ce('div', null,
-                ce('div', { className: 'tutor-bubble' }, esc(m.content)),
-                !isUser && V && V.speak
-                  ? ce('div', { className: 'tutor-meta' },
-                      window.SpeakButton
-                        ? ce(window.SpeakButton, { text: m.content, voice: (p && p.voiceHint) || 'instructor', label: 'Listen' })
-                        : null)
-                  : null
+                isUser
+                  ? ce('div', { className: 'tutor-bubble' }, esc(m.content))
+                  : ce(Rich, { text: m.content, k: 'm' + i }),
+                meta.length ? meta : null
               )
             );
           }),
           streaming
             ? ce('div', { className: 'tutor-msg ai' },
-                ce('div', { className: 'tutor-av' }, persona ? (persona.avatar || '🎓') : '🎓'),
-                ce('div', null, ce('div', { className: 'tutor-bubble' }, streaming)))
+                ce('div', { className: 'tutor-av', 'aria-hidden': 'true' }, persona ? (persona.avatar || '🎓') : '🎓'),
+                ce('div', null, ce(Rich, { text: streaming, k: 'stream', caret: true })))
             : null,
           busy && !streaming
             ? ce('div', { className: 'tutor-msg ai' },
-                ce('div', { className: 'tutor-av' }, persona ? (persona.avatar || '🎓') : '🎓'),
+                ce('div', { className: 'tutor-av', 'aria-hidden': 'true' }, persona ? (persona.avatar || '🎓') : '🎓'),
                 ce('div', { className: 'tutor-bubble' },
                   ce('span', { className: 'tutor-typing' },
-                    ce('span', { className: 'tutor-dot' }), ce('span', { className: 'tutor-dot' }), ce('span', { className: 'tutor-dot' }))))
+                    ce('span', { className: 'tutor-dot' }), ce('span', { className: 'tutor-dot' }), ce('span', { className: 'tutor-dot' })),
+                  ce('span', { className: 'tutor-sr' }, 'Your tutor is writing a reply.')))
             : null
         ),
 
-        err ? ce('div', { className: 'tutor-err', role: 'alert' }, err) : null,
+        ce('div', { className: 'tutor-sr', 'aria-live': 'polite', 'aria-atomic': 'true' }, announce),
+
+        err ? ce('div', { className: 'tutor-err', role: 'alert' },
+          ce('div', null, err.text),
+          err.retry ? ce('div', { className: 'tutor-err-act' },
+            ce('button', {
+              className: 'btn btn-primary btn-sm',
+              onClick: function () { send(lastSentRef.current); }
+            }, 'Retry'),
+            ce('button', {
+              className: 'btn btn-outline btn-sm', onClick: function () { setErr(null); }
+            }, 'Dismiss')
+          ) : null
+        ) : null,
 
         // Quick actions
-        msgs.length <= 1 ? ce('div', { className: 'tutor-quick' },
+        showQuick ? ce('div', { className: 'tutor-quick' },
+          ce('span', { className: 'tutor-quick-lab' }, msgs.length > 1 ? 'Or ask for' : 'Try'),
           QUICK_ACTIONS.map(function (q) {
-            return ce('button', { key: q.id, className: 'tutor-chip', onClick: function () { send(q.prompt); }, disabled: busy }, q.label);
+            return ce('button', { key: q.id, className: 'tutor-chip', type: 'button', onClick: function () { send(q.prompt); } }, q.label);
           })
         ) : null,
 
-        // Input
+        // Input. The textarea stays enabled while a reply streams so a student
+        // can line up their next question — and Stop actually stops.
         ce('div', { className: 'tutor-input-row' },
           window.VoiceButton
             ? ce(window.VoiceButton, {
@@ -411,47 +788,64 @@
             placeholder: persona ? ('Ask ' + persona.name + ' anything...') : 'Ask your tutor...',
             'aria-label': 'Message to your tutor',
             onChange: function (e) { setInput(e.target.value); },
-            onKeyDown: onKeyDown, disabled: busy
+            onKeyDown: onKeyDown
           }),
-          ce('button', {
-            className: 'tutor-send', onClick: function () { send(); },
-            disabled: busy || !input.trim(), title: 'Send', 'aria-label': 'Send message'
-          }, '➤')
+          busy
+            ? ce('button', {
+                className: 'tutor-stop', type: 'button', onClick: stopGeneration,
+                title: 'Stop this reply', 'aria-label': 'Stop this reply'
+              }, '■ Stop')
+            : ce('button', {
+                className: 'tutor-send', type: 'button', onClick: function () { send(); },
+                disabled: !input.replace(/\s/g, ''), title: 'Send', 'aria-label': 'Send message'
+              }, '➤')
         ),
 
         // Bottom bar: model, case context, auto-speak
         ce('div', { className: 'tutor-bar' },
-          allowChoice ? ce('label', null, 'Model ',
+          allowChoice ? ce('label', { htmlFor: 'tutor-model' }, 'Model ',
             ce('select', {
-              className: 'tutor-sel', value: model,
-              onChange: function (e) { setModel(e.target.value); try { A.setSelectedModel(e.target.value); } catch (x) {} }
+              id: 'tutor-model', className: 'tutor-sel', value: model,
+              onChange: function (e) { setModel(e.target.value); try { A.setSelectedModel(e.target.value); } catch (x) { /* ignore */ } }
             }, models.map(function (m) { return ce('option', { key: m.id, value: m.id }, m.name); }))
           ) : null,
-          scenarios.length ? ce('label', null, 'Case ',
+          scenarios.length ? ce('label', { htmlFor: 'tutor-case' }, 'Study with a case ',
             ce('select', {
-              className: 'tutor-sel', value: scenarioId,
+              id: 'tutor-case', className: 'tutor-sel', value: scenarioId,
+              title: 'The tutor will use this patient in its examples',
               onChange: function (e) { setScenarioId(e.target.value); }
             },
-              ce('option', { value: '' }, 'None'),
-              scenarios.map(function (s) { return ce('option', { key: s.id, value: s.id }, s.title); })
+              ce('option', { value: '' }, 'No case'),
+              catOrder.map(function (c) {
+                return ce('optgroup', { key: c, label: c },
+                  scenariosByCat[c].map(function (s) { return ce('option', { key: s.id, value: s.id }, s.title); }));
+              })
             )
           ) : null,
-          (V && V.speak) ? ce('label', { style: { display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' } },
+          scenarioId ? ce('span', { className: 'tutor-meta' }, 'The tutor will use this patient in its examples.') : null,
+          (V && V.speak) ? ce('label', { style: { cursor: 'pointer' } },
             ce('input', {
               type: 'checkbox', checked: autoSpeak,
               onChange: function (e) {
                 var on = e.target.checked;
                 setAutoSpeak(on);
                 // iOS needs the first speak() inside a user gesture
-                if (on) { try { if (V.prime) V.prime(); } catch (x) {} }
-                else { try { V.stopSpeaking(); } catch (x) {} }
+                if (on) { try { if (V.prime) V.prime(); } catch (x) { /* ignore */ } }
+                else { try { V.stopSpeaking(); } catch (x) { /* ignore */ } }
               }
             }),
             'Read replies aloud'
           ) : null,
           msgs.length > 1 ? ce('button', {
-            className: 'tutor-chip', style: { marginLeft: 'auto' },
-            onClick: function () { if (window.confirm('Clear this conversation?')) { setMsgs([]); setErr(''); } }
+            className: 'tutor-chip', type: 'button', style: { marginLeft: 'auto', minHeight: 32 },
+            onClick: function () {
+              var ok = true;
+              try { ok = window.confirm('Clear this conversation?'); } catch (e) { ok = true; }
+              if (!ok) return;
+              var g = greetMsg();
+              setMsgs(g ? [g] : []);
+              setErr(null);
+            }
           }, 'Clear chat') : null
         )
       )

@@ -82,6 +82,31 @@
     var MM = MMx();
     if (typeof MM.toast === 'function') { try { MM.toast(msg, kind || 'info'); } catch (e) {} }
   }
+  /* Screen-reader announcer. Uses the shell's shared announcer when present,
+     otherwise owns one off-screen live region. Used ONLY for threshold
+     crossings - the vitals grid itself is deliberately not a live region. */
+  var LIVE_ID = 'sim-live-region';
+  function announce(msg, urgent) {
+    var m = str(msg).trim();
+    if (!m) { return; }
+    var MM = MMx();
+    if (typeof MM.announce === 'function') {
+      try { MM.announce(m, !!urgent); return; } catch (e) {}
+    }
+    try {
+      var n = document.getElementById(LIVE_ID);
+      if (!n) {
+        n = document.createElement('div');
+        n.id = LIVE_ID;
+        n.className = 'sim-sr';
+        n.setAttribute('aria-atomic', 'true');
+        document.body.appendChild(n);
+      }
+      n.setAttribute('aria-live', urgent ? 'assertive' : 'polite');
+      n.textContent = '';
+      window.setTimeout(function () { n.textContent = m; }, 60);
+    } catch (e) {}
+  }
   function uniqBy(list, keyFn) {
     var seen = {}, out = [];
     arr(list).forEach(function (it) {
@@ -97,44 +122,60 @@
   function injectStyles() {
     if (document.getElementById('sim-engine-styles')) { return; }
     var css = [
-      /* ---- root / tints (mirror the palette variables) ---- */
+      /* ---- root / tints (all derived from the palette, never re-authored) ---- */
       '.sim-root{--sim-ok:var(--green);--sim-warn:var(--orange);--sim-bad:var(--red);',
-      '--sim-ok-bg:rgba(34,197,94,.12);--sim-warn-bg:rgba(245,158,11,.14);--sim-bad-bg:rgba(239,68,68,.14);',
-      '--sim-ok-br:rgba(34,197,94,.4);--sim-warn-br:rgba(245,158,11,.45);--sim-bad-br:rgba(239,68,68,.45);',
-      '--sim-acc-bg:rgba(59,130,246,.12);--sim-acc-br:rgba(59,130,246,.4);',
+      /* clinical severity has its own ramp - it is not the difficulty ramp */
+      '--sim-vwarn:var(--zone-concerning);--sim-vbad:var(--zone-critical);',
+      '--sim-ok-fg:var(--green-fg);--sim-warn-fg:var(--orange-fg);--sim-bad-fg:var(--red-fg);',
+      '--sim-ok-bg:color-mix(in srgb,var(--green) 12%,var(--bg));',
+      '--sim-warn-bg:color-mix(in srgb,var(--zone-concerning) 12%,var(--bg));',
+      '--sim-bad-bg:color-mix(in srgb,var(--zone-critical) 12%,var(--bg));',
+      '--sim-ok-br:color-mix(in srgb,var(--green) 45%,transparent);',
+      '--sim-warn-br:color-mix(in srgb,var(--zone-concerning) 50%,transparent);',
+      '--sim-bad-br:color-mix(in srgb,var(--zone-critical) 50%,transparent);',
+      '--sim-acc-bg:color-mix(in srgb,var(--accent) 12%,var(--bg));',
+      '--sim-acc-br:color-mix(in srgb,var(--accent) 45%,transparent);',
       'color:var(--text);}',
-      '.sim-root *:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px;}',
+      '.sim-root *:focus-visible{outline:2px solid var(--accent);outline-offset:2px;',
+      'border-radius:var(--r-sm);}',
       '.sim-root button{font-family:inherit;}',
+      '.sim-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;',
+      'clip:rect(0 0 0 0);white-space:nowrap;border:0;}',
 
       /* ---- generic bits ---- */
       '.sim-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;}',
       '.sim-head h2{margin:0;font-size:20px;font-weight:800;letter-spacing:.2px;}',
       '.sim-sub{color:var(--text2);font-size:13px;margin:2px 0 0;}',
       '.sim-spacer{flex:1 1 auto;}',
-      '.sim-back{background:transparent;border:1px solid var(--surface2);color:var(--text2);',
-      'padding:7px 12px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:600;}',
+      '.sim-back{background:transparent;border:1px solid var(--border);color:var(--text2);',
+      'padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);cursor:pointer;font-size:var(--fs-sm);',
+      'font-weight:600;min-height:44px;transition:transform var(--dur-fast) ease,',
+      'border-color var(--dur-fast) ease;}',
       '.sim-back:hover{color:var(--text);border-color:var(--accent);}',
-      '.sim-badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;',
-      'letter-spacing:.4px;text-transform:uppercase;padding:3px 8px;border-radius:999px;',
-      'border:1px solid var(--surface2);color:var(--text2);background:var(--surface);}',
-      '.sim-badge.ok{color:var(--sim-ok);border-color:var(--sim-ok-br);background:var(--sim-ok-bg);}',
-      '.sim-badge.warn{color:var(--sim-warn);border-color:var(--sim-warn-br);background:var(--sim-warn-bg);}',
-      '.sim-badge.bad{color:var(--sim-bad);border-color:var(--sim-bad-br);background:var(--sim-bad-bg);}',
-      '.sim-badge.acc{color:var(--accent);border-color:var(--sim-acc-br);background:var(--sim-acc-bg);}',
+      '.sim-back:active{transform:scale(.975);background:var(--surface3);}',
+      '.sim-badge{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-2xs);font-weight:800;',
+      'letter-spacing:.4px;text-transform:uppercase;padding:3px var(--sp-2);border-radius:var(--r-full);',
+      'border:1px solid var(--border);color:var(--text2);background:var(--surface);}',
+      '.sim-badge.ok{color:var(--sim-ok-fg);border-color:var(--sim-ok-br);background:var(--sim-ok-bg);}',
+      '.sim-badge.warn{color:var(--sim-warn-fg);border-color:var(--sim-warn-br);background:var(--sim-warn-bg);}',
+      '.sim-badge.bad{color:var(--sim-bad-fg);border-color:var(--sim-bad-br);background:var(--sim-bad-bg);}',
+      '.sim-badge.acc{color:var(--accent-fg);border-color:var(--sim-acc-br);background:var(--sim-acc-bg);}',
       '.sim-ico{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;',
-      'width:30px;height:30px;border-radius:9px;background:var(--surface2);color:var(--text);',
+      'width:30px;height:30px;border-radius:var(--r-md);background:var(--surface3);color:var(--text);',
       'font-size:10px;font-weight:800;letter-spacing:.3px;}',
-      '.sim-empty{padding:26px;text-align:center;color:var(--text3);font-size:13px;}',
+      '.sim-empty{padding:var(--sp-6);text-align:center;color:var(--text3);font-size:var(--fs-sm);}',
 
       /* ---- browser ---- */
       '.sim-filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}',
-      '.sim-search{flex:1 1 200px;min-width:150px;background:var(--surface);border:1px solid var(--surface2);',
-      'color:var(--text);padding:9px 12px;border-radius:10px;font-size:14px;}',
-      '.sim-chip{background:var(--surface);border:1px solid var(--surface2);color:var(--text2);',
-      'padding:7px 12px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;}',
+      '.sim-search{flex:1 1 200px;min-width:150px;background:var(--surface);border:1px solid var(--border);',
+      'color:var(--text);padding:9px 12px;border-radius:var(--r-md);font-size:14px;}',
+      '.sim-chip{background:var(--surface);border:1px solid var(--border);color:var(--text2);',
+      'padding:var(--sp-2) var(--sp-3);border-radius:var(--r-full);font-size:var(--fs-xs);font-weight:700;',
+      'cursor:pointer;min-height:44px;transition:transform var(--dur-fast) ease;}',
       '.sim-chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff;}',
+      '.sim-chip:active{transform:scale(.975);}',
       '.sim-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}',
-      '.sim-card{background:var(--surface);border:1px solid var(--surface2);border-radius:14px;',
+      '.sim-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);',
       'padding:14px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:9px;',
       'transition:transform .16s ease,border-color .16s ease;width:100%;}',
       '.sim-card:hover{transform:translateY(-2px);border-color:var(--accent);}',
@@ -142,24 +183,24 @@
       '.sim-card-title{font-size:15px;font-weight:800;line-height:1.25;}',
       '.sim-card-one{color:var(--text2);font-size:12.5px;line-height:1.45;}',
       '.sim-card-meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}',
-      '.sim-progress-wrap{background:var(--surface);border:1px solid var(--surface2);border-radius:14px;',
+      '.sim-progress-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);',
       'padding:14px;margin-bottom:14px;}',
-      '.sim-bar{height:8px;border-radius:999px;background:var(--surface2);overflow:hidden;}',
-      '.sim-bar>span{display:block;height:100%;border-radius:999px;background:var(--accent);',
+      '.sim-bar{height:8px;border-radius:var(--r-full);background:var(--surface3);overflow:hidden;}',
+      '.sim-bar>span{display:block;height:100%;border-radius:var(--r-full);background:var(--accent);',
       'transition:width .5s ease;}',
 
       /* ---- prebrief ---- */
       '.sim-two{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;align-items:start;}',
-      '.sim-panel{background:var(--surface);border:1px solid var(--surface2);border-radius:14px;padding:14px;}',
+      '.sim-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:14px;}',
       '.sim-panel h3{margin:0 0 10px;font-size:13px;font-weight:800;text-transform:uppercase;',
       'letter-spacing:.6px;color:var(--text2);}',
       '.sim-kv{display:flex;justify-content:space-between;gap:10px;padding:6px 0;',
-      'border-bottom:1px solid var(--surface2);font-size:13px;}',
+      'border-bottom:1px solid var(--border);font-size:13px;}',
       '.sim-kv:last-child{border-bottom:0;}',
       '.sim-kv b{color:var(--text2);font-weight:700;}',
       '.sim-list{margin:0;padding-left:18px;font-size:13px;line-height:1.7;color:var(--text);}',
       '.sim-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;}',
-      '.sim-mode{background:var(--bg);border:2px solid var(--surface2);border-radius:12px;padding:12px;',
+      '.sim-mode{background:var(--bg);border:2px solid var(--border);border-radius:var(--r-lg);padding:12px;',
       'text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:6px;}',
       '.sim-mode[aria-pressed="true"]{border-color:var(--accent);background:var(--sim-acc-bg);}',
       '.sim-mode h4{margin:0;font-size:15px;font-weight:800;display:flex;gap:7px;align-items:center;}',
@@ -170,70 +211,97 @@
       '.sim-stage{display:grid;grid-template-columns:1fr 330px;gap:12px;align-items:start;}',
 
       /* ---- monitor ---- */
-      '.sim-mon{background:var(--surface);border:1px solid var(--surface2);border-radius:14px;padding:12px;}',
+      '.sim-mon{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:12px;}',
       '.sim-mon-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;}',
       '.sim-pt-name{font-weight:800;font-size:15px;}',
       '.sim-clock{font-variant-numeric:tabular-nums;font-weight:800;font-size:18px;letter-spacing:.5px;}',
       '.sim-clock.low{color:var(--sim-bad);}',
-      '.sim-vitals{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;}',
-      '.sim-vital{background:var(--bg);border:1px solid var(--surface2);border-radius:11px;padding:8px 9px;',
-      'display:flex;flex-direction:column;gap:2px;position:relative;overflow:hidden;}',
+      '.sim-vitals{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,104px),1fr));',
+      'gap:var(--sp-2);}',
+      '.sim-vital{background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--border);',
+      'border-radius:var(--r-md);padding:var(--sp-2) 9px;',
+      'display:flex;flex-direction:column;gap:2px;position:relative;overflow:hidden;',
+      'transition:border-color var(--dur-base) ease;}',
       '.sim-vital .lab{font-size:10px;font-weight:800;letter-spacing:.7px;color:var(--text3);',
       'text-transform:uppercase;display:flex;gap:4px;align-items:center;}',
-      '.sim-vital .val{font-size:21px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1;}',
+      '.sim-vital .val{font-size:var(--fs-xl);font-weight:800;font-variant-numeric:tabular-nums;',
+      'line-height:1.1;white-space:normal;overflow-wrap:anywhere;}',
       '.sim-vital .unit{font-size:10px;color:var(--text3);font-weight:700;}',
-      '.sim-vital.warn{border-color:var(--sim-warn-br);background:var(--sim-warn-bg);}',
-      '.sim-vital.warn .val{color:var(--sim-warn);}',
-      '.sim-vital.crit{border-color:var(--sim-bad-br);background:var(--sim-bad-bg);}',
-      '.sim-vital.crit .val{color:var(--sim-bad);}',
-      '.sim-vital.crit{animation:simPulse 1.5s ease-in-out infinite;}',
-      '@keyframes simPulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.0);}50%{box-shadow:0 0 0 4px rgba(239,68,68,.18);}}',
+      '.sim-vital .dlt{font-size:var(--fs-2xs);font-weight:700;color:var(--text3);',
+      'font-variant-numeric:tabular-nums;}',
+      '.sim-vital.warn{border-color:var(--sim-warn-br);border-left-color:var(--sim-vwarn);',
+      'background:var(--sim-warn-bg);}',
+      '.sim-vital.warn .val,.sim-vital.warn .lab{color:var(--sim-warn-fg);}',
+      '.sim-vital.crit{border-color:var(--sim-bad-br);border-left-color:var(--sim-vbad);',
+      'background:var(--sim-bad-bg);}',
+      '.sim-vital.crit .val,.sim-vital.crit .lab{color:var(--sim-bad-fg);}',
+      /* a monitor alarm that never stops is wallpaper in 30 seconds - and that
+         is alarm fatigue, the exact habit this app should train out */
+      '.sim-vital.crit{animation:simPulse 1.5s ease-in-out 4;}',
+      '@keyframes simPulse{0%,100%{box-shadow:0 0 0 0 transparent;}',
+      '50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--zone-critical) 20%,transparent);}}',
+      /* the value CHANGED: cue the tile, never interpolate the number */
+      '.sim-vital.changed{animation:simVitalCue .9s ease-out 1;}',
+      '@keyframes simVitalCue{0%{background:var(--surface3);}100%{background:var(--bg);}}',
       '.sim-vital .spark{height:20px;margin-top:2px;opacity:.85;}',
       '.sim-vital .trendmark{font-size:10px;font-weight:800;}',
-      '.sim-mon-text{margin-top:9px;display:grid;gap:6px;font-size:12.5px;color:var(--text2);}',
+      '.sim-mon-text{margin-top:9px;display:grid;gap:var(--sp-2);font-size:var(--fs-sm);',
+      'color:var(--text2);overflow-wrap:anywhere;}',
       '.sim-mon-text b{color:var(--text);}',
-      '.sim-stab{margin-top:10px;border:1px dashed var(--surface2);border-radius:11px;padding:9px;}',
+      /* deterioration is the central dramatic beat - it does not belong in a
+         4.5-second toast that auto-dismisses below the fold */
+      '.sim-alert{display:flex;gap:var(--sp-3);align-items:flex-start;border-radius:var(--r-lg);',
+      'padding:var(--sp-3);font-size:var(--fs-sm);line-height:1.5;border:2px solid var(--zone-critical);',
+      'background:var(--sim-bad-bg);color:var(--text);}',
+      '.sim-alert .mark{font-weight:800;font-size:var(--fs-md);color:var(--sim-bad-fg);line-height:1.2;}',
+      '.sim-alert b{display:block;font-size:var(--fs-md);}',
+      '.sim-stab{margin-top:var(--sp-3);border:1px dashed var(--border);border-radius:var(--r-md);',
+      'padding:9px;}',
       '.sim-stab.ready{border-color:var(--sim-ok-br);background:var(--sim-ok-bg);}',
       '.sim-stab h5{margin:0 0 6px;font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--text2);}',
       '.sim-stab ul{margin:0;padding-left:16px;font-size:12px;line-height:1.6;}',
 
       /* ---- action panel ---- */
       '.sim-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}',
-      '.sim-tab{background:var(--surface);border:1px solid var(--surface2);color:var(--text2);',
-      'padding:7px 11px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;}',
+      '.sim-tab{background:var(--surface);border:1px solid var(--border);color:var(--text2);',
+      'padding:var(--sp-2) 11px;border-radius:var(--r-md);font-size:var(--fs-xs);font-weight:700;',
+      'cursor:pointer;min-height:44px;transition:transform var(--dur-fast) ease;}',
       '.sim-tab[aria-selected="true"]{background:var(--accent);border-color:var(--accent);color:#fff;}',
+      '.sim-tab:active{transform:scale(.975);}',
       '.sim-actions{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:9px;}',
-      '.sim-action{background:var(--surface);border:1px solid var(--surface2);border-radius:12px;',
-      'padding:10px;display:flex;gap:9px;align-items:flex-start;text-align:left;cursor:pointer;width:100%;',
-      'transition:border-color .14s ease,transform .14s ease;}',
+      '.sim-action{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);',
+      'padding:var(--sp-3);display:flex;gap:9px;align-items:flex-start;text-align:left;cursor:pointer;',
+      'width:100%;min-height:44px;',
+      'transition:border-color var(--dur-fast) ease,transform var(--dur-fast) ease;}',
       '.sim-action:hover:not(:disabled){border-color:var(--accent);transform:translateY(-1px);}',
-      '.sim-action:disabled{opacity:.5;cursor:default;}',
+      '.sim-action:active:not(:disabled){transform:scale(.975);background:var(--surface3);}',
+      '.sim-action:disabled{opacity:.45;cursor:not-allowed;}',
       '.sim-action .txt{font-size:13px;font-weight:600;line-height:1.35;}',
       '.sim-action .sub{font-size:11px;color:var(--text3);margin-top:3px;}',
       '.sim-action.done{border-color:var(--sim-ok-br);background:var(--sim-ok-bg);}',
       '.sim-action.usedbad{border-color:var(--sim-bad-br);background:var(--sim-bad-bg);}',
 
       /* ---- feedback ---- */
-      '.sim-fb{border-radius:12px;padding:11px 12px;display:flex;gap:10px;align-items:flex-start;',
-      'font-size:13px;line-height:1.5;border:1px solid var(--surface2);background:var(--surface);',
-      'animation:simIn .22s ease;}',
+      '.sim-fb{border-radius:var(--r-lg);padding:11px var(--sp-3);display:flex;gap:var(--sp-3);',
+      'align-items:flex-start;font-size:var(--fs-sm);line-height:1.5;border:1px solid var(--border);',
+      'background:var(--surface);animation:simIn var(--dur-base) ease;overflow-wrap:anywhere;}',
       '@keyframes simIn{from{opacity:0;transform:translateY(-5px);}to{opacity:1;transform:none;}}',
       '.sim-fb.good{border-color:var(--sim-ok-br);background:var(--sim-ok-bg);}',
       '.sim-fb.mid{border-color:var(--sim-warn-br);background:var(--sim-warn-bg);}',
       '.sim-fb.bad{border-color:var(--sim-bad-br);background:var(--sim-bad-bg);}',
-      '.sim-fb .mark{font-weight:900;font-size:15px;line-height:1.2;}',
-      '.sim-fb.good .mark{color:var(--sim-ok);} .sim-fb.mid .mark{color:var(--sim-warn);}',
-      '.sim-fb.bad .mark{color:var(--sim-bad);}',
+      '.sim-fb .mark{font-weight:800;font-size:var(--fs-md);line-height:1.2;}',
+      '.sim-fb.good .mark{color:var(--sim-ok-fg);} .sim-fb.mid .mark{color:var(--sim-warn-fg);}',
+      '.sim-fb.bad .mark{color:var(--sim-bad-fg);}',
 
       /* ---- log ---- */
-      '.sim-log{background:var(--surface);border:1px solid var(--surface2);border-radius:14px;',
+      '.sim-log{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);',
       'display:flex;flex-direction:column;max-height:520px;}',
-      '.sim-log-head{padding:10px 12px;border-bottom:1px solid var(--surface2);display:flex;',
+      '.sim-log-head{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;',
       'align-items:center;gap:8px;font-size:12px;font-weight:800;text-transform:uppercase;',
       'letter-spacing:.6px;color:var(--text2);}',
       '.sim-log-body{overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:6px;}',
-      '.sim-le{display:flex;gap:8px;font-size:12.5px;line-height:1.45;padding:6px 8px;border-radius:9px;',
-      'background:var(--bg);border-left:3px solid var(--surface2);}',
+      '.sim-le{display:flex;gap:8px;font-size:12.5px;line-height:1.45;padding:6px 8px;border-radius:var(--r-md);',
+      'background:var(--bg);border-left:3px solid var(--border);}',
       '.sim-le time{color:var(--text3);font-variant-numeric:tabular-nums;font-weight:700;flex:0 0 auto;}',
       '.sim-le.good{border-left-color:var(--sim-ok);} .sim-le.bad{border-left-color:var(--sim-bad);}',
       '.sim-le.warn{border-left-color:var(--sim-warn);} .sim-le.vital{border-left-color:var(--accent2);}',
@@ -242,38 +310,57 @@
 
       /* ---- chart / labs ---- */
       '.sim-labrow{display:grid;grid-template-columns:1.3fr .8fr .9fr auto;gap:8px;align-items:center;',
-      'padding:8px;border-radius:10px;background:var(--bg);border:1px solid var(--surface2);font-size:12.5px;}',
+      'padding:8px;border-radius:var(--r-md);background:var(--bg);border:1px solid var(--border);font-size:12.5px;}',
       '.sim-labrow.ab{border-color:var(--sim-warn-br);} .sim-labrow.crit{border-color:var(--sim-bad-br);}',
       '.sim-labrow .nm{font-weight:700;} .sim-labrow .rng{color:var(--text3);font-size:11px;}',
-      '.sim-interp{grid-column:1/-1;color:var(--text2);font-size:12px;border-top:1px dashed var(--surface2);',
+      '.sim-interp{grid-column:1/-1;color:var(--text2);font-size:12px;border-top:1px dashed var(--border);',
       'padding-top:6px;margin-top:2px;}',
 
       /* ---- talk ---- */
       '.sim-talk{display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto;padding-right:4px;}',
-      '.sim-bub{padding:9px 11px;border-radius:12px;font-size:13px;line-height:1.5;max-width:88%;}',
+      '.sim-bub{padding:9px 11px;border-radius:var(--r-lg);font-size:13px;line-height:1.5;max-width:88%;}',
       '.sim-bub.you{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px;}',
-      '.sim-bub.pt{align-self:flex-start;background:var(--surface2);border-bottom-left-radius:4px;}',
+      '.sim-bub.pt{align-self:flex-start;background:var(--surface3);border-bottom-left-radius:4px;}',
       '.sim-bub .who{display:block;font-size:10px;font-weight:800;letter-spacing:.5px;opacity:.75;',
       'text-transform:uppercase;margin-bottom:3px;}',
 
       /* ---- debrief ---- */
-      '.sim-score-hero{display:flex;gap:16px;align-items:center;flex-wrap:wrap;}',
+      /* outcome first. A run in which the patient came to harm is not a quiz
+         result and must not open with an animated score. */
+      '.sim-outcome{border-radius:var(--r-xl);padding:var(--sp-4);border:1px solid var(--border);',
+      'border-left:5px solid var(--border);background:var(--surface);display:flex;flex-direction:column;',
+      'gap:var(--sp-2);margin-bottom:var(--sp-3);}',
+      '.sim-outcome h2{margin:0;font-size:var(--fs-lg);font-weight:800;color:var(--text);line-height:1.3;}',
+      '.sim-outcome p{margin:0;font-size:var(--fs-base);line-height:1.65;color:var(--text2);}',
+      '.sim-outcome .lab{font-size:var(--fs-2xs);letter-spacing:.07em;text-transform:uppercase;',
+      'color:var(--text3);font-weight:700;}',
+      '.sim-outcome.good{border-color:var(--green);border-left-color:var(--green);}',
+      '.sim-outcome.mixed{border-color:var(--orange);border-left-color:var(--orange);}',
+      '.sim-outcome.bad{border-color:var(--red);border-left-color:var(--red);}',
+      '.sim-outcome.grave{border-color:var(--red);border-left-color:var(--red);background:var(--bg);}',
+      '.sim-outcome.grave h2{font-weight:700;}',
+      '.sim-teach{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--sp-3);}',
+      '.sim-teach li{border-left:3px solid var(--red);padding-left:var(--sp-3);}',
+      '.sim-teach b{display:block;font-size:var(--fs-md);font-weight:800;color:var(--text);line-height:1.35;',
+      'overflow-wrap:anywhere;}',
+      '.sim-teach div{font-size:var(--fs-sm);color:var(--text2);line-height:1.6;margin-top:3px;}',
+      '.sim-score-hero{display:flex;gap:var(--sp-4);align-items:center;flex-wrap:wrap;}',
       '.sim-ring{width:104px;height:104px;flex:0 0 auto;position:relative;}',
       '.sim-ring .n{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;',
-      'justify-content:center;font-weight:900;font-size:26px;}',
+      'justify-content:center;font-weight:800;font-size:26px;}',
       '.sim-ring .n small{font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.5px;}',
       '.sim-catrow{display:grid;grid-template-columns:1fr;gap:8px;}',
       '.sim-cat{display:grid;grid-template-columns:1fr auto;gap:4px 10px;font-size:12.5px;}',
       '.sim-cat .bar{grid-column:1/-1;}',
       '.sim-replay{display:grid;grid-template-columns:88px 1fr 1fr;gap:8px;font-size:12.5px;}',
       '.sim-replay .hd{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--text3);}',
-      '.sim-replay .cell{background:var(--bg);border:1px solid var(--surface2);border-radius:10px;padding:8px;}',
+      '.sim-replay .cell{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);padding:8px;}',
       '.sim-replay .cell ul{margin:0;padding-left:16px;line-height:1.6;}',
 
       /* ---- modal ---- */
       '.sim-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:1000;display:flex;',
       'align-items:center;justify-content:center;padding:16px;}',
-      '.sim-modal{background:var(--surface);border:1px solid var(--surface2);border-radius:16px;',
+      '.sim-modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);',
       'padding:18px;max-width:420px;width:100%;}',
       '.sim-btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;}',
 
@@ -282,14 +369,19 @@
       '@media (max-width:640px){',
       '.sim-grid{grid-template-columns:1fr;}',
       '.sim-actions{grid-template-columns:1fr;}',
-      '.sim-vitals{grid-template-columns:repeat(2,minmax(0,1fr));}',
+      '.sim-vitals{grid-template-columns:repeat(auto-fit,minmax(96px,1fr));}',
       '.sim-replay{grid-template-columns:1fr;}',
-      '.sim-head h2{font-size:17px;}',
+      '.sim-head h2{font-size:var(--fs-lg);}',
       '.sim-log{max-height:280px;}',
       '.sim-labrow{grid-template-columns:1fr auto;}',
       '}',
       '@media (prefers-reduced-motion:reduce){',
       '.sim-root *,.sim-root *::before,.sim-root *::after{animation:none!important;transition:none!important;}',
+      /* keep the signal when the motion goes away */
+      '.sim-vital.changed{box-shadow:inset 3px 0 0 0 var(--accent);}',
+      '.sim-vital.crit{box-shadow:0 0 0 2px var(--sim-bad-br);}',
+      '.sim-back:active,.sim-chip:active,.sim-tab:active,.sim-action:active{transform:none;',
+      'background:var(--surface3);}',
       '}'
     ].join('');
     var st = document.createElement('style');
@@ -805,6 +897,88 @@
   }
 
   /* ---------------------------------------------------------------------- *
+   * 7b. Patient outcome
+   *     A score is not an outcome. These sims used to end with a letter grade
+   *     even when the patient was harmed; the live-AI module explicitly
+   *     refuses to do that and this one now matches it. `kind: grave` means
+   *     teaching leads and no animated score is shown.
+   * ---------------------------------------------------------------------- */
+  var SIM_OUTCOME_META = {
+    harm: {
+      id: 'harm',
+      title: 'The patient came to harm',
+      kind: 'grave',
+      lede: 'At least one action in this run is documented as directly harmful for this patient. ' +
+            'Read the next section before the score - that is where the run actually turned.'
+    },
+    deteriorated: {
+      id: 'deteriorated',
+      title: 'The patient deteriorated - the window was missed',
+      kind: 'bad',
+      lede: 'The patient got sicker while care continued as if nothing was changing. The interventions ' +
+            'that would have held this patient were on the board the whole time.'
+    },
+    unstable: {
+      id: 'unstable',
+      title: 'Patient held - with gaps',
+      kind: 'mixed',
+      lede: 'You got there. Some pieces were late or missing, and on a real unit that lag is where harm hides.'
+    },
+    stable: {
+      id: 'stable',
+      title: 'Patient stable - strong performance',
+      kind: 'good',
+      lede: 'You worked the priorities in order and the patient held. That is the standard.'
+    }
+  };
+
+  function patientOutcome(scenario, session, result) {
+    var r = obj(result), s = obj(session);
+    var errs = arr(r.errors).length;
+    var missed = arr(r.missedCritical).length;
+    var stagesTotal = Math.max(0, arr(obj(scenario).vitalsTimeline).length - 1);
+    var held = Object.keys(obj(s.held)).length;
+    if (errs) { return SIM_OUTCOME_META.harm; }
+    if (missed && stagesTotal && held === 0) { return SIM_OUTCOME_META.deteriorated; }
+    if (!r.passed) { return SIM_OUTCOME_META.unstable; }
+    return SIM_OUTCOME_META.stable;
+  }
+
+  /* scenario action strings are teaching paragraphs; a turning point needs a
+     headline the student can scan in one second */
+  function shortAction(s) {
+    var t = str(s).split(/\s+[-–]\s+/)[0];
+    t = t.split(/[,;.]/)[0].trim();
+    if (!t) { t = str(s).slice(0, 60); }
+    if (t.length > 72) { t = t.slice(0, 69).replace(/\s+\S*$/, '') + '…'; }
+    return t;
+  }
+
+  /* the concrete "this is what would have changed it" payload */
+  function simTurningPoints(scenario, session, result) {
+    var out = [], r = obj(result);
+    arr(r.errors).slice(0, 3).forEach(function (e) {
+      out.push({
+        head: 'Do not: ' + shortAction(obj(e).text),
+        body: 'Documented as harmful for this patient. Harm is not recoverable by doing something right ' +
+              'afterwards - it is the one class of action that has to be prevented, not corrected.'
+      });
+    });
+    arr(r.missedCritical).slice().sort(byOrder).forEach(function (iv) {
+      if (out.length >= 4) { return; }
+      out.push({ head: shortAction(iv.action), body: str(iv.rationale) });
+    });
+    if (!out.length) {
+      out.push({
+        head: 'Act one window earlier',
+        body: 'Nothing here was wrong. The remaining margin is timing: each intervention landing one ' +
+              'deterioration window sooner is what separates a hold from a rescue.'
+      });
+    }
+    return out;
+  }
+
+  /* ---------------------------------------------------------------------- *
    * 8. Progress + AI helpers
    * ---------------------------------------------------------------------- */
   function readSimResults() {
@@ -957,7 +1131,10 @@
             onClick: props.onConfirm }, props.confirmText || 'Quit'))));
   }
 
-  /* --- animated number ------------------------------------------------- */
+  /* --- animated number ------------------------------------------------- *
+   * NEVER use this for a clinical value. Interpolating a vital sign paints
+   * readings the patient never had. It is here for the score ring only.
+   * ---------------------------------------------------------------------- */
   function useTween(target, ms) {
     var [val, setVal] = useState(target);
     var rafRef = useRef(null);
@@ -1003,16 +1180,41 @@
         strokeLinecap: 'round', strokeLinejoin: 'round' }));
   }
 
-  /* --- one vital tile -------------------------------------------------- */
+  /* --- one vital tile -------------------------------------------------- *
+   * The displayed number is always the charted value - it is never tweened.
+   * A 900ms ease from HR 88 to 142 shows ~30 readings this patient never had,
+   * which in a teaching monitor is misinformation, not polish. The change is
+   * carried instead by a one-shot tile cue, a direction mark and a printed
+   * delta, all of which survive prefers-reduced-motion.
+   * ---------------------------------------------------------------------- */
   function VitalTile(props) {
     var v = props.value;
-    var shown = useTween(typeof v === 'number' ? v : null, 900);
     var state = props.state || 'na';
-    var cls = 'sim-vital' + (state === 'warn' ? ' warn' : state === 'crit' ? ' crit' : '');
     var text;
     if (props.text !== undefined && props.text !== null) { text = props.text; }
-    else if (typeof shown === 'number' && isFinite(shown)) { text = String(Math.round(shown * (props.dec ? 10 : 1)) / (props.dec ? 10 : 1)); }
-    else { text = '--'; }
+    else if (typeof v === 'number' && isFinite(v)) {
+      text = String(Math.round(v * (props.dec ? 10 : 1)) / (props.dec ? 10 : 1));
+    } else { text = '--'; }
+
+    var prevRef = useRef(text);
+    var changedHook = useState(false);
+    var changed = changedHook[0], setChanged = changedHook[1];
+    useEffect(function () {
+      if (prevRef.current === text) { return; }
+      prevRef.current = text;
+      setChanged(true);
+      var id = window.setTimeout(function () { setChanged(false); }, 1000);
+      return function () { window.clearTimeout(id); };
+    }, [text]);
+
+    var pts = arr(props.points).filter(function (n) { return typeof n === 'number' && isFinite(n); });
+    var delta = null;
+    if (pts.length >= 2) {
+      delta = Math.round((pts[pts.length - 1] - pts[pts.length - 2]) * 10) / 10;
+    }
+
+    var cls = 'sim-vital' + (state === 'warn' ? ' warn' : state === 'crit' ? ' crit' : '') +
+      (changed ? ' changed' : '');
     var trend = props.trend;
     var mark = trend === 'up' ? '▲' : trend === 'down' ? '▼' : '';
     var stateWord = state === 'crit' ? 'CRITICAL' : state === 'warn' ? 'ABNORMAL' : '';
@@ -1020,14 +1222,15 @@
       'aria-label': props.label + ' ' + text + ' ' + (props.unit || '') + ' ' + stateWord },
       ce('span', { className: 'lab' },
         props.label,
-        stateWord ? ce('span', { className: 'trendmark',
-          style: { color: state === 'crit' ? 'var(--sim-bad)' : 'var(--sim-warn)' } },
+        stateWord ? ce('span', { className: 'trendmark', 'aria-hidden': 'true' },
           state === 'crit' ? '✖' : '!') : null,
         mark ? ce('span', { className: 'trendmark', 'aria-hidden': 'true' }, mark) : null),
       ce('span', { className: 'val' }, text,
         props.unit ? ce('span', { className: 'unit' }, ' ' + props.unit) : null),
+      ce('span', { className: 'dlt', 'aria-hidden': 'true' },
+        delta ? (delta > 0 ? '▲ ' : '▼ ') + Math.abs(delta) : '—'),
       ce(VitalSparkline, { points: props.points,
-        color: state === 'crit' ? 'var(--sim-bad)' : state === 'warn' ? 'var(--sim-warn)' : 'var(--accent)' }));
+        color: state === 'crit' ? 'var(--sim-vbad)' : state === 'warn' ? 'var(--sim-vwarn)' : 'var(--text3)' }));
   }
 
   /* ---------------------------------------------------------------------- *
@@ -1054,6 +1257,45 @@
     }
 
     var sysState = st('sys', v.sys);
+    var painState = (v.pain !== null && v.pain >= 7) ? 'crit'
+      : (v.pain !== null && v.pain >= 4) ? 'warn' : 'na';
+
+    /* ---- threshold-crossing announcer ------------------------------------
+     * The grid is NOT wrapped in aria-live: six numbers re-read on every
+     * 400ms tick is unusable. Only a change of state for a vital is spoken,
+     * and never more than once every 10 seconds.
+     * -------------------------------------------------------------------- */
+    var spokenRef = useRef(null);
+    var lastSpeakRef = useRef(0);
+    var watched = [
+      ['SpO2', v.spo2, st('spo2', v.spo2)],
+      ['Heart rate', v.hr, st('hr', v.hr)],
+      ['Respiratory rate', v.rr, st('rr', v.rr)],
+      ['Blood pressure', v.bpText, sysState],
+      ['Temperature', v.tempText, st('temp', v.temp)]
+    ];
+    var stateKey = watched.map(function (t) { return t[2]; }).join('');
+    useEffect(function () {
+      var first = spokenRef.current === null;
+      if (first) { spokenRef.current = {}; }
+      var msgs = [], urgent = false;
+      watched.forEach(function (t) {
+        var prev = spokenRef.current[t[0]];
+        if (t[2] === 'na' || prev === t[2]) { return; }
+        spokenRef.current[t[0]] = t[2];
+        if (t[2] === 'crit') { urgent = true; }
+        if (first && t[2] === 'ok') { return; }
+        if (prev === undefined && t[2] === 'ok') { return; }
+        msgs.push(t[0] + ' ' + str(t[1]) +
+          (t[2] === 'crit' ? ', critical' : t[2] === 'warn' ? ', abnormal' : ', back within limits'));
+      });
+      if (first || !msgs.length) { return; }
+      var now = Date.now();
+      if (!urgent && now - lastSpeakRef.current < 10000) { return; }
+      lastSpeakRef.current = now;
+      announce(msgs.join('. '), urgent);
+    }, [stateKey]);
+
     var tiles = [
       ce(VitalTile, { key: 'bp', label: 'BP', unit: 'mmHg', text: v.bpText, state: sysState,
         points: trend.sys, trend: dir(trend.sys, v.sys) }),
@@ -1065,8 +1307,12 @@
         points: trend.spo2, trend: dir(trend.spo2, v.spo2) }),
       ce(VitalTile, { key: 'temp', label: 'Temp', text: v.tempText, state: st('temp', v.temp),
         points: trend.temp, trend: dir(trend.temp, v.temp) }),
-      ce(VitalTile, { key: 'pain', label: 'Pain', text: v.painText, dec: false,
-        state: (v.pain !== null && v.pain >= 7) ? 'crit' : (v.pain !== null && v.pain >= 4) ? 'warn' : 'na',
+      /* pain is a number here; the sentence the patient actually said goes in
+         the text row below, where it has room to be read */
+      ce(VitalTile, { key: 'pain', label: 'Pain', unit: '/10', dec: false,
+        value: (typeof v.pain === 'number' && isFinite(v.pain)) ? v.pain : null,
+        text: (typeof v.pain === 'number' && isFinite(v.pain)) ? undefined : '--',
+        state: painState,
         points: trend.pain, trend: dir(trend.pain, v.pain) })
     ];
 
@@ -1080,9 +1326,11 @@
         ce('div', { className: 'sim-spacer' }),
         props.switcher ? props.switcher : null,
         props.clock ? props.clock : null),
-      ce('div', { className: 'sim-vitals' }, tiles),
+      ce('div', { className: 'sim-vitals', role: 'group', 'aria-label': 'Current vital signs' }, tiles),
       ce('div', { className: 'sim-mon-text' },
         ce('div', null, ce('b', null, 'LOC: '), str(v.loc) || '--'),
+        (has(v.painText) && str(v.painText) !== '--')
+          ? ce('div', null, ce('b', null, 'Pain: '), str(v.painText)) : null,
         v.other ? ce('div', null, ce('b', null, 'Findings: '), v.other) : null,
         v.label ? ce('div', { style: { color: 'var(--text3)', fontSize: '11.5px' } },
           'Monitor state: ' + v.label) : null),
@@ -1116,8 +1364,9 @@
         ce('span', null, 'Event log'),
         ce('span', { className: 'sim-spacer' }),
         ce('span', { style: { fontWeight: 700, color: 'var(--text3)' } }, entries.length + ' entries')),
+      /* tabIndex so the scroll region is reachable without a mouse */
       ce('div', { className: 'sim-log-body', ref: bodyRef, role: 'log', 'aria-live': 'polite',
-        'aria-relevant': 'additions' },
+        'aria-relevant': 'additions', tabIndex: 0, 'aria-label': 'Event log' },
         entries.length ? entries.map(function (e, i) {
           var k = LOG_KIND[e.kind] || LOG_KIND.info;
           return ce('div', { className: 'sim-le ' + k.cls, key: e.key || i },
@@ -1284,11 +1533,11 @@
               ce('div', { style: { overflowX: 'auto' } },
                 ce('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' } },
                   ce('thead', null, ce('tr', null, arr(c.headers).map(function (h, i) {
-                    return ce('th', { key: i, style: { textAlign: 'left', padding: '5px', color: 'var(--text2)', borderBottom: '1px solid var(--surface2)' } }, str(h));
+                    return ce('th', { key: i, style: { textAlign: 'left', padding: '5px', color: 'var(--text2)', borderBottom: '1px solid var(--border)' } }, str(h));
                   }))),
                   ce('tbody', null, arr(c.rows).map(function (row, ri) {
                     return ce('tr', { key: ri }, arr(row).map(function (cell, i) {
-                      return ce('td', { key: i, style: { padding: '5px', borderBottom: '1px solid var(--surface2)' } }, str(cell));
+                      return ce('td', { key: i, style: { padding: '5px', borderBottom: '1px solid var(--border)' } }, str(cell));
                     }));
                   })))));
           })) : null);
@@ -1518,7 +1767,8 @@
     }
 
     return ce('div', null,
-      ce('div', { className: 'sim-talk' },
+      ce('div', { className: 'sim-talk', tabIndex: 0, role: 'region',
+        'aria-label': 'Conversation with the patient' },
         arr(props.exchanges).length
           ? arr(props.exchanges).map(function (m, i) {
               return ce('div', { key: i, className: 'sim-bub ' + (m.who === 'you' ? 'you' : 'pt') },
@@ -1745,7 +1995,7 @@
                   onClick: function () { setHoldChoice('hold'); finishCalc('hold'); } },
                   'Hold the dose and clarify with the prescriber'),
                 ce('button', { type: 'button', className: 'btn btn-outline',
-                  style: { borderColor: 'var(--red)', color: 'var(--red)' },
+                  style: { borderColor: 'var(--red)', color: 'var(--red-fg)' },
                   onClick: function () {
                     setHoldChoice('give');
                     props.onDone({ correct: true, isSafe: false, heldAndClarified: false, gaveUnsafe: true, calcId: str(calc.id) });
@@ -1802,6 +2052,7 @@
     var [hints, setHints] = useState(0);
     var [confirmQuit, setConfirmQuit] = useState(false);
     var [activePt, setActivePt] = useState('primary');
+    var [deterioration, setDeterioration] = useState(null);
 
     var finishedRef = useRef(false);
     var fbTimer = useRef(null);
@@ -1917,6 +2168,7 @@
       if (need.length && missing.length === 0) {
         setHeld(function (h) { var n = {}; for (var k in h) { n[k] = h[k]; } n[cursor] = true; return n; });
         setHarmHits(function (x) { return Math.max(0, x - 1); });
+        setDeterioration(null);
         pushLog('hold', 'Patient held stable - deterioration prevented.',
           'Your interventions worked. "' + str(entry.label) + '" did not happen. Keep going: the next window opens soon.');
         toast('Patient stabilising - good nursing', 'success');
@@ -1935,7 +2187,19 @@
               ? 'Still not done: ' + missing.map(function (m) { return str(m.action); }).join('; ')
               : '');
         }
-        toast('Patient is deteriorating', 'error');
+        /* an auto-dismissing toast in a column below the fold is the wrong
+           carrier for the central clinical event: this stays until acted on */
+        var summary = nv.bpText + ', HR ' + str(nv.hr) + ', RR ' + str(nv.rr) +
+          ', SpO2 ' + str(nv.spo2) + ', ' + str(nv.loc);
+        setDeterioration({
+          key: uid('a'),
+          label: str(entry.label) || 'Deterioration',
+          summary: summary,
+          missing: (showFeedback && missing.length)
+            ? missing.slice(0, 3).map(function (m) { return str(m.action); })
+            : []
+        });
+        announce('Patient is deteriorating. ' + summary, true);
       }
       setCursor(cursor + 1);
     }, [simSec, cursor, ended]);
@@ -2088,6 +2352,8 @@
 
     function act(a) {
       if (ended) { return; }
+      /* the deterioration banner stays up until the student does something */
+      setDeterioration(null);
       if (a.kind === 'chart') {
         setUnlocked(function (u) {
           var n = {}; for (var k in u) { if (Object.prototype.hasOwnProperty.call(u, k)) { n[k] = u[k]; } }
@@ -2297,6 +2563,19 @@
             onClick: function () { endSim('ended-early'); } }, 'End & debrief'),
           clockNode)),
 
+      deterioration ? ce('div', { className: 'sim-alert', role: 'alert', key: deterioration.key },
+        ce('span', { className: 'mark', 'aria-hidden': 'true' }, '✖'),
+        ce('div', null,
+          ce('b', null, 'The patient is deteriorating - ' + deterioration.label),
+          ce('div', { style: { marginTop: '3px' } }, deterioration.summary),
+          arr(deterioration.missing).length
+            ? ce('div', { style: { marginTop: '6px', color: 'var(--text2)' } },
+                'Still not done: ' + deterioration.missing.join('; '))
+            : null),
+        ce('button', { type: 'button', className: 'sim-back', style: { marginLeft: 'auto' },
+          'aria-label': 'Acknowledge deterioration alert',
+          onClick: function () { setDeterioration(null); } }, 'Acknowledge')) : null,
+
       feedback ? ce('div', { className: 'sim-fb ' + (feedback.tone === 'good' ? 'good' : feedback.tone === 'bad' ? 'bad' : 'mid'),
         role: 'status', key: feedback.key },
         ce('span', { className: 'mark' }, feedback.tone === 'good' ? '✓' : feedback.tone === 'bad' ? '✕' : '!'),
@@ -2336,7 +2615,7 @@
     var color = pct >= 80 ? 'var(--green)' : pct >= 60 ? 'var(--orange)' : 'var(--red)';
     return ce('div', { className: 'sim-ring' },
       ce('svg', { viewBox: '0 0 104 104', width: '104', height: '104', 'aria-hidden': 'true' },
-        ce('circle', { cx: 52, cy: 52, r: r, fill: 'none', stroke: 'var(--surface2)', strokeWidth: 9 }),
+        ce('circle', { cx: 52, cy: 52, r: r, fill: 'none', stroke: 'var(--surface3)', strokeWidth: 9 }),
         ce('circle', {
           cx: 52, cy: 52, r: r, fill: 'none', stroke: color, strokeWidth: 9, strokeLinecap: 'round',
           strokeDasharray: c, strokeDashoffset: c * (1 - (shown || 0) / 100),
@@ -2403,26 +2682,52 @@
       });
     }
 
-    useEffect(function () { if (aiAvailable()) { askAi(); } }, []);
-
+    /* The AI debrief is opt-in and its cost is disclosed, exactly as the live
+       AI module does it. Auto-firing on mount spent the student's daily quota
+       without asking. */
     var replay = useMemo(function () { return buildReplay(sc, session); }, [sc, session]);
+    var outcome = useMemo(function () { return patientOutcome(sc, session, result); }, [sc, session, result]);
+    var grave = outcome.kind === 'grave';
+    var leadWithTeaching = grave || outcome.kind === 'bad';
+    var teaching = useMemo(function () { return simTurningPoints(sc, session, result); }, [sc, session, result]);
 
-    return ce('div', { className: 'sim-root' },
-      ce('div', { className: 'sim-head' },
-        ce('button', { type: 'button', className: 'sim-back', onClick: props.onBrowse }, '‹ All simulations'),
-        ce('div', null,
-          ce('h2', null, 'Debrief - ' + str(sc.title)),
-          ce('div', { className: 'sim-sub' },
-            str(session.mode) + ' mode · ' + fmtClock(session.timeSec) + ' of simulated time · ' +
-            str(obj(sc.patient).name))),
-        ce('div', { className: 'sim-spacer' }),
-        result.passed ? ce(Badge, { tone: 'ok' }, '✓ Pass') : ce(Badge, { tone: 'bad' }, '✕ Not yet'),
-        ce(Badge, { tone: 'acc' }, 'Grade ' + str(result.letter))),
+    var header = ce('div', { className: 'sim-head', key: 'head' },
+      ce('button', { type: 'button', className: 'sim-back', onClick: props.onBrowse }, '‹ All simulations'),
+      ce('div', null,
+        ce('h2', null, 'Debrief - ' + str(sc.title)),
+        ce('div', { className: 'sim-sub' },
+          str(session.mode) + ' mode · ' + fmtClock(session.timeSec) + ' of simulated time · ' +
+          str(obj(sc.patient).name))),
+      ce('div', { className: 'sim-spacer' }),
+      /* no pass/grade badging above the fold when the patient was harmed */
+      grave ? null : (result.passed ? ce(Badge, { tone: 'ok' }, '✓ Pass') : ce(Badge, { tone: 'bad' }, '✕ Not yet')),
+      grave ? null : ce(Badge, { tone: 'acc' }, 'Grade ' + str(result.letter)));
 
-      /* ---- hero ---- */
-      ce('div', { className: 'sim-panel', style: { marginBottom: '12px' } },
+    var outcomeCard = ce('div', { className: 'sim-outcome ' + outcome.kind, key: 'outcome' },
+      ce('div', { className: 'lab' }, 'Outcome'),
+      ce('h2', null, outcome.title),
+      ce('p', null, outcome.lede));
+
+    var teachingCard = ce('div', { className: 'sim-panel', key: 'teach', style: { marginBottom: '12px' } },
+      ce('h3', null, 'What would have changed this outcome'),
+      grave ? ce('p', { style: { margin: '0 0 10px', fontSize: '13px', color: 'var(--text2)', lineHeight: 1.6 } },
+        'This is a simulation, and it is built so this can happen safely here instead of on a real unit. ' +
+        'Run it again - the priorities will not have moved.') : null,
+      ce('ul', { className: 'sim-teach' }, teaching.map(function (t, i) {
+        return ce('li', { key: i }, ce('b', null, str(t.head)),
+          t.body ? ce('div', null, str(t.body)) : null);
+      })));
+
+    var scorePanel = ce('div', { className: 'sim-panel', key: 'score', style: { marginBottom: '12px' } },
         ce('div', { className: 'sim-score-hero' },
-          ce(ScoreRing, { pct: result.total }),
+          /* no animated ring on a run where the patient was harmed */
+          grave
+            ? ce('div', { style: { flex: '0 0 auto', minWidth: '104px' } },
+                ce('div', { style: { fontSize: '28px', fontWeight: 800, fontVariantNumeric: 'tabular-nums' } },
+                  str(result.total) + ' / 100'),
+                ce('div', { style: { fontSize: '11px', color: 'var(--text3)', fontWeight: 700, letterSpacing: '.5px' } },
+                  'RECORDED FOR THIS ATTEMPT'))
+            : ce(ScoreRing, { pct: result.total }),
           ce('div', { style: { flex: '1 1 240px', minWidth: '220px' } },
             ce('div', { className: 'sim-catrow' },
               arr(result.categories).map(function (c) {
@@ -2447,10 +2752,10 @@
           arr(sc.questions).length ? ce('button', { type: 'button', className: 'btn btn-outline',
             onClick: props.onQuestions }, 'Review the questions (' + arr(sc.questions).length + ')') : null,
           props.hasNext ? ce('button', { type: 'button', className: 'btn btn-outline',
-            onClick: props.onNext }, 'Next scenario ›') : null)),
+            onClick: props.onNext }, 'Next scenario ›') : null));
 
-      /* ---- AI coach ---- */
-      ce('div', { className: 'sim-panel', style: { marginBottom: '12px' } },
+    /* ---- AI coach: opt-in, cost disclosed ---- */
+    var aiPanel = ce('div', { className: 'sim-panel', key: 'ai', style: { marginBottom: '12px' } },
         ce('h3', null, 'AI instructor debrief'),
         aiState === 'loading' && !aiText
           ? ce('div', { style: { fontSize: '13px', color: 'var(--text2)' } }, 'Your instructor is reading the transcript...')
@@ -2462,14 +2767,24 @@
           ? ce('div', { style: { fontSize: '13px', color: 'var(--text2)' } },
               'AI coaching is not available on this device. Everything below is generated locally and is complete on its own.')
           : null,
+        (aiState === 'idle' && aiAvailable())
+          ? ce('div', { style: { fontSize: '13px', color: 'var(--text2)' } },
+              'Want this walked through the way your clinical instructor would? It uses one AI message.')
+          : null,
+        (aiState === 'idle' && aiAvailable())
+          ? ce('div', { className: 'sim-btnrow' },
+              ce('button', { type: 'button', className: 'btn btn-outline btn-sm', onClick: askAi },
+                'Get the full instructor debrief'))
+          : null,
         (aiState === 'error' || aiState === 'done')
           ? ce('div', { className: 'sim-btnrow' },
               ce('button', { type: 'button', className: 'btn btn-outline btn-sm', onClick: askAi },
                 aiState === 'error' ? 'Try again' : 'Regenerate'))
-          : null),
+          : null);
 
+    var tail = [
       /* ---- replay ---- */
-      ce('div', { className: 'sim-panel', style: { marginBottom: '12px' } },
+      ce('div', { className: 'sim-panel', key: 'replay', style: { marginBottom: '12px' } },
         ce('h3', null, 'Minute-by-minute replay'),
         ce('div', { className: 'sim-replay' },
           ce('div', { className: 'hd' }, 'Time'),
@@ -2499,7 +2814,7 @@
           }))),
 
       /* ---- misses + errors ---- */
-      ce('div', { className: 'sim-two', style: { marginBottom: '12px' } },
+      ce('div', { className: 'sim-two', key: 'misses', style: { marginBottom: '12px' } },
         ce('div', { className: 'sim-panel' },
           ce('h3', null, 'What you missed'),
           arr(result.missedCritical).length
@@ -2534,18 +2849,28 @@
 
       /* ---- pearls ---- */
       (arr(sc.pearls).length || arr(sc.keyPoints).length)
-        ? ce('div', { className: 'sim-panel', style: { marginBottom: '12px' } },
-            ce('h3', null, 'ATI / NCLEX pearls'),
+        ? ce('div', { className: 'sim-panel', key: 'pearls', style: { marginBottom: '12px' } },
+            /* no test-prep branding on a run where the patient was harmed */
+            ce('h3', null, grave ? 'What this condition does, and what stops it' : 'ATI / NCLEX pearls'),
             ce('ul', { className: 'sim-list' },
               arr(sc.pearls).concat(arr(sc.keyPoints)).map(function (p, i) {
                 return ce('li', { key: i }, str(p));
               })))
         : null,
 
-      ce('div', { className: 'sim-btnrow' },
+      ce('div', { className: 'sim-btnrow', key: 'foot' },
         ce('button', { type: 'button', className: 'btn btn-primary', onClick: props.onRetry }, 'Retry'),
         arr(sc.questions).length ? ce('button', { type: 'button', className: 'btn btn-outline', onClick: props.onQuestions }, 'Question round') : null,
-        ce('button', { type: 'button', className: 'sim-back', onClick: props.onBrowse }, 'Back to all simulations')));
+        ce('button', { type: 'button', className: 'sim-back', onClick: props.onBrowse }, 'Back to all simulations'))
+    ];
+
+    /* Outcome first. Score after. When the patient was harmed the teaching
+       leads and the score is a plain recorded number, not a hero. */
+    var order = leadWithTeaching
+      ? [header, outcomeCard, teachingCard, scorePanel, aiPanel]
+      : [header, outcomeCard, scorePanel, teachingCard, aiPanel];
+
+    return ce('div', { className: 'sim-root' }, order.concat(tail));
   }
 
   /* ---------------------------------------------------------------------- *
@@ -2664,8 +2989,8 @@
             },
               ce(Icon, { text: rank !== null ? String(rank) : String.fromCharCode(65 + idx) }),
               ce('span', { className: 'txt', style: { flex: '1 1 auto' } }, str(o)),
-              revealed && isCorrectOpt ? ce('span', { style: { color: 'var(--green)', fontWeight: 800 } }, '✓') : null,
-              revealed && sel && !isCorrectOpt ? ce('span', { style: { color: 'var(--red)', fontWeight: 800 } }, '✕') : null);
+              revealed && isCorrectOpt ? ce('span', { style: { color: 'var(--green-fg)', fontWeight: 800 } }, '✓') : null,
+              revealed && sel && !isCorrectOpt ? ce('span', { style: { color: 'var(--red-fg)', fontWeight: 800 } }, '✕') : null);
           })),
         revealed
           ? ce('div', { style: { marginTop: '12px' } },
@@ -2760,13 +3085,13 @@
       ce('div', { className: 'sim-progress-wrap' },
         ce('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '10px' } },
           ce('div', null,
-            ce('div', { style: { fontSize: '22px', fontWeight: 900 } }, completed + ' / ' + all.length),
+            ce('div', { style: { fontSize: '22px', fontWeight: 800 } }, completed + ' / ' + all.length),
             ce('div', { style: { fontSize: '11px', color: 'var(--text2)', letterSpacing: '.5px' } }, 'ATTEMPTED')),
           ce('div', null,
-            ce('div', { style: { fontSize: '22px', fontWeight: 900, color: 'var(--green)' } }, String(passedN)),
+            ce('div', { style: { fontSize: '22px', fontWeight: 800, color: 'var(--green-fg)' } }, String(passedN)),
             ce('div', { style: { fontSize: '11px', color: 'var(--text2)', letterSpacing: '.5px' } }, 'PASSED (' + PASS_PCT + '+)')),
           ce('div', null,
-            ce('div', { style: { fontSize: '22px', fontWeight: 900 } }, avg ? avg + '%' : '--'),
+            ce('div', { style: { fontSize: '22px', fontWeight: 800 } }, avg ? avg + '%' : '--'),
             ce('div', { style: { fontSize: '11px', color: 'var(--text2)', letterSpacing: '.5px' } }, 'AVERAGE BEST')),
           ce('div', { className: 'sim-spacer' })),
         ce(Bar, { pct: all.length ? (completed / all.length) * 100 : 0, label: 'Simulations attempted' })),
@@ -3014,6 +3339,10 @@
     buildGuards: buildGuards,
     buildReplay: buildReplay,
     scorePerformance: scorePerformance,
+    patientOutcome: patientOutcome,
+    simTurningPoints: simTurningPoints,
+    shortAction: shortAction,
+    OUTCOME_META: SIM_OUTCOME_META,
     normVitals: normVitals,
     degradeVitals: degradeVitals,
     classify: classify,

@@ -70,6 +70,72 @@
     return { id: code, text: code, explanation: '' };
   }
 
+  /* ---- harm copy ------------------------------------------------------- *
+   * Second person, present tense, THIS patient. The section headed "what
+   * would have happened to the patient" has to contain the patient — not a
+   * repeat of the sentence two sections above and not rubric bookkeeping.
+   * ------------------------------------------------------------------- */
+  function firstName(p) {
+    var n = String((p && p.name) || '').trim();
+    if (!n) return 'The patient';
+    /* data is "Doe, Eric" — take the given name where there is one */
+    if (n.indexOf(',') !== -1) return n.split(',')[1].trim() || n.split(',')[0].trim();
+    return n.split(' ')[0];
+  }
+  function ptClause(p) {
+    var bits = [];
+    if (p && p.age) bits.push('is ' + p.age);
+    if (p && (p.pmh || []).length) bits.push('is carrying ' + String(p.pmh[0]).toLowerCase());
+    return bits.length ? bits.join(', and ') : 'is already unwell';
+  }
+
+  var CRIT_HARM = {
+    'allergy-not-checked': function (c, m) {
+      var p = c.patient || {};
+      var who = firstName(p);
+      return 'You give the dose. ' + who + ' has a documented allergy to the drug that is now in ' +
+        (String(p.sex || '').toLowerCase().charAt(0) === 'f' ? 'her' : 'his') + ' bloodstream, and for the next few minutes you are watching for ' +
+        'the things you were taught to watch for: hives, a swelling lip, a tight throat, a pressure that will not hold. ' +
+        who + ' ' + ptClause(p) + ', and none of that gets better because the two names on the chart looked different.';
+    },
+    'wrong-dose': function (c, m) {
+      var p = c.patient || {};
+      return 'You give the amount you worked out. On ' + firstName(p) + ' a misplaced decimal is not a rounding error — ' +
+        'it is ten times the drug, already given, with nothing left to check it against. ' +
+        (m && m.name ? m.name + ' ' : 'This drug ') + 'cannot be taken back out.';
+    },
+    'wrong-route': function (c, m) {
+      var p = c.patient || {};
+      return 'You give it the way the MAR said to give it. Route errors are the ones that move fastest: something that had to go in ' +
+        'slowly goes in all at once, and ' + firstName(p) + '’s rhythm changes while your hand is still on the syringe.';
+    },
+    'wrong-drug': function (c, m) {
+      var p = c.patient || {};
+      return 'You give ' + ((m && m.name) || 'the drug') + '. It is not what ' + firstName(p) + ' needed, ' +
+        'the dose that was needed is now signed for as given, and the next nurse has no reason to look again.';
+    },
+    'sharps-safety-violation': function () {
+      return 'The needle goes back toward the cap and your thumb is in the way. This one lands on you: a needlestick means ' +
+        'baseline serology, a course of post-exposure prophylaxis, and six months of waiting for results you cannot rush.';
+    },
+    'no-hand-hygiene': function (c) {
+      var p = c.patient || {};
+      return 'Whatever was on your hands is now on the tablet, on the vial septum, and on the skin you are about to break. ' +
+        firstName(p) + ' ' + ptClause(p) + ', which means an infection you introduce is not a minor complication.';
+    },
+    'bedside-verification-skipped': function (c) {
+      var p = c.patient || {};
+      return 'You give it without the last look. Every barrier before this one can fail quietly — a mis-stocked drawer, a mis-typed MAR, ' +
+        'a band on the wrong wrist. The bedside check is the one that catches those while the drug is still in your hand, ' +
+        'and ' + firstName(p) + ' is the person standing on the other side of it.';
+    }
+  };
+  function critHarm(code, caseObj, med) {
+    var f = CRIT_HARM[code];
+    if (f) { try { return f(caseObj || {}, med || {}); } catch (e) {} }
+    return criticalErrorDef(code).explanation || '';
+  }
+
   function hashStr(s) {
     var h = 2166136261, i;
     s = String(s || '');
@@ -177,222 +243,325 @@
 
   /* ==========================================================================
    * 1. STYLES
+   * --------------------------------------------------------------------------
+   * Colour, type, spacing, radius and motion all come from the DR01 design
+   * tokens. Every token carries a literal fallback so this module still renders
+   * correctly if the shell stylesheet has not been updated yet.
    * ======================================================================== */
+
+  var TK = {
+    bg: 'var(--bg,#0f172a)',
+    s1: 'var(--surface,#1e293b)',
+    s2: 'var(--surface2,#273549)',
+    s3: 'var(--surface3,#334155)',
+    bd: 'var(--border,#334155)',
+    bds: 'var(--border-str,#475569)',
+    tx: 'var(--text,#f1f5f9)',
+    tx2: 'var(--text2,#cbd5e1)',
+    tx3: 'var(--text3,#a8b6c8)',
+    onFill: 'var(--text-on-fill,#0f172a)',
+    ac: 'var(--accent,#3b82f6)',
+    acFg: 'var(--accent-fg,#60a5fa)',
+    acHov: 'var(--accent-hov,#2563eb)',
+    ac2: 'var(--accent2,#8b5cf6)',
+    ac2Fg: 'var(--accent2-fg,#a78bfa)',
+    green: 'var(--green,#22c55e)',
+    greenFg: 'var(--green-fg,#4ade80)',
+    red: 'var(--red,#ef4444)',
+    redFg: 'var(--red-fg,#f87171)',
+    orange: 'var(--orange,#f59e0b)',
+    orangeFg: 'var(--orange-fg,#fbbf24)',
+    tintG: 'var(--tint-green,rgba(34,197,94,0.12))',
+    tintR: 'var(--tint-red,rgba(239,68,68,0.12))',
+    tintO: 'var(--tint-orange,rgba(245,158,11,0.12))',
+    tintA: 'var(--tint-accent,rgba(59,130,246,0.12))',
+    tintP: 'var(--tint-purple,rgba(139,92,246,0.12))',
+    fs2xs: 'var(--fs-2xs,11px)',
+    fsXs: 'var(--fs-xs,12px)',
+    fsSm: 'var(--fs-sm,13px)',
+    fsBase: 'var(--fs-base,14px)',
+    fsMd: 'var(--fs-md,16px)',
+    fsLg: 'var(--fs-lg,19px)',
+    fsXl: 'var(--fs-xl,22px)',
+    fs2xl: 'var(--fs-2xl,28px)',
+    fs3xl: 'var(--fs-3xl,40px)',
+    lhTight: 'var(--lh-tight,1.2)',
+    lhSnug: 'var(--lh-snug,1.35)',
+    lhNorm: 'var(--lh-normal,1.5)',
+    lhBody: 'var(--lh-body,1.65)',
+    sp1: 'var(--sp-1,4px)',
+    sp2: 'var(--sp-2,8px)',
+    sp3: 'var(--sp-3,12px)',
+    sp4: 'var(--sp-4,16px)',
+    sp5: 'var(--sp-5,20px)',
+    sp6: 'var(--sp-6,24px)',
+    rSm: 'var(--r-sm,6px)',
+    rMd: 'var(--r-md,10px)',
+    rLg: 'var(--r-lg,14px)',
+    rXl: 'var(--r-xl,20px)',
+    rFull: 'var(--r-full,999px)',
+    dFast: 'var(--dur-fast,0.12s)',
+    dBase: 'var(--dur-base,0.2s)',
+    el3: 'var(--el-3,0 8px 24px rgba(0,0,0,0.45))'
+  };
+
   function injectStyles() {
     if (document.getElementById('medadmin-trainer-styles')) return;
     var st = document.createElement('style');
     st.id = 'medadmin-trainer-styles';
     st.textContent = [
       /* ---- shell ---- */
-      '.ma-wrap{max-width:1040px;margin:0 auto;padding:0 0 64px;color:var(--text);}',
-      '.ma-hdr{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}',
-      '.ma-h1{font-size:1.45rem;font-weight:800;margin:0 0 4px;letter-spacing:-0.01em;}',
-      '.ma-sub{color:var(--text2);font-size:0.86rem;margin:0;line-height:1.5;max-width:62ch;}',
-      '.ma-btn{font:inherit;font-size:0.85rem;font-weight:600;color:var(--text);background:var(--surface2);border:1px solid var(--surface2);border-radius:9px;padding:8px 13px;cursor:pointer;transition:background .12s,border-color .12s;line-height:1.3;}',
-      '.ma-btn:hover{background:var(--bg);}',
-      '.ma-btn:focus-visible,.ma-opt:focus-visible,.ma-modecard:focus-visible,.ma-tab:focus-visible,.ma-hot:focus-visible,.ma-input:focus-visible,.ma-drugrow:focus-visible{outline:3px solid var(--accent);outline-offset:2px;}',
+      '.ma-wrap{max-width:1040px;margin:0 auto;padding:0 0 64px;color:' + TK.tx + ';}',
+      '.ma-hdr{display:flex;align-items:flex-start;justify-content:space-between;gap:' + TK.sp3 + ';flex-wrap:wrap;margin-bottom:' + TK.sp4 + ';}',
+      '.ma-h1{font-size:' + TK.fs2xl + ';font-weight:800;margin:0 0 ' + TK.sp1 + ';letter-spacing:-0.01em;line-height:' + TK.lhTight + ';}',
+      '.ma-sub{color:' + TK.tx2 + ';font-size:' + TK.fsBase + ';margin:0;line-height:' + TK.lhBody + ';max-width:62ch;}',
+      '.ma-btn{font:inherit;font-size:' + TK.fsBase + ';font-weight:600;color:' + TK.tx + ';background:' + TK.s3 + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ' ' + TK.sp4 + ';min-height:44px;cursor:pointer;transition:background ' + TK.dFast + ',border-color ' + TK.dFast + ',transform ' + TK.dFast + ';line-height:' + TK.lhSnug + ';}',
+      '.ma-btn:hover{background:' + TK.bg + ';}',
+      '.ma-btn:focus-visible,.ma-opt:focus-visible,.ma-modecard:focus-visible,.ma-tab:focus-visible,.ma-hot:focus-visible,.ma-input:focus-visible,.ma-drugrow:focus-visible,.ma-lvl:focus-visible,.ma-marrow:focus-visible,.ma-fb:focus-visible{outline:3px solid ' + TK.ac + ';outline-offset:2px;}',
       '.ma-btn[disabled]{opacity:.45;cursor:not-allowed;}',
-      '.ma-btn-primary{background:var(--accent);border-color:var(--accent);color:var(--text);}',
-      '.ma-btn-primary:hover{background:var(--accent2);border-color:var(--accent2);}',
-      '.ma-btn-danger{background:var(--red);border-color:var(--red);color:var(--text);}',
-      '.ma-btn-ghost{background:transparent;border-color:var(--surface2);color:var(--text2);}',
-      '.ma-btn-ghost:hover{color:var(--text);background:var(--surface);}',
-      '.ma-btn-sm{padding:5px 10px;font-size:0.78rem;}',
-      '.ma-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}',
-      '.ma-card{background:var(--surface);border:1px solid var(--surface2);border-radius:13px;padding:16px;margin-bottom:14px;}',
-      '.ma-card-t{font-size:0.95rem;font-weight:700;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}',
-      '.ma-muted{color:var(--text2);font-size:0.83rem;line-height:1.6;}',
-      '.ma-tiny{color:var(--text3);font-size:0.74rem;letter-spacing:.05em;text-transform:uppercase;font-weight:700;}',
+      '.ma-btn-primary{background:' + TK.ac + ';border-color:' + TK.ac + ';color:#fff;}',
+      '.ma-btn-primary:hover{background:' + TK.acHov + ';border-color:' + TK.acHov + ';}',
+      '.ma-btn-danger{background:' + TK.red + ';border-color:' + TK.red + ';color:' + TK.onFill + ';}',
+      '.ma-btn-ghost{background:transparent;border-color:' + TK.bd + ';color:' + TK.tx2 + ';}',
+      '.ma-btn-ghost:hover{color:' + TK.tx + ';background:' + TK.s1 + ';}',
+      '.ma-btn-sm{padding:' + TK.sp2 + ' ' + TK.sp3 + ';font-size:' + TK.fsSm + ';min-height:44px;}',
+      '.ma-row{display:flex;gap:' + TK.sp2 + ';flex-wrap:wrap;align-items:center;}',
+      '.ma-card{background:' + TK.s1 + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rLg + ';padding:' + TK.sp4 + ';margin-bottom:' + TK.sp4 + ';}',
+      '.ma-card-t{font-size:' + TK.fsMd + ';font-weight:700;margin:0 0 ' + TK.sp3 + ';display:flex;align-items:center;gap:' + TK.sp2 + ';flex-wrap:wrap;line-height:' + TK.lhSnug + ';}',
+      '.ma-muted{color:' + TK.tx2 + ';font-size:' + TK.fsSm + ';line-height:' + TK.lhBody + ';}',
+      '.ma-tiny{color:' + TK.tx3 + ';font-size:' + TK.fsXs + ';letter-spacing:.05em;text-transform:uppercase;font-weight:700;}',
       /* ---- mode grid ---- */
-      '.ma-modegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:12px;}',
-      '.ma-modecard{text-align:left;background:var(--surface);border:1px solid var(--surface2);border-radius:13px;padding:15px;cursor:pointer;font:inherit;color:var(--text);display:flex;flex-direction:column;gap:6px;transition:border-color .14s,transform .14s;}',
-      '.ma-modecard:hover{border-color:var(--accent);transform:translateY(-2px);}',
-      '.ma-modeicon{display:inline-flex;align-items:center;justify-content:center;min-width:38px;height:26px;padding:0 8px;border-radius:6px;background:var(--surface2);color:var(--text2);font-size:0.72rem;font-weight:800;letter-spacing:.06em;align-self:flex-start;}',
-      '.ma-modecard:hover .ma-modeicon{background:var(--accent);color:var(--text);}',
-      '.ma-modename{font-weight:700;font-size:0.95rem;}',
-      '.ma-modedesc{color:var(--text2);font-size:0.79rem;line-height:1.5;}',
+      '.ma-modegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:' + TK.sp3 + ';}',
+      '.ma-modecard{text-align:left;background:' + TK.s1 + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rLg + ';padding:' + TK.sp4 + ';cursor:pointer;font:inherit;color:' + TK.tx + ';display:flex;flex-direction:column;gap:' + TK.sp2 + ';transition:border-color ' + TK.dFast + ',transform ' + TK.dFast + ';}',
+      '.ma-modecard:hover{border-color:' + TK.ac + ';transform:translateY(-2px);}',
+      '.ma-modeicon{display:inline-flex;align-items:center;justify-content:center;min-width:38px;height:26px;padding:0 ' + TK.sp2 + ';border-radius:' + TK.rSm + ';background:' + TK.s3 + ';color:' + TK.tx2 + ';font-size:' + TK.fs2xs + ';font-weight:800;letter-spacing:.06em;align-self:flex-start;}',
+      '.ma-modecard:hover .ma-modeicon{background:' + TK.ac + ';color:#fff;}',
+      '.ma-modename{font-weight:700;font-size:' + TK.fsMd + ';line-height:' + TK.lhSnug + ';}',
+      '.ma-modedesc{color:' + TK.tx2 + ';font-size:' + TK.fsSm + ';line-height:' + TK.lhNorm + ';}',
       /* ---- tabs / filters ---- */
-      '.ma-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;}',
-      '.ma-tab{font:inherit;font-size:0.8rem;font-weight:600;padding:6px 12px;border-radius:999px;border:1px solid var(--surface2);background:var(--surface);color:var(--text2);cursor:pointer;}',
-      '.ma-tab.on{background:var(--accent);border-color:var(--accent);color:var(--text);}',
+      '.ma-tabs{display:flex;gap:' + TK.sp2 + ';flex-wrap:wrap;margin-bottom:' + TK.sp4 + ';}',
+      '.ma-tab{font:inherit;font-size:' + TK.fsSm + ';font-weight:600;padding:' + TK.sp2 + ' ' + TK.sp4 + ';min-height:44px;border-radius:' + TK.rFull + ';border:1px solid ' + TK.bd + ';background:' + TK.s1 + ';color:' + TK.tx2 + ';cursor:pointer;transition:background ' + TK.dFast + ',transform ' + TK.dFast + ';}',
+      '.ma-tab.on{background:' + TK.ac + ';border-color:' + TK.ac + ';color:#fff;}',
       /* ---- tags ---- */
-      '.ma-tag{display:inline-flex;align-items:center;gap:4px;font-size:0.7rem;font-weight:700;letter-spacing:.03em;padding:2px 8px;border-radius:999px;border:1px solid var(--surface2);color:var(--text2);background:var(--bg);text-transform:uppercase;white-space:nowrap;}',
-      '.ma-tag.red{color:var(--red);border-color:var(--red);}',
-      '.ma-tag.green{color:var(--green);border-color:var(--green);}',
-      '.ma-tag.orange{color:var(--orange);border-color:var(--orange);}',
-      '.ma-tag.blue{color:var(--accent);border-color:var(--accent);}',
+      '.ma-tag{display:inline-flex;align-items:center;gap:' + TK.sp1 + ';font-size:' + TK.fs2xs + ';font-weight:700;letter-spacing:.03em;padding:2px ' + TK.sp2 + ';border-radius:' + TK.rFull + ';border:1px solid ' + TK.bd + ';color:' + TK.tx2 + ';background:' + TK.bg + ';text-transform:uppercase;white-space:nowrap;}',
+      '.ma-tag.red{color:' + TK.redFg + ';border-color:' + TK.redFg + ';}',
+      '.ma-tag.green{color:' + TK.greenFg + ';border-color:' + TK.greenFg + ';}',
+      '.ma-tag.orange{color:' + TK.orangeFg + ';border-color:' + TK.orangeFg + ';}',
+      '.ma-tag.blue{color:' + TK.acFg + ';border-color:' + TK.acFg + ';}',
       /* ---- MAR chart ---- */
-      '.ma-chart{background:var(--surface);border:1px solid var(--surface2);border-radius:13px;overflow:hidden;margin-bottom:14px;}',
-      '.ma-chart-bar{background:var(--surface2);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;}',
-      '.ma-chart-bar b{font-size:0.8rem;letter-spacing:.08em;text-transform:uppercase;}',
-      '.ma-pt{padding:14px;border-bottom:1px solid var(--surface2);}',
-      '.ma-pt-name{font-size:1.1rem;font-weight:800;margin:0 0 6px;}',
-      '.ma-pt-meta{display:flex;gap:6px 16px;flex-wrap:wrap;font-size:0.8rem;color:var(--text2);}',
-      '.ma-pt-meta span b{color:var(--text);font-weight:600;}',
-      '.ma-allergy{margin:12px 0 0;border:2px solid var(--red);background:rgba(239,68,68,0.12);border-radius:10px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;}',
-      '.ma-allergy-ic{font-size:1.1rem;line-height:1.2;}',
-      '.ma-allergy-lbl{font-size:0.68rem;font-weight:800;letter-spacing:.12em;color:var(--red);text-transform:uppercase;display:block;margin-bottom:2px;}',
-      '.ma-allergy-val{font-size:0.98rem;font-weight:800;color:var(--red);line-height:1.4;}',
-      '.ma-allergy.nkda{border-color:var(--surface2);background:var(--bg);}',
-      '.ma-allergy.nkda .ma-allergy-lbl,.ma-allergy.nkda .ma-allergy-val{color:var(--text2);}',
-      '.ma-panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:1px;background:var(--surface2);border-bottom:1px solid var(--surface2);}',
-      '.ma-panel{background:var(--surface);padding:12px 14px;}',
-      '.ma-panel h4{margin:0 0 8px;font-size:0.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);font-weight:800;}',
-      '.ma-kv{display:flex;justify-content:space-between;gap:10px;font-size:0.8rem;padding:2px 0;border-bottom:1px dotted var(--surface2);}',
+      /* NOTE: no overflow:hidden here — it would create a scroll container and */
+      /* break the sticky allergy band. Corners are rounded on the edge pieces. */
+      '.ma-chart{background:' + TK.s1 + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rLg + ';margin-bottom:' + TK.sp4 + ';}',
+      '.ma-chart > :first-child{border-radius:' + TK.rLg + ' ' + TK.rLg + ' 0 0;}',
+      '.ma-chart > :last-child{border-radius:0 0 ' + TK.rLg + ' ' + TK.rLg + ';}',
+      '.ma-chart-bar{background:' + TK.s3 + ';padding:' + TK.sp3 + ' ' + TK.sp4 + ';display:flex;justify-content:space-between;align-items:center;gap:' + TK.sp3 + ';flex-wrap:wrap;}',
+      '.ma-chart-bar b{font-size:' + TK.fsSm + ';letter-spacing:.08em;text-transform:uppercase;}',
+      '.ma-pt{padding:' + TK.sp4 + ';border-bottom:1px solid ' + TK.bd + ';}',
+      '.ma-pt-name{font-size:' + TK.fsLg + ';font-weight:800;margin:0 0 ' + TK.sp2 + ';line-height:' + TK.lhTight + ';}',
+      '.ma-pt-meta{display:flex;gap:' + TK.sp2 + ' ' + TK.sp4 + ';flex-wrap:wrap;font-size:' + TK.fsSm + ';color:' + TK.tx2 + ';}',
+      '.ma-pt-meta span b{color:' + TK.tx + ';font-weight:600;}',
+      /* sticky allergy band — the allergy and the drug that violates it must be
+         on screen together (DR04). Only real-allergy charts stick, so the
+         mechanism is not itself a tell. */
+      '.ma-allergy{position:sticky;top:0;z-index:12;margin:' + TK.sp3 + ' calc(-1 * ' + TK.sp4 + ') 0;border:2px solid ' + TK.red + ';border-left:none;border-right:none;border-radius:0;background:' + TK.tintR + ';backdrop-filter:blur(2px);padding:' + TK.sp3 + ' ' + TK.sp4 + ';display:flex;gap:' + TK.sp3 + ';align-items:flex-start;box-shadow:' + TK.el3 + ';}',
+      '.ma-allergy-ic{font-size:' + TK.fsMd + ';line-height:' + TK.lhTight + ';}',
+      '.ma-allergy-lbl{font-size:' + TK.fs2xs + ';font-weight:800;letter-spacing:.12em;color:' + TK.redFg + ';text-transform:uppercase;display:block;margin-bottom:2px;}',
+      '.ma-allergy-val{font-size:' + TK.fsMd + ';font-weight:800;color:' + TK.redFg + ';line-height:' + TK.lhSnug + ';}',
+      '.ma-allergy.nkda{position:static;margin:' + TK.sp3 + ' 0 0;border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';background:' + TK.bg + ';box-shadow:none;}',
+      '.ma-allergy.nkda .ma-allergy-lbl,.ma-allergy.nkda .ma-allergy-val{color:' + TK.tx2 + ';}',
+      '.ma-panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:1px;background:' + TK.bd + ';border-bottom:1px solid ' + TK.bd + ';}',
+      '.ma-panel{background:' + TK.s1 + ';padding:' + TK.sp3 + ' ' + TK.sp4 + ';}',
+      '.ma-panel h4{margin:0 0 ' + TK.sp2 + ';font-size:' + TK.fs2xs + ';letter-spacing:.12em;text-transform:uppercase;color:' + TK.tx3 + ';font-weight:800;}',
+      '.ma-kv{display:flex;justify-content:space-between;gap:' + TK.sp3 + ';font-size:' + TK.fsSm + ';padding:2px 0;border-bottom:1px dotted ' + TK.bd + ';}',
       '.ma-kv:last-child{border-bottom:none;}',
-      '.ma-kv span{color:var(--text2);}',
+      '.ma-kv span{color:' + TK.tx2 + ';}',
       '.ma-kv b{font-weight:700;text-align:right;}',
-      '.ma-kv.flag b{color:var(--orange);}',
-      '.ma-note{padding:12px 14px;font-size:0.82rem;line-height:1.65;color:var(--text2);border-bottom:1px solid var(--surface2);}',
-      '.ma-note b{color:var(--text);}',
+      '.ma-kv.flag b{color:' + TK.orangeFg + ';}',
+      '.ma-note{padding:' + TK.sp3 + ' ' + TK.sp4 + ';font-size:' + TK.fsSm + ';line-height:' + TK.lhBody + ';color:' + TK.tx2 + ';border-bottom:1px solid ' + TK.bd + ';overflow-wrap:anywhere;}',
+      '.ma-note b{color:' + TK.tx + ';}',
       /* ---- MAR grid ---- */
-      '.ma-marhead,.ma-marrow{display:grid;grid-template-columns:minmax(150px,2.1fr) 1fr 0.8fr 1fr minmax(120px,1.1fr) auto;gap:10px;align-items:center;padding:10px 14px;}',
-      '.ma-marhead{background:var(--bg);font-size:0.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);font-weight:800;}',
-      '.ma-marrow{border-top:1px solid var(--surface2);text-align:left;width:100%;background:var(--surface);border-left:none;border-right:none;border-bottom:none;font:inherit;color:var(--text);cursor:pointer;}',
-      '.ma-marrow:hover{background:var(--surface2);}',
+      '.ma-marhead,.ma-marrow{display:grid;grid-template-columns:minmax(150px,2.1fr) 1fr 0.8fr 1fr minmax(120px,1.1fr) auto;gap:' + TK.sp3 + ';align-items:center;padding:' + TK.sp3 + ' ' + TK.sp4 + ';}',
+      '.ma-marhead{background:' + TK.bg + ';font-size:' + TK.fs2xs + ';letter-spacing:.1em;text-transform:uppercase;color:' + TK.tx3 + ';font-weight:800;}',
+      '.ma-marrow{border-top:1px solid ' + TK.bd + ';text-align:left;width:100%;background:' + TK.s1 + ';border-left:none;border-right:none;border-bottom:none;font:inherit;color:' + TK.tx + ';cursor:pointer;min-height:44px;}',
+      '.ma-marrow:hover{background:' + TK.s2 + ';}',
+      '.ma-marrow:active{background:' + TK.s3 + ';}',
       '.ma-marrow.done{opacity:.62;}',
-      '.ma-marrow .ma-lbl{display:none;font-size:0.62rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);font-weight:800;margin-right:6px;}',
-      '.ma-mname{font-weight:700;font-size:0.88rem;line-height:1.35;}',
-      '.ma-mcell{font-size:0.8rem;color:var(--text2);}',
-      '.ma-times{display:flex;gap:4px;flex-wrap:wrap;}',
-      '.ma-time{font-size:0.68rem;font-weight:700;border:1px solid var(--surface2);border-radius:5px;padding:2px 5px;color:var(--text3);}',
-      '.ma-time.due{border-color:var(--accent);color:var(--accent);background:rgba(59,130,246,0.12);}',
-      '.ma-time.prn{border-style:dashed;}',
-      '.ma-go{font-size:0.74rem;font-weight:800;color:var(--accent);white-space:nowrap;}',
-      '@media (max-width:720px){',
+      /* read-only rows (Signoff Readiness mock) are not controls at all */
+      '.ma-marrow.ro{cursor:default;}',
+      '.ma-marrow.ro:hover,.ma-marrow.ro:active{background:' + TK.s1 + ';}',
+      '.ma-marrow.ro .ma-go{display:none;}',
+      '.ma-marrow.assigned{box-shadow:inset 3px 0 0 ' + TK.ac + ';background:' + TK.tintA + ';}',
+      '.ma-marrow .ma-lbl{display:none;font-size:' + TK.fs2xs + ';letter-spacing:.1em;text-transform:uppercase;color:' + TK.tx3 + ';font-weight:800;margin-right:' + TK.sp2 + ';}',
+      '.ma-mname{font-weight:700;font-size:' + TK.fsBase + ';line-height:' + TK.lhSnug + ';overflow-wrap:anywhere;}',
+      '.ma-mcell{font-size:' + TK.fsSm + ';color:' + TK.tx2 + ';}',
+      '.ma-times{display:flex;gap:' + TK.sp1 + ';flex-wrap:wrap;align-items:center;}',
+      '.ma-time{font-size:' + TK.fs2xs + ';font-weight:700;border:1px solid ' + TK.bd + ';border-radius:' + TK.rSm + ';padding:2px ' + TK.sp1 + ';color:' + TK.tx3 + ';}',
+      '.ma-time.due{border-color:' + TK.acFg + ';color:' + TK.acFg + ';background:' + TK.tintA + ';}',
+      '.ma-time.prn{border-style:dashed;color:' + TK.tx2 + ';}',
+      '.ma-time.none{border-style:dashed;color:' + TK.tx3 + ';}',
+      '.ma-go{font-size:' + TK.fsXs + ';font-weight:800;color:' + TK.acFg + ';white-space:nowrap;}',
+      /* DR04/DR06: stack the MAR as cards from 900px down — never horizontal
+         scroll, because a swipe on the dose column is a medication error. */
+      '@media (max-width:900px){',
       '.ma-marhead{display:none;}',
-      '.ma-marrow{display:block;padding:12px 14px;}',
-      '.ma-marrow > *{display:block;margin-bottom:5px;}',
-      '.ma-marrow .ma-lbl{display:inline-block;}',
+      '.ma-marrow{grid-template-columns:1fr 1fr;gap:' + TK.sp2 + ' ' + TK.sp3 + ';padding:' + TK.sp3 + ' ' + TK.sp4 + ';align-items:start;}',
+      '.ma-marrow .ma-lbl{display:block;}',
+      '.ma-mname{grid-column:1 / -1;font-size:' + TK.fsMd + ';}',
+      '.ma-times{grid-column:1 / -1;}',
+      '.ma-go{grid-column:1 / -1;justify-self:end;}',
       '.ma-panels{grid-template-columns:1fr;}',
       '}',
+      '@media (max-width:560px){.ma-marrow{grid-template-columns:1fr;}}',
       /* ---- steps ---- */
-      '.ma-stepbar{display:flex;gap:3px;margin-bottom:12px;flex-wrap:wrap;}',
-      '.ma-stepdot{height:5px;flex:1 1 8px;min-width:8px;border-radius:3px;background:var(--surface2);}',
-      '.ma-stepdot.ok{background:var(--green);}',
-      '.ma-stepdot.part{background:var(--orange);}',
-      '.ma-stepdot.bad{background:var(--red);}',
-      '.ma-stepdot.now{background:var(--accent);}',
-      '.ma-phase{font-size:0.66rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:800;margin-bottom:4px;}',
-      '.ma-steptitle{font-size:1.05rem;font-weight:800;margin:0 0 8px;}',
-      '.ma-prompt{font-size:0.9rem;line-height:1.65;color:var(--text);margin:0 0 12px;}',
-      '.ma-opts{display:flex;flex-direction:column;gap:8px;}',
-      '.ma-opt{text-align:left;font:inherit;font-size:0.86rem;line-height:1.55;color:var(--text);background:var(--bg);border:1px solid var(--surface2);border-radius:10px;padding:11px 13px;cursor:pointer;display:flex;gap:10px;align-items:flex-start;transition:border-color .12s,background .12s;}',
-      '.ma-opt:hover:not([disabled]){border-color:var(--accent);}',
+      '.ma-stepbar{display:flex;gap:3px;margin-bottom:' + TK.sp3 + ';flex-wrap:wrap;}',
+      '.ma-stepdot{height:5px;flex:1 1 8px;min-width:8px;border-radius:3px;background:' + TK.s3 + ';}',
+      '.ma-stepdot.ok{background:' + TK.green + ';}',
+      '.ma-stepdot.part{background:' + TK.orange + ';}',
+      '.ma-stepdot.bad{background:' + TK.red + ';}',
+      '.ma-stepdot.now{background:' + TK.ac + ';}',
+      '.ma-phase{font-size:' + TK.fs2xs + ';letter-spacing:.14em;text-transform:uppercase;color:' + TK.acFg + ';font-weight:800;margin-bottom:' + TK.sp1 + ';}',
+      '.ma-steptitle{font-size:' + TK.fsLg + ';font-weight:800;margin:0 0 ' + TK.sp2 + ';line-height:' + TK.lhSnug + ';}',
+      '.ma-prompt{font-size:' + TK.fsMd + ';line-height:' + TK.lhBody + ';color:' + TK.tx + ';margin:0 0 ' + TK.sp3 + ';}',
+      '.ma-opts{display:flex;flex-direction:column;gap:' + TK.sp2 + ';}',
+      '.ma-opt{text-align:left;font:inherit;font-size:' + TK.fsBase + ';line-height:' + TK.lhNorm + ';color:' + TK.tx + ';background:' + TK.bg + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ' ' + TK.sp4 + ';min-height:44px;cursor:pointer;display:flex;gap:' + TK.sp3 + ';align-items:flex-start;transition:border-color ' + TK.dFast + ',background ' + TK.dFast + ',transform ' + TK.dFast + ';}',
+      '.ma-opt:hover:not([disabled]){border-color:' + TK.ac + ';}',
       '.ma-opt[disabled]{cursor:default;}',
-      '.ma-opt-mark{flex:0 0 20px;height:20px;border-radius:5px;border:2px solid var(--surface2);display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:900;margin-top:1px;}',
-      '.ma-opt.sel .ma-opt-mark{border-color:var(--accent);background:var(--accent);color:var(--text);}',
-      '.ma-opt.good{border-color:var(--green);background:rgba(34,197,94,0.09);}',
-      '.ma-opt.good .ma-opt-mark{border-color:var(--green);background:var(--green);color:var(--bg);}',
-      '.ma-opt.part{border-color:var(--orange);background:rgba(245,158,11,0.09);}',
-      '.ma-opt.part .ma-opt-mark{border-color:var(--orange);background:var(--orange);color:var(--bg);}',
-      '.ma-opt.bad{border-color:var(--red);background:rgba(239,68,68,0.09);}',
-      '.ma-opt.bad .ma-opt-mark{border-color:var(--red);background:var(--red);color:var(--text);}',
-      '.ma-opt.dim{opacity:.5;}',
-      '.ma-fb{margin-top:12px;border-radius:10px;padding:12px 14px;font-size:0.85rem;line-height:1.65;border-left:4px solid var(--surface2);background:var(--bg);}',
-      '.ma-fb.good{border-left-color:var(--green);}',
-      '.ma-fb.part{border-left-color:var(--orange);}',
-      '.ma-fb.bad{border-left-color:var(--red);}',
-      '.ma-fb-t{font-weight:800;font-size:0.78rem;letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px;display:flex;align-items:center;gap:6px;}',
-      '.ma-fb.good .ma-fb-t{color:var(--green);}',
-      '.ma-fb.part .ma-fb-t{color:var(--orange);}',
-      '.ma-fb.bad .ma-fb-t{color:var(--red);}',
-      '.ma-teach{margin-top:10px;padding-top:10px;border-top:1px dashed var(--surface2);color:var(--text2);font-size:0.82rem;line-height:1.65;}',
+      '.ma-opt-mark{flex:0 0 20px;height:20px;border-radius:' + TK.rSm + ';border:2px solid ' + TK.bds + ';display:flex;align-items:center;justify-content:center;font-size:' + TK.fsXs + ';font-weight:800;margin-top:1px;}',
+      '.ma-opt.sel .ma-opt-mark{border-color:' + TK.ac + ';background:' + TK.ac + ';color:#fff;}',
+      '.ma-opt.good{border-color:' + TK.green + ';background:' + TK.tintG + ';}',
+      '.ma-opt.good .ma-opt-mark{border-color:' + TK.green + ';background:' + TK.green + ';color:' + TK.onFill + ';}',
+      '.ma-opt.part{border-color:' + TK.orange + ';background:' + TK.tintO + ';}',
+      '.ma-opt.part .ma-opt-mark{border-color:' + TK.orange + ';background:' + TK.orange + ';color:' + TK.onFill + ';}',
+      '.ma-opt.bad{border-color:' + TK.red + ';background:' + TK.tintR + ';}',
+      '.ma-opt.bad .ma-opt-mark{border-color:' + TK.red + ';background:' + TK.red + ';color:' + TK.onFill + ';}',
+      '.ma-opt.dim{opacity:.55;}',
+      '.ma-fb{margin-top:' + TK.sp3 + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ' ' + TK.sp4 + ';font-size:' + TK.fsBase + ';line-height:' + TK.lhBody + ';border-left:4px solid ' + TK.bd + ';background:' + TK.bg + ';overflow-wrap:anywhere;}',
+      '.ma-fb.good{border-left-color:' + TK.green + ';}',
+      '.ma-fb.part{border-left-color:' + TK.orange + ';}',
+      '.ma-fb.bad{border-left-color:' + TK.red + ';}',
+      '.ma-fb-t{font-weight:800;font-size:' + TK.fsSm + ';letter-spacing:.06em;text-transform:uppercase;margin-bottom:' + TK.sp1 + ';display:flex;align-items:center;gap:' + TK.sp2 + ';}',
+      '.ma-fb.good .ma-fb-t{color:' + TK.greenFg + ';}',
+      '.ma-fb.part .ma-fb-t{color:' + TK.orangeFg + ';}',
+      '.ma-fb.bad .ma-fb-t{color:' + TK.redFg + ';}',
+      '.ma-teach{margin-top:' + TK.sp3 + ';padding-top:' + TK.sp3 + ';border-top:1px dashed ' + TK.bd + ';color:' + TK.tx2 + ';font-size:' + TK.fsSm + ';line-height:' + TK.lhBody + ';}',
       /* ---- score bar ---- */
-      '.ma-scorebar{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface);border:1px solid var(--surface2);border-radius:11px;padding:9px 12px;margin-bottom:12px;}',
-      '.ma-sc{font-size:0.76rem;font-weight:700;color:var(--text2);}',
-      '.ma-sc b{color:var(--text);font-size:0.95rem;}',
-      '.ma-critind{margin-left:auto;font-size:0.72rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:4px 10px;border-radius:999px;border:1px solid var(--green);color:var(--green);}',
-      '.ma-critind.hit{border-color:var(--red);color:var(--text);background:var(--red);}',
+      '.ma-scorebar{position:sticky;top:0;z-index:20;display:flex;gap:' + TK.sp2 + ';align-items:center;flex-wrap:wrap;background:' + TK.s1 + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';padding:' + TK.sp2 + ' ' + TK.sp3 + ';margin-bottom:' + TK.sp3 + ';}',
+      '.ma-sc{font-size:' + TK.fsSm + ';font-weight:700;color:' + TK.tx2 + ';}',
+      '.ma-sc b{color:' + TK.tx + ';font-size:' + TK.fsMd + ';}',
+      '.ma-critind{margin-left:auto;font-size:' + TK.fsXs + ';font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:' + TK.sp1 + ' ' + TK.sp3 + ';border-radius:' + TK.rFull + ';border:1px solid ' + TK.greenFg + ';color:' + TK.greenFg + ';}',
+      '.ma-critind.hit{border-color:' + TK.red + ';color:' + TK.onFill + ';background:' + TK.red + ';}',
       /* ---- critical error state ---- */
-      '.ma-crit{border:2px solid var(--red);background:rgba(239,68,68,0.10);border-radius:13px;overflow:hidden;margin-bottom:14px;}',
-      '.ma-crit-h{background:var(--red);color:var(--text);padding:14px 16px;}',
-      '.ma-crit-h .k{font-size:0.7rem;letter-spacing:.18em;text-transform:uppercase;font-weight:800;opacity:.92;}',
-      '.ma-crit-h .t{font-size:1.2rem;font-weight:900;margin-top:3px;line-height:1.3;}',
-      '.ma-crit-b{padding:16px;}',
-      '.ma-crit-sec{margin-bottom:14px;}',
-      '.ma-crit-sec:last-child{margin-bottom:0;}',
-      '.ma-crit-sec h5{margin:0 0 5px;font-size:0.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--red);font-weight:800;}',
-      '.ma-crit-sec p{margin:0;font-size:0.87rem;line-height:1.7;color:var(--text);}',
+      '.ma-crit{border:2px solid ' + TK.red + ';background:' + TK.tintR + ';border-radius:' + TK.rLg + ';overflow:hidden;margin-bottom:' + TK.sp4 + ';}',
+      '.ma-crit-h{background:' + TK.red + ';color:' + TK.onFill + ';padding:' + TK.sp4 + ';}',
+      '.ma-crit-h .k{font-size:' + TK.fsXs + ';letter-spacing:.18em;text-transform:uppercase;font-weight:800;}',
+      '.ma-crit-h .t{font-size:' + TK.fsXl + ';font-weight:800;margin-top:3px;line-height:' + TK.lhSnug + ';}',
+      '.ma-crit-b{padding:' + TK.sp4 + ';}',
+      /* BEAT 1 — the patient, alone, and the largest type on the screen */
+      '.ma-crit-harm{font-size:' + TK.fsMd + ';line-height:' + TK.lhBody + ';color:' + TK.tx + ';font-weight:600;padding:0 0 ' + TK.sp4 + ';margin-bottom:' + TK.sp4 + ';border-bottom:1px solid rgba(239,68,68,.35);}',
+      '.ma-crit-sec{margin-bottom:' + TK.sp4 + ';}',
+      '.ma-crit-sec h5{margin:0 0 ' + TK.sp1 + ';font-size:' + TK.fsXs + ';letter-spacing:.12em;text-transform:uppercase;color:' + TK.redFg + ';font-weight:800;}',
+      '.ma-crit-sec p{margin:0;font-size:' + TK.fsBase + ';line-height:' + TK.lhBody + ';color:' + TK.tx + ';}',
+      /* BEAT 2 — the exam, deliberately small and last */
+      '.ma-crit-foot{margin-top:' + TK.sp4 + ';padding-top:' + TK.sp3 + ';border-top:1px dashed ' + TK.bd + ';font-size:' + TK.fsSm + ';line-height:' + TK.lhBody + ';color:' + TK.tx2 + ';}',
       /* ---- lists ---- */
-      '.ma-ul{margin:6px 0 0;padding-left:18px;font-size:0.83rem;line-height:1.7;color:var(--text2);}',
+      '.ma-ul{margin:' + TK.sp2 + ' 0 0;padding-left:18px;font-size:' + TK.fsSm + ';line-height:' + TK.lhBody + ';color:' + TK.tx2 + ';}',
       '.ma-ul li{margin-bottom:3px;}',
-      '.ma-ul li b{color:var(--text);}',
+      '.ma-ul li b{color:' + TK.tx + ';}',
       /* ---- drill ---- */
-      '.ma-drill{background:var(--surface);border:1px solid var(--surface2);border-radius:13px;padding:18px;}',
-      '.ma-drill-top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;}',
-      '.ma-drill-clock{font-size:1.6rem;font-weight:900;font-variant-numeric:tabular-nums;letter-spacing:-0.02em;}',
-      '.ma-drill-clock.low{color:var(--red);}',
-      '.ma-timerbar{height:6px;border-radius:3px;background:var(--surface2);overflow:hidden;margin-bottom:14px;}',
-      '.ma-timerfill{height:100%;background:var(--accent);transition:width .3s linear;}',
-      '.ma-timerfill.low{background:var(--red);}',
-      '.ma-streak{font-size:0.8rem;font-weight:800;color:var(--orange);}',
-      '.ma-drill-q{font-size:1rem;line-height:1.6;font-weight:600;background:var(--bg);border-radius:11px;padding:15px;margin-bottom:12px;border-left:4px solid var(--accent2);}',
-      '.ma-drill-opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;}',
-      '.ma-big{display:flex;gap:14px;flex-wrap:wrap;}',
-      '.ma-stat{flex:1 1 92px;background:var(--bg);border:1px solid var(--surface2);border-radius:10px;padding:10px;text-align:center;}',
-      '.ma-stat b{display:block;font-size:1.3rem;font-weight:900;}',
-      '.ma-stat span{font-size:0.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);font-weight:700;}',
-      /* ---- body svg ---- */
-      '.ma-bodywrap{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;}',
-      '.ma-bodysvg{flex:0 0 auto;width:220px;max-width:100%;background:var(--bg);border:1px solid var(--surface2);border-radius:12px;padding:8px;}',
-      '.ma-hot{cursor:pointer;fill:var(--surface2);stroke:var(--text3);stroke-width:1.5;opacity:.85;transition:fill .12s;}',
-      '.ma-hot:hover{fill:var(--accent);}',
-      '.ma-hot.ok{fill:var(--green);stroke:var(--green);}',
-      '.ma-hot.no{fill:var(--red);stroke:var(--red);}',
-      '.ma-bodyside{flex:1 1 240px;min-width:0;}',
+      '.ma-drill{background:' + TK.s1 + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rLg + ';padding:' + TK.sp5 + ';}',
+      '.ma-drill-top{display:flex;justify-content:space-between;align-items:center;gap:' + TK.sp3 + ';margin-bottom:' + TK.sp3 + ';flex-wrap:wrap;}',
+      '.ma-drill-clock{font-size:' + TK.fs2xl + ';font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-0.02em;}',
+      '.ma-drill-clock.low{color:' + TK.redFg + ';}',
+      '.ma-drill-clock.paused{color:' + TK.tx3 + ';}',
+      '.ma-timerbar{height:6px;border-radius:3px;background:' + TK.s3 + ';overflow:hidden;margin-bottom:' + TK.sp4 + ';}',
+      '.ma-timerfill{height:100%;background:' + TK.ac + ';transition:width ' + TK.dBase + ' linear;}',
+      '.ma-timerfill.low{background:' + TK.red + ';}',
+      '.ma-streak{font-size:' + TK.fsSm + ';font-weight:800;color:' + TK.orangeFg + ';}',
+      '.ma-drill-q{font-size:' + TK.fsMd + ';line-height:' + TK.lhBody + ';font-weight:600;background:' + TK.bg + ';border-radius:' + TK.rMd + ';padding:' + TK.sp4 + ';margin-bottom:' + TK.sp3 + ';border-left:4px solid ' + TK.ac2 + ';}',
+      '.ma-drill-opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:' + TK.sp2 + ';}',
+      '.ma-big{display:flex;gap:' + TK.sp4 + ';flex-wrap:wrap;}',
+      '.ma-stat{flex:1 1 92px;background:' + TK.bg + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ';text-align:center;}',
+      '.ma-stat b{display:block;font-size:' + TK.fsXl + ';font-weight:800;line-height:' + TK.lhTight + ';}',
+      '.ma-stat span{font-size:' + TK.fs2xs + ';letter-spacing:.08em;text-transform:uppercase;color:' + TK.tx3 + ';font-weight:700;}',
+      /* ---- body svg (injection site selector) ---- */
+      '.ma-bodywrap{display:flex;gap:' + TK.sp4 + ';flex-wrap:wrap;align-items:flex-start;}',
+      /* DR06: 340px on a 220-unit viewBox ⇒ ~1.46 px/unit, which puts every */
+      /* r=16 hit circle at ≥44 CSS px. Phones get the full column width. */
+      '.ma-bodysvg{flex:1 1 300px;width:100%;max-width:340px;background:' + TK.bg + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rLg + ';padding:' + TK.sp2 + ';}',
+      '.ma-hot{cursor:pointer;}',
+      '.ma-hot .ma-hot-sh{fill:' + TK.s3 + ';stroke:' + TK.tx3 + ';stroke-width:2;opacity:.92;transition:fill ' + TK.dFast + ';pointer-events:none;}',
+      '.ma-hot .ma-hot-hit{fill:transparent;stroke:none;pointer-events:all;}',
+      '.ma-hot:hover .ma-hot-sh{fill:' + TK.ac + ';}',
+      '.ma-hot:active .ma-hot-sh{fill:' + TK.acHov + ';}',
+      '.ma-hot.ok .ma-hot-sh{fill:' + TK.green + ';stroke:' + TK.green + ';opacity:1;}',
+      '.ma-hot.no .ma-hot-sh{fill:' + TK.red + ';stroke:' + TK.red + ';opacity:1;}',
+      '.ma-bodylbl{pointer-events:none;}',
+      '.ma-bodyside{flex:1 1 260px;min-width:0;}',
       /* ---- drugs ---- */
-      '.ma-input{font:inherit;font-size:0.86rem;color:var(--text);background:var(--bg);border:1px solid var(--surface2);border-radius:9px;padding:9px 12px;width:100%;}',
-      '.ma-input::placeholder{color:var(--text3);}',
-      '.ma-drugrow{width:100%;text-align:left;font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--surface2);border-radius:11px;padding:12px 14px;cursor:pointer;margin-bottom:8px;}',
-      '.ma-drugrow:hover{border-color:var(--accent);}',
-      '.ma-drugrow-h{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap;}',
-      '.ma-drugname{font-weight:700;font-size:0.93rem;}',
-      '.ma-drugbrand{color:var(--text3);font-weight:500;font-size:0.8rem;}',
-      '.ma-drugclass{color:var(--text2);font-size:0.78rem;margin-top:3px;line-height:1.45;}',
-      '.ma-detail{margin-top:12px;padding-top:12px;border-top:1px solid var(--surface2);}',
-      '.ma-dsec{margin-bottom:11px;}',
-      '.ma-dsec h5{margin:0 0 4px;font-size:0.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);font-weight:800;}',
-      '.ma-dsec p{margin:0;font-size:0.83rem;line-height:1.65;color:var(--text2);}',
-      '.ma-pearl{background:rgba(139,92,246,0.10);border-left:4px solid var(--accent2);border-radius:8px;padding:10px 12px;font-size:0.83rem;line-height:1.65;}',
+      '.ma-input{font:inherit;font-size:' + TK.fsBase + ';color:' + TK.tx + ';background:' + TK.bg + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ';min-height:44px;width:100%;}',
+      '.ma-input::placeholder{color:' + TK.tx3 + ';}',
+      '.ma-drugrow{width:100%;text-align:left;font:inherit;color:' + TK.tx + ';background:' + TK.s1 + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ' ' + TK.sp4 + ';min-height:44px;cursor:pointer;margin-bottom:' + TK.sp2 + ';transition:border-color ' + TK.dFast + ',transform ' + TK.dFast + ';}',
+      '.ma-drugrow:hover{border-color:' + TK.ac + ';}',
+      '.ma-drugrow-h{display:flex;justify-content:space-between;gap:' + TK.sp3 + ';align-items:flex-start;flex-wrap:wrap;}',
+      '.ma-drugname{font-weight:700;font-size:' + TK.fsMd + ';overflow-wrap:anywhere;}',
+      '.ma-drugbrand{color:' + TK.tx3 + ';font-weight:500;font-size:' + TK.fsSm + ';}',
+      '.ma-drugclass{color:' + TK.tx2 + ';font-size:' + TK.fsSm + ';margin-top:3px;line-height:' + TK.lhNorm + ';}',
+      '.ma-detail{margin-top:' + TK.sp3 + ';padding-top:' + TK.sp3 + ';border-top:1px solid ' + TK.bd + ';}',
+      '.ma-dsec{margin-bottom:' + TK.sp3 + ';}',
+      '.ma-dsec h5{margin:0 0 ' + TK.sp1 + ';font-size:' + TK.fs2xs + ';letter-spacing:.1em;text-transform:uppercase;color:' + TK.tx3 + ';font-weight:800;}',
+      '.ma-dsec p{margin:0;font-size:' + TK.fsSm + ';line-height:' + TK.lhBody + ';color:' + TK.tx2 + ';}',
+      '.ma-pearl{background:' + TK.tintP + ';border-left:4px solid ' + TK.ac2 + ';border-radius:' + TK.rSm + ';padding:' + TK.sp3 + ';font-size:' + TK.fsSm + ';line-height:' + TK.lhBody + ';}',
       /* ---- rubric ---- */
-      '.ma-lvls{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin:10px 0;}',
-      '.ma-lvl{font:inherit;text-align:left;background:var(--bg);border:1px solid var(--surface2);border-radius:9px;padding:9px 11px;cursor:pointer;color:var(--text2);font-size:0.8rem;line-height:1.5;}',
-      '.ma-lvl:hover{border-color:var(--accent);}',
-      '.ma-lvl b{display:block;color:var(--text);font-size:0.72rem;letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px;}',
-      '.ma-lvl.on0{border-color:var(--red);background:rgba(239,68,68,0.10);color:var(--text);}',
-      '.ma-lvl.on1{border-color:var(--orange);background:rgba(245,158,11,0.10);color:var(--text);}',
-      '.ma-lvl.on2{border-color:var(--green);background:rgba(34,197,94,0.10);color:var(--text);}',
-      '.ma-item{border:1px solid var(--surface2);border-radius:11px;padding:13px;margin-bottom:10px;background:var(--surface);}',
-      '.ma-item.crit{border-left:4px solid var(--red);}',
+      '.ma-lvls{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:' + TK.sp2 + ';margin:' + TK.sp3 + ' 0;}',
+      '.ma-lvl{font:inherit;text-align:left;background:' + TK.bg + ';border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ';min-height:44px;cursor:pointer;color:' + TK.tx2 + ';font-size:' + TK.fsSm + ';line-height:' + TK.lhNorm + ';transition:border-color ' + TK.dFast + ',transform ' + TK.dFast + ';}',
+      '.ma-lvl:hover{border-color:' + TK.ac + ';}',
+      '.ma-lvl b{display:block;color:' + TK.tx + ';font-size:' + TK.fsXs + ';letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px;}',
+      '.ma-lvl .ma-lvl-obs{display:block;color:' + TK.tx3 + ';margin-top:' + TK.sp1 + ';font-size:' + TK.fsXs + ';}',
+      '.ma-lvl.on0{border-color:' + TK.red + ';background:' + TK.tintR + ';color:' + TK.tx + ';}',
+      '.ma-lvl.on1{border-color:' + TK.orange + ';background:' + TK.tintO + ';color:' + TK.tx + ';}',
+      '.ma-lvl.on2{border-color:' + TK.green + ';background:' + TK.tintG + ';color:' + TK.tx + ';}',
+      '.ma-item{border:1px solid ' + TK.bd + ';border-radius:' + TK.rMd + ';padding:' + TK.sp4 + ';margin-bottom:' + TK.sp3 + ';background:' + TK.s1 + ';}',
+      '.ma-item.crit{border-left:4px solid ' + TK.red + ';}',
+      '.ma-details summary{cursor:pointer;font-size:' + TK.fsSm + ';font-weight:700;color:' + TK.tx2 + ';padding:' + TK.sp2 + ' 0;min-height:32px;}',
+      '.ma-details summary:hover{color:' + TK.tx + ';}',
       /* ---- verdict ---- */
-      '.ma-verdict{border-radius:13px;padding:20px;text-align:center;margin-bottom:14px;border:2px solid var(--surface2);}',
-      '.ma-verdict.pass{border-color:var(--green);background:rgba(34,197,94,0.10);}',
-      '.ma-verdict.fail{border-color:var(--red);background:rgba(239,68,68,0.10);}',
-      '.ma-verdict .v{font-size:2rem;font-weight:900;letter-spacing:.02em;line-height:1;}',
-      '.ma-verdict.pass .v{color:var(--green);}',
-      '.ma-verdict.fail .v{color:var(--red);}',
-      '.ma-verdict .p{font-size:1.05rem;font-weight:700;margin-top:6px;}',
-      '.ma-verdict .r{font-size:0.82rem;color:var(--text2);margin-top:8px;line-height:1.6;}',
+      '.ma-verdict{border-radius:' + TK.rLg + ';padding:' + TK.sp5 + ';text-align:center;margin-bottom:' + TK.sp4 + ';border:2px solid ' + TK.bd + ';}',
+      '.ma-verdict.pass{border-color:' + TK.green + ';background:' + TK.tintG + ';}',
+      '.ma-verdict.fail{border-color:' + TK.red + ';background:' + TK.tintR + ';}',
+      '.ma-verdict .v{font-size:' + TK.fs3xl + ';font-weight:800;letter-spacing:.02em;line-height:' + TK.lhTight + ';}',
+      '.ma-verdict.pass .v{color:' + TK.greenFg + ';}',
+      '.ma-verdict.fail .v{color:' + TK.redFg + ';}',
+      '.ma-verdict .p{font-size:' + TK.fsLg + ';font-weight:700;margin-top:' + TK.sp2 + ';}',
+      '.ma-verdict .r{font-size:' + TK.fsSm + ';color:' + TK.tx2 + ';margin-top:' + TK.sp2 + ';line-height:' + TK.lhBody + ';}',
       /* ---- AI ---- */
-      '.ma-ai{border:1px dashed var(--accent2);border-radius:11px;padding:12px;margin-top:12px;background:rgba(139,92,246,0.06);}',
-      '.ma-ai-out{margin-top:10px;font-size:0.85rem;line-height:1.7;white-space:pre-wrap;color:var(--text);background:var(--bg);border-radius:9px;padding:11px 13px;max-height:340px;overflow:auto;}',
+      '.ma-ai{border:1px dashed ' + TK.ac2 + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ';margin-top:' + TK.sp3 + ';background:' + TK.tintP + ';}',
+      '.ma-ai-out{margin-top:' + TK.sp3 + ';font-size:' + TK.fsBase + ';line-height:' + TK.lhBody + ';white-space:pre-wrap;overflow-wrap:anywhere;color:' + TK.tx + ';background:' + TK.bg + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ';max-height:340px;overflow:auto;}',
       /* ---- misc ---- */
-      '.ma-bars{display:flex;flex-direction:column;gap:6px;}',
-      '.ma-bar{display:grid;grid-template-columns:minmax(110px,1.4fr) 1fr auto;gap:9px;align-items:center;font-size:0.78rem;}',
-      '.ma-bar-t{height:7px;border-radius:4px;background:var(--surface2);overflow:hidden;}',
-      '.ma-bar-f{height:100%;background:var(--green);}',
-      '.ma-bar-f.mid{background:var(--orange);}',
-      '.ma-bar-f.low{background:var(--red);}',
+      '.ma-bars{display:flex;flex-direction:column;gap:' + TK.sp2 + ';}',
+      '.ma-bar{display:grid;grid-template-columns:minmax(110px,1.4fr) 1fr auto;gap:' + TK.sp2 + ';align-items:center;font-size:' + TK.fsSm + ';}',
+      '.ma-bar-t{height:7px;border-radius:' + TK.sp1 + ';background:' + TK.s3 + ';overflow:hidden;}',
+      '.ma-bar-f{height:100%;background:' + TK.green + ';}',
+      '.ma-bar-f.mid{background:' + TK.orange + ';}',
+      '.ma-bar-f.low{background:' + TK.red + ';}',
       '.ma-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}',
-      '@media (prefers-reduced-motion: reduce){.ma-modecard,.ma-opt,.ma-timerfill,.ma-btn{transition:none !important;}.ma-modecard:hover{transform:none;}}',
+      /* ---- pressed states (DR10: touch never fires :hover) ---- */
+      '.ma-btn:active:not([disabled]),.ma-opt:active:not([disabled]),.ma-modecard:active,.ma-tab:active,.ma-drugrow:active,.ma-lvl:active{transform:scale(.975);}',
+      /* ---- motion ---- */
+      '@media (prefers-reduced-motion: reduce){',
+      '.ma-modecard,.ma-opt,.ma-timerfill,.ma-btn,.ma-tab,.ma-drugrow,.ma-lvl,.ma-hot .ma-hot-sh{transition:none !important;}',
+      '.ma-modecard:hover{transform:none;}',
+      '.ma-btn:active:not([disabled]),.ma-opt:active:not([disabled]),.ma-modecard:active,.ma-tab:active,.ma-drugrow:active,.ma-lvl:active{transform:none;}',
+      '}',
+      /* ---- mobile ---- */
+      '@media (max-width:768px){',
+      '.ma-input,.ma-wrap input,.ma-wrap textarea,.ma-wrap select{font-size:16px;}',  /* stop iOS focus-zoom */
+      '}',
       '@media (max-width:640px){',
-      '.ma-h1{font-size:1.22rem;}',
-      '.ma-card{padding:13px;}',
+      '.ma-card{padding:' + TK.sp3 + ';}',
       '.ma-modegrid{grid-template-columns:1fr;}',
       '.ma-drill-opts{grid-template-columns:1fr;}',
       '.ma-bodywrap{flex-direction:column;}',
-      '.ma-bodysvg{width:100%;max-width:260px;margin:0 auto;}',
+      '.ma-bodysvg{width:100%;max-width:100%;margin:0 auto;}',
       '.ma-lvls{grid-template-columns:1fr;}',
       '.ma-bar{grid-template-columns:1fr;gap:3px;}',
       '}'
@@ -412,7 +581,7 @@
     var pct = clamp(props.pct || 0, 0, 100);
     var cls = pct >= 80 ? '' : (pct >= 50 ? 'mid' : 'low');
     return ce('div', { className: 'ma-bar' },
-      ce('span', { style: { color: 'var(--text2)' } }, props.label),
+      ce('span', { style: { color: TK.tx2 } }, props.label),
       ce('div', { className: 'ma-bar-t' },
         ce('div', { className: 'ma-bar-f ' + cls, style: { width: pct + '%' } })),
       ce('b', { style: { fontVariantNumeric: 'tabular-nums' } }, props.value)
@@ -471,7 +640,7 @@
 
     return ce('div', { className: 'ma-ai' },
       ce('div', { className: 'ma-row', style: { justifyContent: 'space-between', marginBottom: 8 } },
-        ce('span', { className: 'ma-tiny', style: { color: 'var(--accent2)' } }, 'Ask the instructor'),
+        ce('span', { className: 'ma-tiny', style: { color: TK.ac2Fg } }, 'Ask the instructor'),
         ce('button', { className: 'ma-btn ma-btn-ghost ma-btn-sm', onClick: function () { setOpen(false); } }, 'Close')),
       ce('textarea', {
         className: 'ma-input', rows: 2, value: question,
@@ -543,7 +712,7 @@
         ce('div', { className: 'ma-fb-t' }, res.got + ' of ' + res.total + ' required elements said'),
         ce('ul', { className: 'ma-ul' }, res.hits.map(function (h, i) {
           return ce('li', { key: i },
-            ce('b', { style: { color: h.ok ? 'var(--green)' : 'var(--red)' } }, h.ok ? '[said] ' : '[missing] '),
+            ce('b', { style: { color: h.ok ? TK.greenFg : TK.redFg } }, h.ok ? '[said] ' : '[missing] '),
             h.label);
         }))
       ) : null
@@ -1339,7 +1508,7 @@
 
   function PassRules() {
     return ce('ul', { className: 'ma-ul' },
-      ce('li', null, 'Any ', ce('b', { style: { color: 'var(--red)' } }, 'critical error'), ' is an automatic FAIL, whatever the total.'),
+      ce('li', null, 'Any ', ce('b', { style: { color: TK.redFg } }, 'critical error'), ' is an automatic FAIL, whatever the total.'),
       ce('li', null, 'Every item marked ', ce('b', null, 'critical'), ' must score 2 of 2.'),
       ce('li', null, 'No item may score 0 — a 0 means the competency was not demonstrated.'),
       ce('li', null, 'Score out of 40 × 2.5 = percent out of 100. Maximum attempts: ' + (RUBRIC().maxAttempts || 2) + '.')
@@ -1350,6 +1519,50 @@
    * 6. MAR CHART
    * ======================================================================== */
 
+  /**
+   * Scheduled administration times for ONE medication. The case-level medTimes
+   * array is the union of every drug's times; mapping it onto every row makes a
+   * Daily digoxin and a BID prednisone both read "0800 1000 1200 1400" and
+   * gives a PRN row four scheduled chips. That teaches "Right Time" backwards.
+   */
+  function timesFor(c, m) {
+    if (m.isPRN) return [];
+    var all = (c.medTimes || []), f = String(m.frequency || '').toLowerCase();
+    if (!all.length) return [];
+    if (/q ?1 ?h|hourly/.test(f)) return all;
+    if (/q ?2 ?h/.test(f)) return all;
+    if (/tid|three times|q ?8/.test(f)) return all.slice(0, 3);
+    if (/qid|four times|q ?6/.test(f)) return all.slice(0, 4);
+    if (/bid|twice|q ?12/.test(f)) return [all[0], all[Math.min(2, all.length - 1)]].filter(Boolean);
+    if (/daily|q ?24|\bqd\b|once/.test(f)) return all.slice(0, 1);
+    if (/hs|bedtime/.test(f)) return all.slice(-1);
+    return all.slice(0, 1);
+  }
+
+  /* Labs were never flagged — only vitals were — so Creatinine 6.4 on an ESRD
+     digoxin case rendered in exactly the same weight as a normal sodium. */
+  var LAB_LIMITS = {
+    'k+': [3.5, 5.0], 'potassium': [3.5, 5.0],
+    'na+': [135, 145], 'sodium': [135, 145],
+    'creatinine': [0.6, 1.3], 'bun': [7, 20],
+    'inr': [0.8, 1.2], 'ptt': [25, 35], 'aptt': [25, 35],
+    'platelets': [150, 400], 'hemoglobin': [12, 17], 'hgb': [12, 17],
+    'hematocrit': [36, 50], 'hct': [36, 50],
+    'blood glucose': [70, 110], 'glucose': [70, 110],
+    'wbc': [4.5, 11], 'white blood cells': [4.5, 11],
+    'digoxin level': [0.5, 2.0], 'vancomycin trough': [10, 20],
+    'magnesium': [1.7, 2.2], 'calcium': [8.5, 10.5], 'albumin': [3.5, 5.0],
+    'a1c': [4.0, 5.7], 'hba1c': [4.0, 5.7], 'ast': [10, 40], 'alt': [7, 56],
+    'troponin': [0, 0.04], 'lactate': [0.5, 2.0], 'crp': [0, 1]
+  };
+  function flagLab(k, v) {
+    var key = String(k).toLowerCase().trim().replace(/\s*\(.*\)\s*$/, '');
+    var lim = LAB_LIMITS[key];
+    if (!lim) return false;
+    var n = parseFloat(String(v));
+    return isFinite(n) && (n < lim[0] || n > lim[1]);
+  }
+
   function MARChart(props) {
     var c = props.caseObj;
     var p = c.patient || {};
@@ -1357,6 +1570,8 @@
     var nkda = allergies.length === 0 || allergies.every(function (a) { return /no known/i.test(a); });
     var labs = c.labs || {}, vitals = c.vitals || {};
     var done = props.completed || {};
+    var readOnly = !!props.readOnly;
+    var Row = readOnly ? 'div' : 'button';
 
     function flagVital(k, v) {
       var n = parseFloat(String(v));
@@ -1366,12 +1581,13 @@
       if (/o2/i.test(k) && n < 95) return true;
       return false;
     }
+    var abnormalLabs = Object.keys(labs).filter(function (k) { return flagLab(k, labs[k]); }).length;
 
     return ce('div', { className: 'ma-chart' },
       ce('div', { className: 'ma-chart-bar' },
         ce('b', null, 'Medication Administration Record'),
         ce('span', { className: 'ma-muted' }, 'Current time ',
-          ce('b', { style: { color: 'var(--text)' } }, c.currentTime || '—'))
+          ce('b', { style: { color: TK.tx } }, c.currentTime || '—'))
       ),
       /* patient header */
       ce('div', { className: 'ma-pt' },
@@ -1382,7 +1598,10 @@
           ce('span', null, ce('b', null, p.sex || '—')),
           ce('span', null, 'Code status ', ce('b', null, p.codeStatus || '—'))
         ),
-        ce('div', { className: 'ma-allergy' + (nkda ? ' nkda' : ''), role: nkda ? null : 'alert' },
+        /* role="note", not "alert" — this is static chart data, not an event
+           (DR07 MINOR-4). It is sticky instead, so it stays on screen next to
+           the medication grid. */
+        ce('div', { className: 'ma-allergy' + (nkda ? ' nkda' : ''), role: 'note' },
           ce('span', { className: 'ma-allergy-ic', 'aria-hidden': 'true' }, nkda ? '○' : '▲'),
           ce('span', null,
             ce('span', { className: 'ma-allergy-lbl' }, nkda ? 'Allergies' : 'Allergies — verify before every dose'),
@@ -1397,9 +1616,18 @@
       /* labs + vitals */
       ce('div', { className: 'ma-panels' },
         ce('div', { className: 'ma-panel' },
-          ce('h4', null, 'Laboratory'),
+          ce('h4', null, 'Laboratory',
+            abnormalLabs
+              ? ce('span', { className: 'ma-tag orange', style: { marginLeft: 6 } }, abnormalLabs + ' abnormal')
+              : null),
           Object.keys(labs).map(function (k) {
-            return ce('div', { className: 'ma-kv', key: k }, ce('span', null, k), ce('b', null, labs[k]));
+            var ab = flagLab(k, labs[k]);
+            return ce('div', { className: 'ma-kv' + (ab ? ' flag' : ''), key: k },
+              ce('span', null, k),
+              ce('b', null,
+                ab ? ce('span', { 'aria-hidden': 'true', style: { marginRight: 4 } }, '▲') : null,
+                ab ? ce('span', { className: 'ma-sr' }, 'abnormal: ') : null,
+                labs[k]));
           })
         ),
         ce('div', { className: 'ma-panel' },
@@ -1424,32 +1652,50 @@
       ),
       (c.medications || []).map(function (m) {
         var isDone = !!done[m.id];
-        return ce('button', {
-          key: m.id, type: 'button',
-          className: 'ma-marrow' + (isDone ? ' done' : ''),
-          onClick: function () { if (props.onSelect) props.onSelect(m); },
-          'aria-label': 'Work medication ' + m.name + (isDone ? ' (already completed)' : '')
-        },
+        var assigned = props.assignedId && props.assignedId === m.id;
+        var rowProps = {
+          key: m.id,
+          className: 'ma-marrow' + (isDone ? ' done' : '') + (readOnly ? ' ro' : '') + (assigned ? ' assigned' : '')
+        };
+        if (readOnly) {
+          /* Signoff Readiness renders the chart as a reference document, so the
+             rows must not be focusable buttons that do nothing when pressed. */
+          rowProps['aria-label'] = m.name + (assigned ? ' — the medication you have been assigned' : '');
+        } else {
+          rowProps.type = 'button';
+          rowProps.onClick = function () { if (props.onSelect) props.onSelect(m); };
+          rowProps['aria-label'] = 'Work medication ' + m.name + (isDone ? ' (already completed)' : '');
+        }
+        return ce(Row, rowProps,
           ce('div', { className: 'ma-mname' },
             ce('span', { className: 'ma-lbl' }, 'Medication'), m.name,
             m.isPRN ? ce('span', { className: 'ma-tag', style: { marginLeft: 6 } }, 'PRN') : null,
             isHighAlert(m) ? ce('span', { className: 'ma-tag red', style: { marginLeft: 6 } }, 'High alert') : null),
           ce('div', { className: 'ma-mcell' },
             ce('span', { className: 'ma-lbl' }, 'Dose'), m.dose,
-            m.concentration ? ce('span', { style: { color: 'var(--text3)' } }, ' (' + m.concentration + ')') : null),
+            m.concentration ? ce('span', { style: { color: TK.tx3 } }, ' (' + m.concentration + ')') : null),
           ce('div', { className: 'ma-mcell' }, ce('span', { className: 'ma-lbl' }, 'Route'), m.route),
           ce('div', { className: 'ma-mcell' }, ce('span', { className: 'ma-lbl' }, 'Frequency'), m.frequency),
           ce('div', { className: 'ma-times' },
             ce('span', { className: 'ma-lbl' }, 'Times'),
-            (c.medTimes || []).map(function (t) {
-              var due = t === c.currentTime;
-              return ce('span', { key: t, className: 'ma-time' + (due ? ' due' : '') + (m.isPRN ? ' prn' : '') }, t);
-            })),
+            m.isPRN
+              ? ce('span', { className: 'ma-time prn' }, 'PRN — no scheduled time')
+              : (function () {
+                var ts = timesFor(c, m);
+                if (!ts.length) return ce('span', { className: 'ma-time none' }, 'Not scheduled');
+                return ts.map(function (t) {
+                  var due = t === c.currentTime;
+                  return ce('span', { key: t, className: 'ma-time' + (due ? ' due' : '') },
+                    due ? ce('span', { className: 'ma-sr' }, 'due now: ') : null, t);
+                });
+              })()),
           ce('div', { className: 'ma-go' }, isDone ? 'Completed ✓' : 'Work this →')
         );
       }),
-      ce('div', { className: 'ma-note', style: { borderBottom: 'none', borderTop: '1px solid var(--surface2)' } },
-        'Dashed time chips are PRN. A highlighted chip is due at the current time. Select a medication to begin the administration sequence.')
+      ce('div', { className: 'ma-note', style: { borderBottom: 'none', borderTop: '1px solid ' + TK.bd } },
+        readOnly
+          ? 'This chart is for reference during the mock checkoff. A highlighted chip is due at the current time; PRN orders have no scheduled time and are given on interval and indication.'
+          : 'Times shown are the scheduled times for that order only. A highlighted chip is due at the current time; PRN orders have no scheduled time and are given on interval and indication. Select a medication to begin the administration sequence.')
     );
   }
 
@@ -1473,37 +1719,54 @@
     );
   }
 
+  /**
+   * The critical-error stop. Two beats: the patient first and alone, the exam
+   * consequence last and small. The score, the pass rules and the rubric table
+   * live behind "Show the full breakdown" — see MedRun.
+   */
   function CriticalScreen(props) {
     var stop = props.stop;
     var def = criticalErrorDef(stop.code);
+    var catches = (stop.trap && stop.trap.correctAction) || (stop.conflict && stop.conflict.why) || def.explanation;
+    var rule = (stop.trap && stop.trap.teachingPoint) || def.explanation;
+    var headRef = useRef(null);
+
+    useEffect(function () {
+      var n = headRef.current;
+      if (n && n.focus) { try { n.focus(); } catch (e) {} }
+    }, []);
+
     return ce('div', { className: 'ma-crit', role: 'alert', 'aria-live': 'assertive' },
-      ce('div', { className: 'ma-crit-h' },
-        ce('div', { className: 'k' }, 'Critical error — attempt failed'),
+      ce('div', { className: 'ma-crit-h', tabIndex: -1, ref: headRef },
+        ce('div', { className: 'k' }, 'Stop — this is one of the nine critical errors'),
         ce('div', { className: 't' }, def.text || stop.code)
       ),
       ce('div', { className: 'ma-crit-b' },
+        /* BEAT 1 — what happens to this patient */
+        ce('div', { className: 'ma-crit-harm' }, props.harm || def.explanation),
+
         ce('div', { className: 'ma-crit-sec' },
-          ce('h5', null, 'What you did'),
+          ce('h5', null, 'The step you were on'),
           ce('p', null, stop.action)),
-        stop.conflict ? ce('div', { className: 'ma-crit-sec' },
-          ce('h5', null, 'The conflict you cleared'),
-          ce('p', null, stop.conflict.why)) : null,
-        ce('div', { className: 'ma-crit-sec' },
-          ce('h5', null, 'What would have happened to the patient'),
-          ce('p', null, (stop.trap && stop.trap.whatHappens) || def.explanation)),
-        stop.trap ? ce('div', { className: 'ma-crit-sec' },
-          ce('h5', null, 'What you should have done'),
-          ce('p', null, stop.trap.correctAction)) : null,
-        ce('div', { className: 'ma-crit-sec' },
-          ce('h5', null, 'Teaching point'),
-          ce('p', null, (stop.trap && stop.trap.teachingPoint) || def.explanation)),
-        ce('div', { className: 'ma-crit-sec' },
-          ce('h5', null, 'Why this ends the attempt'),
-          ce('p', null, 'On the official rubric this is listed as a critical error. A critical error is an automatic FAIL regardless of every other item. ' +
-            'You get ' + (RUBRIC().maxAttempts || 2) + ' attempts at the real checkoff, so this is the place to make the mistake.')),
-        ce('div', { className: 'ma-row', style: { marginTop: 6 } },
-          ce('button', { className: 'ma-btn ma-btn-primary', onClick: props.onRestart }, 'Restart this medication'),
-          ce('button', { className: 'ma-btn', onClick: props.onExit }, 'Back to the MAR')),
+        catches ? ce('div', { className: 'ma-crit-sec' },
+          ce('h5', null, 'What catches it'),
+          ce('p', null, catches)) : null,
+        (rule && rule !== catches) ? ce('div', { className: 'ma-crit-sec' },
+          ce('h5', null, 'The rule underneath it'),
+          ce('p', null, rule)) : null,
+
+        /* BEAT 2 — the exam, deliberately small and last */
+        ce('div', { className: 'ma-crit-foot' },
+          'This is where the mistake is supposed to happen. You have ' + (RUBRIC().maxAttempts || 2) +
+          ' attempts at the real checkoff and none of them are today. Any one of the nine critical errors ends an ' +
+          'attempt regardless of the rest of the score, so the run stops here.'),
+
+        ce('div', { className: 'ma-row', style: { marginTop: 14 } },
+          ce('button', { className: 'ma-btn ma-btn-primary', onClick: props.onRestart }, 'Run this medication again'),
+          props.onShowBreakdown && !props.breakdownShown
+            ? ce('button', { className: 'ma-btn', onClick: props.onShowBreakdown }, 'Show the full breakdown')
+            : null,
+          ce('button', { className: 'ma-btn ma-btn-ghost', onClick: props.onExit }, 'Back to the MAR')),
         ce(AskInstructor, {
           context: props.aiContext,
           suggestions: ['Why is this a critical error?', 'How do I catch this next time?']
@@ -1566,7 +1829,10 @@
     var m0 = useState([]), multiSel = m0[0], setMultiSel = m0[1];
     var c0 = useState({ tries: 0, status: 'idle', last: '' }), calcSt = c0[0], setCalcSt = c0[1];
     var d0 = useState(false), finished = d0[0], setFinished = d0[1];
+    var sd0 = useState(false), showDebrief = sd0[0], setShowDebrief = sd0[1];
     var t0 = useRef(Date.now());
+    var fbRef = useRef(null);
+    var fbKey = useRef('');
 
     var step = steps[idx];
     var answered = step ? run.answered[step.id] : null;
@@ -1777,6 +2043,9 @@
       setCalcSt({ tries: 0, status: 'idle', last: '' });
       var el = document.getElementById('ma-steptop');
       if (el && el.scrollIntoView) { try { el.scrollIntoView({ block: 'start' }); } catch (e) {} }
+      /* DR07 Flow B-7: move focus to the new step so a keyboard user is not
+         left at the old, now-removed Next button. */
+      if (el && el.focus) { try { el.focus(); } catch (e) {} }
     }
 
     function finish() { setFinished(true); }
@@ -1785,27 +2054,51 @@
       if (hardStop && props.onCritical) props.onCritical(hardStop);
     }, [hardStop]);
 
+    /* DR07 CRITICAL-2: once a step is answered the option button is disabled,
+       so focus is stranded on an unfocusable node and the screen reader is told
+       nothing. Move focus onto the feedback block (role=status) exactly once
+       per answer. */
+    useEffect(function () {
+      if (!answered || !step) return;
+      var k = step.id + ':' + (answered.optId || '') + ':' + answered.score;
+      if (fbKey.current === k) return;
+      fbKey.current = k;
+      var n = fbRef.current;
+      if (n && n.focus) { try { n.focus(); } catch (e) {} }
+    });
+
     /* ---- running tally ---- */
     var liveTotal = 0, liveDone = 0;
     allRubricItems().forEach(function (it) {
       if (typeof run.scores[it.id] === 'number') { liveTotal += run.scores[it.id]; liveDone++; }
     });
 
-    /* ---- hard stop screen ---- */
+    /* ---- hard stop screen ----------------------------------------------
+     * The harm has to land on its own. RunDebrief is still mounted so the
+     * result is saved eagerly (its onReport fires from a mount effect), but it
+     * renders nothing at all until the student asks for the breakdown — the
+     * score, the pass rules and the 20-row rubric table are not in the DOM.
+     * -------------------------------------------------------------------- */
     if (hardStop) {
       return ce('div', null,
         ce(CriticalScreen, {
           stop: hardStop, aiContext: aiContext,
+          harm: critHarm(hardStop.code, caseObj, med),
+          breakdownShown: showDebrief,
+          onShowBreakdown: function () { setShowDebrief(true); },
           onRestart: function () {
             setHardStop(null); setIdx(0); setFinished(false); setRevealed(false); setMultiSel([]);
+            setShowDebrief(false);
             setCalcSt({ tries: 0, status: 'idle', last: '' });
             setRun({ scores: {}, answered: {}, criticals: [], majors: [], missed: [], decision: null, verbal: null });
             t0.current = Date.now();
+            fbKey.current = '';
           },
           onExit: props.onExit
         }),
         ce(RunDebrief, {
           caseObj: caseObj, med: med, run: run, built: built, failedHard: hardStop,
+          hidden: !showDebrief,
           onExit: props.onExit, onReport: props.onDone,
           timeSec: Math.round((Date.now() - t0.current) / 1000)
         })
@@ -1850,7 +2143,7 @@
           return ce('div', { key: s.id, className: 'ma-stepdot ' + cls });
         })),
 
-      ce('div', { className: 'ma-card', id: 'ma-steptop' },
+      ce('div', { className: 'ma-card', id: 'ma-steptop', tabIndex: -1 },
         ce('div', { className: 'ma-phase' }, step.phase),
         ce('h3', { className: 'ma-steptitle' }, step.title,
           (step.rubric || []).length ? ce('span', { style: { marginLeft: 8 } },
@@ -1859,7 +2152,7 @@
               return ce('span', { key: rid, className: 'ma-tag ' + (it.critical ? 'red' : ''), style: { marginRight: 4 } }, it.title);
             })) : ce('span', { className: 'ma-tag', style: { marginLeft: 8 } }, 'not scored')),
         ce('p', { className: 'ma-prompt', style: { whiteSpace: 'pre-wrap' } }, step.prompt),
-        step.reference ? ce('div', { className: 'ma-muted', style: { marginBottom: 10, padding: '8px 10px', background: 'var(--bg)', borderRadius: 8 } }, step.reference) : null,
+        step.reference ? ce('div', { className: 'ma-muted', style: { marginBottom: 10, padding: '8px 10px', background: TK.bg, borderRadius: 8 } }, step.reference) : null,
 
         /* --- allergy cross-reference reveal --- */
         (step.isAllergyGate && revealed) ? ce('div', { className: 'ma-fb part' },
@@ -1949,6 +2242,8 @@
               },
                 ce('span', { className: 'ma-opt-mark', 'aria-hidden': 'true' },
                   answered ? (it.req ? '✓' : (sel ? '✕' : '')) : (sel ? '✓' : '')),
+                answered ? ce('span', { className: 'ma-sr' },
+                  it.req ? 'Required assessment. ' : (sel ? 'Not a required assessment — you selected it. ' : '')) : null,
                 ce('span', null, it.text));
             })),
           !answered ? ce('button', {
@@ -1966,18 +2261,31 @@
               else if (o.score === 2) cls += ' good dim';
               else cls += ' dim';
             }
+            var srMark = '';
+            if (answered) {
+              if (chosen) {
+                srMark = answered.score === 2 ? 'Your answer, correct. '
+                  : answered.score === 1 ? 'Your answer, partially correct. '
+                    : 'Your answer, incorrect. ';
+              } else if (o.score === 2) { srMark = 'A correct answer. '; }
+            }
             return ce('button', {
               key: o.id, type: 'button', className: cls, disabled: !!answered,
               onClick: function () { chooseOption(step, o, optionList); }
             },
               ce('span', { className: 'ma-opt-mark', 'aria-hidden': 'true' },
                 answered ? (chosen ? (answered.score === 2 ? '✓' : answered.score === 1 ? '~' : '✕') : (o.score === 2 ? '✓' : '')) : ''),
+              srMark ? ce('span', { className: 'ma-sr' }, srMark) : null,
               ce('span', null, o.text));
           })
         ) : null,
 
         /* --- feedback --- */
-        answered ? ce('div', { className: 'ma-fb ' + (answered.tone || '') },
+        answered ? ce('div', {
+          className: 'ma-fb ' + (answered.tone || ''),
+          role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true',
+          tabIndex: -1, ref: fbRef
+        },
           ce('div', { className: 'ma-fb-t' },
             answered.score === 2 ? 'Correct — 2 of 2' : answered.score === 1 ? 'Partial — 1 of 2' : 'Incorrect — 0 of 2'),
           answered.feedback ? ce('div', null, answered.feedback) : null,
@@ -2040,6 +2348,10 @@
       }
     }, []);
 
+    /* Mounted-but-hidden: the result above is already saved, the scoreboard is
+       simply not on screen yet. All hooks have run before this point. */
+    if (props.hidden) return null;
+
     var caught = [], missedIds = {};
     (run.missed || []).forEach(function (m) { missedIds[m.trapId] = 1; });
     (run.criticals || []).forEach(function (c) { if (c.trapId) missedIds[c.trapId] = 1; });
@@ -2071,12 +2383,12 @@
         ce('div', { className: 'ma-card-t' }, 'Pass rules applied'),
         ce(PassRules, null)),
 
-      run.criticals.length ? ce('div', { className: 'ma-card', style: { borderColor: 'var(--red)' } },
+      run.criticals.length ? ce('div', { className: 'ma-card', style: { borderColor: TK.red } },
         ce('div', { className: 'ma-card-t' }, ce('span', { className: 'ma-tag red' }, 'Critical'), 'Critical errors this attempt'),
         run.criticals.map(function (c, i) {
           var def = criticalErrorDef(c.code);
           return ce('div', { key: i, style: { marginBottom: 10 } },
-            ce('div', { style: { fontWeight: 800, color: 'var(--red)' } }, def.text),
+            ce('div', { style: { fontWeight: 800, color: TK.redFg } }, def.text),
             ce('div', { className: 'ma-muted' }, c.action),
             ce('div', { className: 'ma-muted', style: { marginTop: 4 } }, def.explanation));
         })
@@ -2090,7 +2402,7 @@
             ce('div', { className: 'ma-tiny', style: { marginBottom: 6 } }, sec.title),
             (sec.items || []).map(function (it) {
               var s = typeof run.scores[it.id] === 'number' ? run.scores[it.id] : 0;
-              var col = s === 2 ? 'var(--green)' : s === 1 ? 'var(--orange)' : 'var(--red)';
+              var col = s === 2 ? TK.greenFg : s === 1 ? TK.orangeFg : TK.redFg;
               var mark = s === 2 ? '✓' : s === 1 ? '~' : '✕';
               return ce('div', {
                 key: it.id, className: 'ma-bar',
@@ -2175,29 +2487,44 @@
     }
 
     if (!caseObj) {
+      /* Progress is the only thing the picker is allowed to reveal. */
+      var seenByCase = {};
+      savedResults().forEach(function (r) {
+        if (!r || !r.caseId) return;
+        var set = seenByCase[r.caseId] || (seenByCase[r.caseId] = {});
+        (r.medIds || []).forEach(function (id) { if (id) set[id] = 1; });
+      });
+      var completedByCase = {};
+      Object.keys(seenByCase).forEach(function (k) { completedByCase[k] = Object.keys(seenByCase[k]).length; });
+
       return ce('div', null,
         ce('div', { className: 'ma-card' },
           ce('div', { className: 'ma-card-t' }, 'Choose a chart'),
           ce('div', { className: 'ma-muted' },
-            'Each chart is a full Medication Administration Record with encoded hazards. You will work one medication at a time ' +
-            'through the same sequence your evaluator observes: three checks, two identifiers, allergy check, calculation, ' +
-            'assessment, decision, administration and documentation.')),
+            'Each chart is a full Medication Administration Record for a real patient. You will work one medication at a time ' +
+            'through the same sequence your evaluator observes: three checks, two identifiers, the allergy screen, the ' +
+            'calculation, the assessment, the decision, the administration and the documentation. ' +
+            'What is dangerous about a chart is for you to find, not for us to tell you.')),
+        /* A handoff, not an answer key. The trap count, the allergy badge and
+           c.title ("…allergy and high-alert traps") all named the hazard before
+           the chart was opened, which makes the trap untriggerable. What a real
+           handoff gives you is a name, an age and an admitting diagnosis. */
         ce('div', { className: 'ma-modegrid' },
           cs.map(function (c) {
-            var crit = (c.traps || []).filter(function (t) { return t.severity === 'critical'; }).length;
             var p = c.patient || {};
-            var nkda = (p.allergies || []).every(function (a) { return /no known/i.test(a); });
+            var worked = completedByCase[c.id] || 0;
+            var nMeds = (c.medications || []).length;
             return ce('button', {
-              key: c.id, className: 'ma-modecard', onClick: function () { setCaseId(c.id); }
+              key: c.id, className: 'ma-modecard', onClick: function () { setCaseId(c.id); },
+              'aria-label': 'Open the chart for ' + p.name + ', ' + p.age + ' ' + p.sex + ', ' + p.admittingDx
             },
               ce('div', { className: 'ma-row' },
                 ce('span', { className: 'ma-tag blue' }, c.difficulty || 'Practice'),
-                ce('span', { className: 'ma-tag red' }, crit + ' critical trap' + (crit === 1 ? '' : 's')),
-                nkda ? null : ce('span', { className: 'ma-tag red' }, 'Allergy')),
+                worked ? ce('span', { className: 'ma-tag green' }, worked + ' of ' + nMeds + ' worked') : null),
               ce('div', { className: 'ma-modename', style: { marginTop: 4 } }, p.name),
-              ce('div', { className: 'ma-modedesc' }, c.title),
-              ce('div', { className: 'ma-modedesc', style: { color: 'var(--text3)' } },
-                p.age + ' ' + p.sex + '  ·  ' + (c.medications || []).length + ' medications  ·  ' + (c.traps || []).length + ' traps'));
+              ce('div', { className: 'ma-modedesc' }, p.age + ' ' + p.sex + '  ·  ' + p.admittingDx),
+              ce('div', { className: 'ma-modedesc', style: { color: TK.tx3 } },
+                nMeds + ' medication' + (nMeds === 1 ? '' : 's') + ' due at ' + (c.currentTime || 'this pass')));
           }))
       );
     }
@@ -2267,59 +2594,32 @@
       setVals(function (p) { var n = shallow(p); n[id] = v; return n; });
     }
 
+    /* Order matters here: the first scoreable control used to sit under ~700
+       words of preamble (instructions, four stat tiles, pass rules, and all
+       nine critical errors with full explanations). Rate first; the reference
+       material and the post-hoc critical-error checklist come after. */
     return ce('div', null,
       ce('div', { className: 'ma-card' },
-        ce('div', { className: 'ma-card-t' }, 'The official 40-point rubric'),
-        ce('div', { className: 'ma-muted' }, RUBRIC().instructions),
-        ce('div', { className: 'ma-big', style: { marginTop: 12 } },
-          ce('div', { className: 'ma-stat' }, ce('b', null, total + '/40'), ce('span', null, 'Points')),
-          ce('div', { className: 'ma-stat' }, ce('b', null, pct + '%'), ce('span', null, 'Percent')),
-          ce('div', { className: 'ma-stat' }, ce('b', null, scored + '/' + items.length), ce('span', null, 'Rated')),
-          ce('div', { className: 'ma-stat' },
-            ce('b', { style: { color: critList.length ? 'var(--red)' : 'var(--green)' } }, String(critList.length)),
-            ce('span', null, 'Critical errors'))),
-        complete || critList.length
-          ? ce('div', { className: 'ma-verdict ' + (passed ? 'pass' : 'fail'), style: { marginTop: 12, padding: 14 } },
-            ce('div', { className: 'v', style: { fontSize: '1.5rem' } }, passed ? 'PASS' : 'FAIL'),
-            ce('div', { className: 'r' },
-              critList.length ? 'Critical error recorded — automatic fail.'
-                : (critShort ? critShort + ' critical competency item(s) below 2 of 2.'
-                  : (zeros ? zeros + ' item(s) scored 0 — competency not demonstrated.'
-                    : 'All competencies demonstrated with no critical errors.'))))
-          : null,
-        ce('details', { style: { marginTop: 10 } },
-          ce('summary', { style: { cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text2)' } }, 'How pass/fail is determined'),
+        ce('div', { className: 'ma-card-t' }, 'The official 40-point rubric',
+          ce('span', { className: 'ma-tag' }, scored + ' of ' + items.length + ' rated'),
+          ce('span', { className: 'ma-tag blue' }, total + '/40 · ' + pct + '%')),
+        ce('div', { className: 'ma-muted' },
+          'Score yourself the way your evaluator would: 2 if you demonstrated it, 1 if it was incomplete, 0 if it did not happen. ' +
+          'Start with the first item below.'),
+        ce('details', { className: 'ma-details', style: { marginTop: 8 } },
+          ce('summary', null, 'The full instructions and how pass/fail is determined'),
+          ce('div', { className: 'ma-muted', style: { marginTop: 8 } }, RUBRIC().instructions),
           ce(PassRules, null))
       ),
 
-      /* critical error checklist */
-      ce('div', { className: 'ma-card', style: { borderColor: critList.length ? 'var(--red)' : 'var(--surface2)' } },
-        ce('div', { className: 'ma-card-t' },
-          ce('span', { className: 'ma-tag red' }, 'Automatic fail'),
-          'The ' + (RUBRIC().criticalErrors || []).length + ' critical errors'),
-        ce('div', { className: 'ma-muted', style: { marginBottom: 10 } },
-          'Tick any that happened. One tick is a fail, whatever your point total is.'),
-        (RUBRIC().criticalErrors || []).map(function (cerr) {
-          var on = critList.indexOf(cerr.id) !== -1;
-          return ce('div', { key: cerr.id, style: { marginBottom: 8 } },
-            ce('button', {
-              type: 'button', className: 'ma-opt' + (on ? ' bad' : ''), 'aria-pressed': on ? 'true' : 'false',
-              onClick: function () {
-                setCritList(on ? critList.filter(function (x) { return x !== cerr.id; }) : critList.concat([cerr.id]));
-              }
-            },
-              ce('span', { className: 'ma-opt-mark', 'aria-hidden': 'true' }, on ? '✕' : ''),
-              ce('span', null, ce('b', null, cerr.text),
-                ce('div', { className: 'ma-muted', style: { marginTop: 4 } }, cerr.explanation))));
-        })
-      ),
-
-      /* section nav */
-      ce('div', { className: 'ma-tabs' },
+      /* section nav — the first control on the page */
+      ce('div', { className: 'ma-tabs', role: 'group', 'aria-label': 'Rubric sections' },
         sections.map(function (s, i) {
           var done = (s.items || []).filter(function (it) { return typeof vals[it.id] === 'number'; }).length;
           return ce('button', {
             key: s.id, className: 'ma-tab' + (i === secIdx ? ' on' : ''),
+            'aria-pressed': i === secIdx ? 'true' : 'false',
+            'aria-current': i === secIdx ? 'true' : null,
             onClick: function () { setSecIdx(i); }
           }, s.title + ' (' + done + '/' + (s.items || []).length + ')');
         })),
@@ -2330,7 +2630,7 @@
           var mast = stats[it.id];
           return ce('div', { key: it.id, className: 'ma-item' + (it.critical ? ' crit' : '') },
             ce('div', { className: 'ma-row', style: { justifyContent: 'space-between', marginBottom: 4 } },
-              ce('div', { style: { fontWeight: 800, fontSize: '0.95rem' } }, it.title),
+              ce('div', { style: { fontWeight: 800, fontSize: TK.fsMd } }, it.title),
               ce('div', { className: 'ma-row' },
                 it.critical ? ce('span', { className: 'ma-tag red' }, 'Critical item') : null,
                 mast ? ce('span', { className: 'ma-tag' }, 'Avg ' + (Math.round(mast.sum / mast.n * 10) / 10) + '/2 over ' + mast.n) : null)),
@@ -2344,7 +2644,11 @@
                   onClick: function () { setVal(it.id, n); }
                 },
                   ce('b', null, n + ' point' + (n === 1 ? '' : 's') + (n === 2 ? ' — pass' : n === 1 ? ' — partial' : ' — fail')),
-                  (it.levels || {})[n]);
+                  (it.levels || {})[n],
+                  /* the level text is generic across several items; the
+                     observable behaviour is what you actually rate against */
+                  (n === 2 && it.description)
+                    ? ce('span', { className: 'ma-lvl-obs' }, 'Looks like: ' + it.description) : null);
               })),
             ce('button', {
               className: 'ma-btn ma-btn-ghost ma-btn-sm',
@@ -2354,12 +2658,57 @@
             openT[it.id] ? ce('div', { className: 'ma-fb', style: { marginTop: 8 } }, it.teachingPoint) : null
           );
         }),
-        ce('div', { className: 'ma-row' },
+        ce('div', { className: 'ma-row', style: { marginBottom: 14 } },
           secIdx > 0 ? ce('button', { className: 'ma-btn', onClick: function () { setSecIdx(secIdx - 1); } }, '← Previous section') : null,
           secIdx < sections.length - 1
             ? ce('button', { className: 'ma-btn ma-btn-primary', onClick: function () { setSecIdx(secIdx + 1); } }, 'Next section →')
             : ce('button', { className: 'ma-btn ma-btn-ghost', onClick: function () { setVals({}); setCritList([]); setSecIdx(0); } }, 'Reset self-assessment'))
       ) : null,
+
+      /* critical error checklist — a post-hoc question, so it comes last */
+      ce('div', { className: 'ma-card', style: { borderColor: critList.length ? TK.red : TK.bd } },
+        ce('div', { className: 'ma-card-t' },
+          ce('span', { className: 'ma-tag red' }, 'Automatic fail'),
+          'Did any of the ' + (RUBRIC().criticalErrors || []).length + ' critical errors happen?'),
+        ce('div', { className: 'ma-muted', style: { marginBottom: 10 } },
+          'Tick any that happened. One tick is a fail, whatever your point total is.'),
+        (RUBRIC().criticalErrors || []).map(function (cerr) {
+          var on = critList.indexOf(cerr.id) !== -1;
+          return ce('div', { key: cerr.id, style: { marginBottom: 8 } },
+            ce('button', {
+              type: 'button', className: 'ma-opt' + (on ? ' bad' : ''), 'aria-pressed': on ? 'true' : 'false',
+              onClick: function () {
+                setCritList(on ? critList.filter(function (x) { return x !== cerr.id; }) : critList.concat([cerr.id]));
+              }
+            },
+              ce('span', { className: 'ma-opt-mark', 'aria-hidden': 'true' }, on ? '✕' : ''),
+              ce('span', null, ce('b', null, cerr.text))),
+            ce('details', { className: 'ma-details' },
+              ce('summary', null, 'What this means'),
+              ce('div', { className: 'ma-muted' }, cerr.explanation)));
+        })
+      ),
+
+      /* running result */
+      ce('div', { className: 'ma-card' },
+        ce('div', { className: 'ma-card-t' }, 'Where this self-assessment lands'),
+        ce('div', { className: 'ma-big' },
+          ce('div', { className: 'ma-stat' }, ce('b', null, total + '/40'), ce('span', null, 'Points')),
+          ce('div', { className: 'ma-stat' }, ce('b', null, pct + '%'), ce('span', null, 'Percent')),
+          ce('div', { className: 'ma-stat' }, ce('b', null, scored + '/' + items.length), ce('span', null, 'Rated')),
+          ce('div', { className: 'ma-stat' },
+            ce('b', { style: { color: critList.length ? TK.redFg : TK.greenFg } }, String(critList.length)),
+            ce('span', null, 'Critical errors'))),
+        complete || critList.length
+          ? ce('div', { className: 'ma-verdict ' + (passed ? 'pass' : 'fail'), style: { marginTop: 12, padding: 14 }, role: 'status' },
+            ce('div', { className: 'v', style: { fontSize: TK.fsXl } }, passed ? 'PASS' : 'FAIL'),
+            ce('div', { className: 'r' },
+              critList.length ? 'Critical error recorded — automatic fail.'
+                : (critShort ? critShort + ' critical competency item(s) below 2 of 2.'
+                  : (zeros ? zeros + ' item(s) scored 0 — competency not demonstrated.'
+                    : 'All competencies demonstrated with no critical errors.'))))
+          : ce('div', { className: 'ma-muted', style: { marginTop: 10 } },
+            'Rate all ' + items.length + ' items to get a pass/fail determination.')),
 
       ce(AskInstructor, {
         context: 'The student is self-assessing against the medication administration rubric. Current total ' + total + '/40 (' + pct + '%).',
@@ -2471,9 +2820,15 @@
     var a0 = useState(null), picked = a0[0], setPicked = a0[1];
     var m0 = useState([]), misses = m0[0], setMisses = m0[1];
     var timerRef = useRef(null);
+    var advanceRef = useRef(null);
+
+    /* A wrong answer stops the clock and waits for the student. The `why`
+       strings run 15–30 words; 2,200 ms was not enough to read one, and the
+       timer kept running while they tried. */
+    var paused = !!(picked && !picked.ok);
 
     useEffect(function () {
-      if (phase !== 'play') return;
+      if (phase !== 'play' || paused) return;
       timerRef.current = setInterval(function () {
         setLeft(function (v) {
           if (v <= 1) { clearInterval(timerRef.current); setPhase('over'); return 0; }
@@ -2481,6 +2836,14 @@
         });
       }, 1000);
       return function () { if (timerRef.current) clearInterval(timerRef.current); };
+    }, [phase, paused]);
+
+    /* the auto-advance timeout must not fire after the run ends */
+    useEffect(function () {
+      return function () { if (advanceRef.current) clearTimeout(advanceRef.current); };
+    }, []);
+    useEffect(function () {
+      if (phase !== 'play' && advanceRef.current) { clearTimeout(advanceRef.current); advanceRef.current = null; }
     }, [phase]);
 
     useEffect(function () {
@@ -2497,9 +2860,16 @@
     }, [phase]);
 
     function start(sec) {
+      if (advanceRef.current) { clearTimeout(advanceRef.current); advanceRef.current = null; }
       setQueue(seededShuffle(bankRef.current, Math.floor(Math.random() * 1e9)));
       setQi(0); setSc({ right: 0, wrong: 0, streak: 0, best: 0 });
       setPicked(null); setMisses([]); setLimit(sec); setLeft(sec); setPhase('play');
+    }
+
+    function advance() {
+      if (advanceRef.current) { clearTimeout(advanceRef.current); advanceRef.current = null; }
+      setPicked(null);
+      setQi(function (n) { return (n + 1) % queue.length; });
     }
 
     function answer(q, choice) {
@@ -2510,11 +2880,12 @@
         var streak = ok ? v.streak + 1 : 0;
         return { right: v.right + (ok ? 1 : 0), wrong: v.wrong + (ok ? 0 : 1), streak: streak, best: Math.max(v.best, streak) };
       });
-      if (!ok) setMisses(function (m) { return m.concat([{ q: q, choice: choice }]); });
-      setTimeout(function () {
-        setPicked(null);
-        setQi(function (n) { return (n + 1) % queue.length; });
-      }, ok ? 550 : 2200);
+      if (!ok) {
+        /* self-paced: the clock is stopped and the student dismisses it */
+        setMisses(function (m) { return m.concat([{ q: q, choice: choice }]); });
+        return;
+      }
+      advanceRef.current = setTimeout(function () { advanceRef.current = null; advance(); }, 550);
     }
 
     var stats = savedStats();
@@ -2547,12 +2918,12 @@
             return ce('div', { key: i, style: { marginBottom: 10 } },
               ce('div', { style: { fontWeight: 700 } }, r.right),
               ce('div', { className: 'ma-muted' }, r.detail),
-              ce('div', { className: 'ma-muted', style: { color: 'var(--orange)' } }, 'Common error: ' + r.commonError));
+              ce('div', { className: 'ma-muted', style: { color: TK.orangeFg } }, 'Common error: ' + r.commonError));
           }),
           ce('div', { className: 'ma-tiny', style: { marginTop: 12, marginBottom: 6 } }, 'Plus'),
           (SKILLS().additionalRights || []).map(function (r, i) {
             return ce('div', { key: i, className: 'ma-muted', style: { marginBottom: 5 } },
-              ce('b', { style: { color: 'var(--text)' } }, r.right + ': '), r.detail);
+              ce('b', { style: { color: TK.tx } }, r.right + ': '), r.detail);
           }))
       );
     }
@@ -2563,10 +2934,10 @@
         ce('div', { className: 'ma-card' },
           ce('div', { className: 'ma-card-t' }, 'Time'),
           ce('div', { className: 'ma-big' },
-            ce('div', { className: 'ma-stat' }, ce('b', { style: { color: 'var(--green)' } }, String(sc.right)), ce('span', null, 'Correct')),
-            ce('div', { className: 'ma-stat' }, ce('b', { style: { color: 'var(--red)' } }, String(sc.wrong)), ce('span', null, 'Wrong')),
+            ce('div', { className: 'ma-stat' }, ce('b', { style: { color: TK.greenFg } }, String(sc.right)), ce('span', null, 'Correct')),
+            ce('div', { className: 'ma-stat' }, ce('b', { style: { color: TK.redFg } }, String(sc.wrong)), ce('span', null, 'Wrong')),
             ce('div', { className: 'ma-stat' }, ce('b', null, acc + '%'), ce('span', null, 'Accuracy')),
-            ce('div', { className: 'ma-stat' }, ce('b', { style: { color: 'var(--orange)' } }, String(sc.best)), ce('span', null, 'Best streak'))),
+            ce('div', { className: 'ma-stat' }, ce('b', { style: { color: TK.orangeFg } }, String(sc.best)), ce('span', null, 'Best streak'))),
           ce('div', { className: 'ma-row', style: { marginTop: 14 } },
             ce('button', { className: 'ma-btn ma-btn-primary', onClick: function () { start(limit); } }, 'Go again'),
             ce('button', { className: 'ma-btn', onClick: function () { setPhase('idle'); } }, 'Back'))),
@@ -2577,8 +2948,8 @@
               ce('div', { className: 'ma-fb-t' }, m.q.kind),
               ce('div', null, m.q.q),
               ce('div', { style: { marginTop: 6 } },
-                ce('b', { style: { color: 'var(--red)' } }, 'You said: '), m.choice, '  ',
-                ce('b', { style: { color: 'var(--green)' } }, 'Answer: '), m.q.answer),
+                ce('b', { style: { color: TK.redFg } }, 'You said: '), m.choice, '  ',
+                ce('b', { style: { color: TK.greenFg } }, 'Answer: '), m.q.answer),
               m.q.why ? ce('div', { className: 'ma-teach' }, m.q.why) : null);
           })
         ) : ce('div', { className: 'ma-card' }, ce('div', { className: 'ma-muted' }, 'Clean run — nothing missed.'))
@@ -2591,13 +2962,18 @@
 
     return ce('div', { className: 'ma-drill' },
       ce('div', { className: 'ma-drill-top' },
-        ce('div', { className: 'ma-drill-clock' + (low ? ' low' : '') }, fmtSec(left)),
+        ce('div', {
+          className: 'ma-drill-clock' + (paused ? ' paused' : (low ? ' low' : '')),
+          'aria-label': (paused ? 'Clock paused. ' : '') + 'Time remaining ' + fmtSec(left)
+        }, fmtSec(left)),
         ce('div', { className: 'ma-row' },
           ce('span', { className: 'ma-sc' }, 'Score ', ce('b', null, String(sc.right))),
           sc.streak >= 3 ? ce('span', { className: 'ma-streak' }, sc.streak + ' in a row') : null,
           ce('button', { className: 'ma-btn ma-btn-ghost ma-btn-sm', onClick: function () { setPhase('over'); } }, 'End'))),
       ce('div', { className: 'ma-timerbar' },
         ce('div', { className: 'ma-timerfill' + (low ? ' low' : ''), style: { width: (left / limit * 100) + '%' } })),
+      paused ? ce('div', { className: 'ma-tiny', style: { marginBottom: 6, color: TK.orangeFg } },
+        'Clock paused — read this, then continue') : null,
       ce('div', { className: 'ma-tiny', style: { marginBottom: 6 } }, q.kind),
       ce('div', { className: 'ma-drill-q' }, q.q),
       ce('div', { className: 'ma-drill-opts' },
@@ -2609,13 +2985,17 @@
           }
           return ce('button', {
             key: o, className: cls, disabled: !!picked,
-            style: { padding: '13px 12px', fontSize: '0.88rem' },
+            style: { fontSize: '0.88rem' },
             onClick: function () { answer(q, o); }
-          }, o);
+          }, o,
+            picked && o === q.answer ? ce('span', { className: 'ma-sr' }, ' — correct answer') : null,
+            picked && o === picked.choice && !picked.ok ? ce('span', { className: 'ma-sr' }, ' — your answer, incorrect') : null);
         })),
-      picked ? ce('div', { className: 'ma-fb ' + (picked.ok ? 'good' : 'bad'), role: 'status' },
+      picked ? ce('div', { className: 'ma-fb ' + (picked.ok ? 'good' : 'bad'), role: 'status', 'aria-live': 'polite' },
         ce('div', { className: 'ma-fb-t' }, picked.ok ? 'Correct' : 'Answer: ' + q.answer),
-        q.why || '') : null
+        q.why || '',
+        !picked.ok ? ce('div', { className: 'ma-row', style: { marginTop: 12 } },
+          ce('button', { className: 'ma-btn ma-btn-primary', onClick: advance }, 'Got it — next question →')) : null) : null
     );
   }
 
@@ -2683,70 +3063,105 @@
     }
   ];
 
+  /**
+   * Anterior body diagram.
+   *
+   * Geometry rules this layout is built to satisfy (DR06 CRITICAL-3, WCAG 2.5.8):
+   *  - viewBox is 220 units wide and the SVG renders at 300–340 CSS px, so one
+   *    user unit is ~1.4–1.5 CSS px. Every hotspot carries a transparent r=16
+   *    hit circle, i.e. a 45–49 px target, above the 44 px floor.
+   *  - No two hotspot centres are closer than 32 units (~46 px), so adjacent
+   *    sites cannot be hit by accident. vastus lateralis and the anterior thigh
+   *    used to sit 1 px apart; they are now 67 units apart.
+   *  - Every site has a visible text label, an accessible name and a <title>.
+   *    `abdomen` — the correct answer to three of the nine challenges — used to
+   *    be an unlabelled blob.
+   */
   function BodyDiagram(props) {
     var picked = props.picked, correct = props.correct || [];
-    function hot(id, el) {
+
+    function hot(id, cx, cy, rx, ry) {
       var cls = 'ma-hot';
       if (picked) {
         if (correct.indexOf(id) !== -1) cls += ' ok';
         else if (picked === id) cls += ' no';
       }
-      var common = {
-        className: cls, tabIndex: 0, role: 'button',
-        'aria-label': (SITE_INFO[id] || {}).name || id,
+      var info = SITE_INFO[normSite(id)] || {};
+      var label = (info.name || id) + (info.route ? ' — ' + info.route + ' site' : '');
+      return ce('g', {
+        /* stays focusable after a pick so keyboard focus is not stranded */
+        key: id, className: cls, tabIndex: 0, role: 'button',
+        'aria-label': label,
+        'aria-disabled': picked ? 'true' : 'false',
         onClick: function () { if (!picked && props.onPick) props.onPick(id); },
         onKeyDown: function (e) {
           if ((e.key === 'Enter' || e.key === ' ') && !picked && props.onPick) { e.preventDefault(); props.onPick(id); }
         }
-      };
-      var attrs = shallow(el);
-      var tag = attrs._tag; delete attrs._tag;
-      for (var k in common) { if (Object.prototype.hasOwnProperty.call(common, k)) attrs[k] = common[k]; }
-      return ce(tag, attrs);
+      },
+        ce('title', null, label),
+        ce('ellipse', { className: 'ma-hot-sh', cx: cx, cy: cy, rx: rx, ry: ry }),
+        /* enlarged transparent target — the visible ellipse stays anatomical */
+        ce('circle', { className: 'ma-hot-hit', cx: cx, cy: cy, r: 16 })
+      );
     }
-    function ell(id, cx, cy, rx, ry) {
-      var o = { _tag: 'ellipse', cx: cx, cy: cy, rx: rx, ry: ry, key: id };
-      return hot(id, o);
+    function leader(x1, y1, x2, y2) {
+      return ce('line', { x1: x1, y1: y1, x2: x2, y2: y2, stroke: TK.tx3, strokeWidth: 0.8, opacity: 0.7 });
     }
 
     return ce('svg', {
-      className: 'ma-bodysvg', viewBox: '0 0 200 420', xmlns: 'http://www.w3.org/2000/svg',
+      className: 'ma-bodysvg', viewBox: '0 0 220 440', xmlns: 'http://www.w3.org/2000/svg',
       role: 'group', 'aria-label': 'Anterior body diagram with selectable injection sites'
     },
       /* body */
-      ce('g', { fill: 'var(--surface2)', stroke: 'var(--text3)', strokeWidth: 1 },
-        ce('circle', { cx: 100, cy: 30, r: 20 }),
-        ce('rect', { x: 92, y: 47, width: 16, height: 14 }),
-        ce('rect', { x: 68, y: 58, width: 64, height: 112, rx: 14 }),
-        ce('rect', { x: 70, y: 162, width: 60, height: 42, rx: 12 }),
-        ce('rect', { x: 44, y: 64, width: 21, height: 112, rx: 10 }),
-        ce('rect', { x: 135, y: 64, width: 21, height: 112, rx: 10 }),
-        ce('rect', { x: 73, y: 198, width: 25, height: 152, rx: 12 }),
-        ce('rect', { x: 102, y: 198, width: 25, height: 152, rx: 12 })
+      ce('g', { fill: TK.s2, stroke: TK.tx3, strokeWidth: 1 },
+        ce('circle', { cx: 110, cy: 30, r: 20 }),
+        ce('rect', { x: 102, y: 47, width: 16, height: 14 }),
+        ce('rect', { x: 78, y: 58, width: 64, height: 114, rx: 14 }),
+        ce('rect', { x: 80, y: 172, width: 60, height: 34, rx: 12 }),
+        ce('rect', { x: 54, y: 64, width: 21, height: 112, rx: 10 }),
+        ce('rect', { x: 145, y: 64, width: 21, height: 112, rx: 10 }),
+        ce('rect', { x: 83, y: 200, width: 25, height: 152, rx: 12 }),
+        ce('rect', { x: 112, y: 200, width: 25, height: 152, rx: 12 })
       ),
       /* umbilicus + exclusion zone */
-      ce('circle', { cx: 100, cy: 140, r: 13, fill: 'none', stroke: 'var(--red)', strokeWidth: 1, strokeDasharray: '3 3' }),
-      ce('circle', { cx: 100, cy: 140, r: 2.5, fill: 'var(--red)' }),
-      /* hotspots */
-      ell('deltoid', 54, 80, 11, 13),
-      ell('deltoid-r', 146, 80, 11, 13),
-      ell('upper-arm', 52, 118, 9, 15),
-      ell('abdomen', 82, 140, 12, 16),
-      ell('abdomen-r', 118, 140, 12, 16),
-      ell('inner-forearm', 148, 152, 8, 17),
-      ell('ventrogluteal', 76, 180, 12, 11),
-      ell('ventrogluteal-r', 124, 180, 12, 11),
-      ell('vastus-lateralis', 81, 255, 10, 24),
-      ell('vastus-lateralis-r', 119, 255, 10, 24),
-      ell('thigh', 96, 300, 9, 20),
-      /* labels */
-      ce('g', { fill: 'var(--text3)', fontSize: 7, textAnchor: 'middle' },
-        ce('text', { x: 30, y: 82 }, 'deltoid'),
-        ce('text', { x: 168, y: 156 }, 'forearm'),
-        ce('text', { x: 100, y: 128, fill: 'var(--red)' }, 'umbilicus'),
-        ce('text', { x: 36, y: 184 }, 'ventrogluteal'),
-        ce('text', { x: 33, y: 258 }, 'vastus lat.'),
-        ce('text', { x: 100, y: 372 }, 'anterior view')
+      ce('circle', { cx: 110, cy: 124, r: 13, fill: 'none', stroke: TK.red, strokeWidth: 1, strokeDasharray: '3 3' }),
+      ce('circle', { cx: 110, cy: 124, r: 2.5, fill: TK.red }),
+
+      /* hotspots — centres are ≥32 units apart in every direction */
+      hot('deltoid', 64, 80, 12, 14),
+      hot('deltoid-r', 156, 80, 12, 14),
+      hot('upper-arm', 62, 138, 10, 16),
+      hot('inner-forearm', 157, 150, 9, 18),
+      hot('abdomen', 92, 152, 13, 15),
+      hot('abdomen-r', 125, 152, 13, 15),
+      hot('ventrogluteal', 88, 192, 13, 12),
+      hot('ventrogluteal-r', 132, 192, 13, 12),
+      hot('vastus-lateralis', 91, 258, 11, 24),
+      hot('vastus-lateralis-r', 129, 258, 11, 24),
+      hot('thigh', 95, 325, 10, 20),
+
+      /* leader lines */
+      ce('g', { className: 'ma-bodylbl' },
+        leader(48, 80, 52, 80),
+        leader(48, 138, 52, 138),
+        leader(48, 192, 76, 192),
+        leader(48, 258, 80, 258),
+        leader(48, 325, 85, 325),
+        leader(172, 150, 165, 150)
+      ),
+      /* labels — one for every distinct site; the mirrored -r hotspots carry
+         the same accessible name and tooltip */
+      ce('g', { className: 'ma-bodylbl', fill: TK.tx3, fontSize: 9, fontWeight: 700 },
+        ce('text', { x: 44, y: 83, textAnchor: 'end' }, 'deltoid'),
+        ce('text', { x: 44, y: 141, textAnchor: 'end' }, 'upper arm'),
+        ce('text', { x: 44, y: 195, textAnchor: 'end' }, 'ventrogluteal'),
+        ce('text', { x: 44, y: 261, textAnchor: 'end' }, 'vastus lateralis'),
+        ce('text', { x: 44, y: 328, textAnchor: 'end' }, 'anterior thigh'),
+        ce('text', { x: 176, y: 153, textAnchor: 'start' }, 'inner forearm'),
+        ce('text', { x: 110, y: 155, textAnchor: 'middle' }, 'abdomen'),
+        ce('text', { x: 110, y: 106, textAnchor: 'middle', fill: TK.redFg }, 'umbilicus'),
+        ce('text', { x: 110, y: 382, textAnchor: 'middle', fill: TK.tx2 }, 'anterior view'),
+        ce('text', { x: 110, y: 398, textAnchor: 'middle' }, 'left and right sites are equivalent')
       )
     );
   }
@@ -2769,7 +3184,7 @@
     return ce('div', { className: 'ma-card' },
       ce('div', { className: 'ma-card-t' }, 'Injection site selector',
         ce('span', { className: 'ma-tag' }, sc.right + ' / ' + sc.total + ' correct')),
-      ce('div', { className: 'ma-drill-q', style: { borderLeftColor: 'var(--accent)' } }, ch.prompt),
+      ce('div', { className: 'ma-drill-q', style: { borderLeftColor: TK.ac } }, ch.prompt),
       ce('div', { className: 'ma-bodywrap' },
         ce(BodyDiagram, {
           picked: picked,
@@ -2778,7 +3193,8 @@
         }),
         ce('div', { className: 'ma-bodyside' },
           ce('div', { className: 'ma-muted', style: { marginBottom: 8 } },
-            'Tap the correct site on the diagram. Sites shown from the front — the posterior options are below.'),
+            'Tap the correct site on the diagram, or use Tab and Enter. The diagram is the anterior view; ' +
+            'the two posterior sites are the buttons below it.'),
           ce('div', { className: 'ma-row', style: { marginBottom: 10 } },
             ce('button', {
               className: 'ma-btn ma-btn-sm', disabled: !!picked,
@@ -2794,7 +3210,7 @@
                 : 'Not this site — you chose ' + ((SITE_INFO[normSite(picked)] || {}).name || picked)),
             !ok && (SITE_INFO[normSite(picked)] || {}).note ? ce('div', { style: { marginBottom: 6 } }, SITE_INFO[normSite(picked)].note) : null,
             !ok && (SITE_INFO[normSite(picked)] || {}).banned
-              ? ce('div', { style: { marginBottom: 6, color: 'var(--red)', fontWeight: 700 } }, 'The dorsogluteal site is no longer recommended at any age.') : null,
+              ? ce('div', { style: { marginBottom: 6, color: TK.redFg, fontWeight: 700 } }, 'The dorsogluteal site is no longer recommended at any age.') : null,
             ce('div', null, ce('b', null, 'Correct: '),
               ch.correct.map(function (c) { return (SITE_INFO[c] || {}).name || c; }).join(' or ')),
             ce('div', { className: 'ma-teach' }, ch.why)
@@ -2815,10 +3231,12 @@
 
     return ce('div', null,
       ce(SiteSelector, null),
-      ce('div', { className: 'ma-tabs' },
+      ce('div', { className: 'ma-tabs', role: 'group', 'aria-label': 'Choose a route' },
         routes.map(function (x) {
           return ce('button', {
             key: x.id, className: 'ma-tab' + (x.id === rid ? ' on' : ''),
+            'aria-pressed': x.id === rid ? 'true' : 'false',
+            'aria-current': x.id === rid ? 'true' : null,
             onClick: function () { setRid(x.id); }
           }, x.name);
         })),
@@ -2996,8 +3414,8 @@
       return ce('div', { className: 'ma-card' },
         ce('div', { className: 'ma-card-t' }, 'Quiz complete'),
         ce('div', { className: 'ma-big' },
-          ce('div', { className: 'ma-stat' }, ce('b', { style: { color: 'var(--green)' } }, String(sc.right)), ce('span', null, 'Correct')),
-          ce('div', { className: 'ma-stat' }, ce('b', { style: { color: 'var(--red)' } }, String(sc.wrong)), ce('span', null, 'Wrong')),
+          ce('div', { className: 'ma-stat' }, ce('b', { style: { color: TK.greenFg } }, String(sc.right)), ce('span', null, 'Correct')),
+          ce('div', { className: 'ma-stat' }, ce('b', { style: { color: TK.redFg } }, String(sc.wrong)), ce('span', null, 'Wrong')),
           ce('div', { className: 'ma-stat' }, ce('b', null, acc + '%'), ce('span', null, 'Accuracy'))),
         misses.length ? ce('div', { style: { marginTop: 14 } },
           ce('div', { className: 'ma-tiny', style: { marginBottom: 6 } }, 'Review'),
@@ -3005,7 +3423,7 @@
             return ce('div', { key: i, className: 'ma-fb bad', style: { marginBottom: 8 } },
               ce('div', { className: 'ma-fb-t' }, m.q.kind),
               ce('div', null, m.q.q),
-              ce('div', { style: { marginTop: 6 } }, ce('b', { style: { color: 'var(--green)' } }, 'Answer: '), m.q.answer),
+              ce('div', { style: { marginTop: 6 } }, ce('b', { style: { color: TK.greenFg } }, 'Answer: '), m.q.answer),
               m.q.why ? ce('div', { className: 'ma-teach' }, m.q.why) : null);
           })) : null,
         ce('div', { className: 'ma-row', style: { marginTop: 14 } },
@@ -3030,7 +3448,7 @@
         ce('div', { className: 'ma-row' },
           ce('span', { className: 'ma-sc' }, 'Correct ', ce('b', null, String(sc.right))),
           ce('button', { className: 'ma-btn ma-btn-ghost ma-btn-sm', onClick: props.onExit }, 'Exit'))),
-      ce('div', { className: 'ma-tiny', style: { marginBottom: 6, color: q.highAlert ? 'var(--red)' : 'var(--text3)' } }, q.kind),
+      ce('div', { className: 'ma-tiny', style: { marginBottom: 6, color: q.highAlert ? TK.redFg : TK.tx3 } }, q.kind),
       ce('div', { className: 'ma-drill-q' }, q.q),
       ce('div', { className: 'ma-opts' },
         q.options.map(function (o, i) {
@@ -3063,6 +3481,7 @@
     var h0 = useState(false), onlyHigh = h0[0], setOnlyHigh = h0[1];
     var o0 = useState(null), openId = o0[0], setOpenId = o0[1];
     var m0 = useState('list'), sub = m0[0], setSub = m0[1];
+    var so0 = useState('az'), sort = so0[0], setSort = so0[1];
 
     var drugs = DRUGS();
     var buckets = useMemo(function () {
@@ -3072,13 +3491,22 @@
     }, [drugs.length]);
 
     var qn = normalize(query).trim();
+    /* 37 rows in raw data order is exactly the length at which scan order
+       matters — the first three used to be Tamsulosin, Oxycodone, … */
     var filtered = drugs.filter(function (d) {
       if (onlyHigh && !d.highAlert) return false;
       if (bucket !== 'All' && classBucket(d) !== bucket) return false;
       if (!qn) return true;
       var hay = normalize(d.generic + ' ' + (d.brand || []).join(' ') + ' ' + d.classification + ' ' + d.use);
       return hay.indexOf(qn) !== -1;
+    }).slice().sort(function (a, b) {
+      if (sort === 'alert') {
+        var ha = a.highAlert ? 0 : 1, hb = b.highAlert ? 0 : 1;
+        if (ha !== hb) return ha - hb;
+      }
+      return normalize(a.generic) < normalize(b.generic) ? -1 : normalize(a.generic) > normalize(b.generic) ? 1 : 0;
     });
+    var filtersActive = onlyHigh || bucket !== 'All' || !!qn;
 
     if (sub === 'quiz') {
       return ce(DrugQuiz, { onExit: function () { setSub('list'); } });
@@ -3096,21 +3524,38 @@
           placeholder: 'Search generic, brand, class or use…',
           onChange: function (e) { setQuery(e.target.value); }
         }),
-        ce('div', { className: 'ma-tabs', style: { marginTop: 10, marginBottom: 0 } },
+        /* Class filter (mutually exclusive) and the toggles are separated —
+           they used to sit in one pill row and look identical. */
+        ce('div', { className: 'ma-tiny', style: { marginTop: 12, marginBottom: 6 } }, 'Class'),
+        ce('div', { className: 'ma-tabs', style: { marginBottom: 0 }, role: 'group', 'aria-label': 'Filter by drug class' },
           buckets.map(function (b) {
             return ce('button', {
               key: b, className: 'ma-tab' + (b === bucket ? ' on' : ''),
+              'aria-pressed': b === bucket ? 'true' : 'false',
               onClick: function () { setBucket(b); }
             }, b);
-          }),
+          })),
+        ce('div', { className: 'ma-tiny', style: { marginTop: 12, marginBottom: 6 } }, 'Sort and filter'),
+        ce('div', { className: 'ma-tabs', style: { marginBottom: 0 } },
+          ce('button', {
+            className: 'ma-tab' + (sort === 'az' ? ' on' : ''), 'aria-pressed': sort === 'az' ? 'true' : 'false',
+            onClick: function () { setSort('az'); }
+          }, 'A–Z'),
+          ce('button', {
+            className: 'ma-tab' + (sort === 'alert' ? ' on' : ''), 'aria-pressed': sort === 'alert' ? 'true' : 'false',
+            onClick: function () { setSort('alert'); }
+          }, 'High alert first'),
           ce('button', {
             className: 'ma-tab' + (onlyHigh ? ' on' : ''), 'aria-pressed': onlyHigh ? 'true' : 'false',
-            style: onlyHigh ? { background: 'var(--red)', borderColor: 'var(--red)' } : null,
             onClick: function () { setOnlyHigh(!onlyHigh); }
-          }, 'High alert only')),
+          }, 'High alert only'),
+          filtersActive ? ce('button', {
+            className: 'ma-tab',
+            onClick: function () { setOnlyHigh(false); setBucket('All'); setQuery(''); }
+          }, 'Clear filters') : null),
         ce('div', { className: 'ma-row', style: { marginTop: 12 } },
           ce('button', { className: 'ma-btn ma-btn-primary', onClick: function () { setSub('quiz'); } }, 'Start drug quiz'),
-          ce('span', { className: 'ma-muted' }, filtered.length + ' shown'))),
+          ce('span', { className: 'ma-muted' }, filtered.length + ' of ' + drugs.length + ' shown'))),
 
       filtered.length === 0 ? ce('div', { className: 'ma-card' }, ce('div', { className: 'ma-muted' }, 'No drugs match that filter.')) : null,
 
@@ -3156,7 +3601,12 @@
   }
 
   function ReadinessCheck() {
-    var LIMIT = 900; /* 15 minutes */
+    /* Two medications is two full 17-step sequences: ~1,300 words of prompts
+       and options plus ~1,550 words of feedback each, which is a bit over 15
+       minutes of reading per drug before a single decision is made. 900s was
+       arithmetically unpassable. 2100s (35 min) is the reading load plus real
+       decision time — and the clock now stops while the debrief is open. */
+    var LIMIT = 2100;
     var p0 = useState('idle'), phase = p0[0], setPhase = p0[1];
     var c0 = useState(null), caseObj = c0[0], setCaseObj = c0[1];
     var q0 = useState([]), queue = q0[0], setQueue = q0[1];
@@ -3167,13 +3617,18 @@
     var timerRef = useRef(null);
     var startedRef = useRef(0);
 
+    /* The clock stops while the between-medication debrief is open. The mode
+       tells the student to read it; charging them time for doing so was the
+       other half of why this mode could not be passed. */
+    var pendingSinceRef = useRef(0);
+    var pausedMsRef = useRef(0);
     useEffect(function () {
-      if (phase !== 'run') return;
+      if (phase !== 'run' || pending) return;
       timerRef.current = setInterval(function () {
         setLeft(function (v) { return v - 1; });
       }, 1000);
       return function () { if (timerRef.current) clearInterval(timerRef.current); };
-    }, [phase]);
+    }, [phase, pending]);
 
     function start(forcedCaseId) {
       var cs = CASES();
@@ -3181,14 +3636,20 @@
       var c = forcedCaseId ? cs.filter(function (x) { return x.id === forcedCaseId; })[0] : pick(cs);
       var meds = chooseMockMeds(c, 2);
       setCaseObj(c); setQueue(meds); setQi(0); setResults([]); setPending(null);
-      setLeft(LIMIT); startedRef.current = Date.now(); setPhase('run');
+      setLeft(LIMIT); startedRef.current = Date.now();
+      pausedMsRef.current = 0; pendingSinceRef.current = 0;
+      setPhase('run');
     }
 
     /* A medication is finished (passed, failed, or stopped by a critical error).
        Hold here so the student actually READS the debrief before moving on. */
-    function onMedDone(r) { setPending(r); }
+    function onMedDone(r) { pendingSinceRef.current = Date.now(); setPending(r); }
 
     function continueMock() {
+      if (pendingSinceRef.current) {
+        pausedMsRef.current += Date.now() - pendingSinceRef.current;
+        pendingSinceRef.current = 0;
+      }
       var all = results.concat([pending]);
       setResults(all); setPending(null);
       if (qi + 1 >= queue.length) { finishMock(all); }
@@ -3209,7 +3670,10 @@
       });
       all.forEach(function (r) { crit = crit.concat(r.criticalDetail || []); });
       var grade = gradeRun(minScores, crit);
-      var elapsed = Math.round((Date.now() - startedRef.current) / 1000);
+      /* Reading the between-medication breakdown does not count against the
+         time limit — the mode explicitly instructs the student to read it. */
+      var elapsed = Math.round((Date.now() - startedRef.current - pausedMsRef.current) / 1000);
+      if (elapsed < 0) elapsed = 0;
       var payload = {
         caseId: caseObj.id, date: new Date().toISOString(), mode: 'mock',
         score: grade.total, maxScore: grade.max, pct: grade.pct,
@@ -3235,7 +3699,8 @@
         ce('div', { className: 'ma-card' },
           ce('div', { className: 'ma-card-t' }, 'Signoff readiness check'),
           ce('div', { className: 'ma-muted' },
-            'A random chart, two medications, ' + (LIMIT / 60) + ' minutes, graded strictly on the real rubric. ' +
+            'A random chart, two medications, ' + Math.round(LIMIT / 60) + ' minutes of working time, graded strictly on the real rubric. ' +
+            'The clock stops while you read the breakdown between medications. ' +
             'You must demonstrate every competency on EVERY medication — the score for each item is the lowest you achieved on ' +
             'either drug, which is exactly how an evaluator watching two passes would score you. ' +
             'One critical error ends it as a fail, the same as the real thing.'),
@@ -3272,30 +3737,38 @@
       var over = left <= 0;
       return ce('div', null,
         ce('div', { className: 'ma-scorebar' },
-          ce('span', { className: 'ma-drill-clock' + (over || left < 120 ? ' low' : ''), style: { fontSize: '1.15rem' } },
-            over ? '+' + fmtSec(-left) : fmtSec(left)),
+          ce('span', {
+            className: 'ma-drill-clock' + (pending ? ' paused' : (over || left < 180 ? ' low' : '')),
+            style: { fontSize: '1.15rem' },
+            'aria-label': (pending ? 'Clock paused while you read. ' : '') +
+              (over ? 'Over time by ' : 'Time remaining ') + fmtSec(over ? -left : left)
+          }, over ? '+' + fmtSec(-left) : fmtSec(left)),
           ce('span', { className: 'ma-sc' }, 'Medication ', ce('b', null, (qi + 1) + ' of ' + queue.length)),
           ce('span', { className: 'ma-sc' }, (caseObj.patient || {}).name),
-          ce('span', { className: 'ma-critind' + (over ? ' hit' : '') }, over ? 'Over time' : 'Mock checkoff')),
+          ce('span', { className: 'ma-critind' + (over && !pending ? ' hit' : '') },
+            pending ? 'Clock paused — reading' : (over ? 'Over time' : 'Mock checkoff'))),
         over ? ce('div', { className: 'ma-fb bad', style: { marginBottom: 12 } },
           ce('div', { className: 'ma-fb-t' }, 'Time limit exceeded'),
           'Keep going so you get the full breakdown, but this attempt is recorded as over time. Speed comes from knowing the sequence cold.') : null,
-        ce(MARChart, { caseObj: caseObj, completed: {}, onSelect: function () {} }),
-        ce('div', { className: 'ma-card', style: { borderColor: 'var(--accent)' } },
+        /* Reference chart only — the rows are not controls here, so they are
+           not focusable buttons that do nothing when pressed. */
+        ce(MARChart, { caseObj: caseObj, completed: {}, readOnly: true, assignedId: med.id }),
+        ce('div', { className: 'ma-card', style: { borderColor: TK.ac } },
           ce('div', { className: 'ma-card-t' }, 'Assigned medication: ' + med.name),
           ce('div', { className: 'ma-muted' }, med.dose + ' ' + med.route + ' ' + med.frequency +
             (med.indication ? ' — ' + med.indication : ''))),
         pending ? ce('div', {
           className: 'ma-card',
-          style: { borderColor: pending.passed ? 'var(--green)' : 'var(--red)' }, role: 'status'
+          style: { borderColor: pending.passed ? TK.green : TK.red }, role: 'status'
         },
           ce('div', { className: 'ma-card-t' },
             ce('span', { className: 'ma-tag ' + (pending.passed ? 'green' : 'red') }, pending.passed ? 'Passed' : 'Failed'),
             med.name + ' — ' + pending.score + '/40'),
           ce('div', { className: 'ma-muted', style: { marginBottom: 10 } },
-            (pending.criticalErrors || []).length
+            ((pending.criticalErrors || []).length
               ? 'A critical error was committed. Read the breakdown below in full — this is exactly the mistake that ends a real checkoff.'
-              : 'Read the breakdown below, then continue.'),
+              : 'Read the breakdown below, then continue.') +
+            ' The clock is stopped while this is open, so take the time.'),
           ce('button', { className: 'ma-btn ma-btn-primary', onClick: continueMock },
             qi + 1 >= queue.length ? 'Finish the mock checkoff →' : 'Continue to medication ' + (qi + 2) + ' →')) : null,
         ce(MedRun, {
@@ -3329,7 +3802,7 @@
           return ce(Bar, { key: i, label: m.name, pct: m.pct, value: m.score + '/40 ' + (m.passed ? 'PASS' : 'FAIL') });
         })),
 
-      summary.criticalDetail && summary.criticalDetail.length ? ce('div', { className: 'ma-card', style: { borderColor: 'var(--red)' } },
+      summary.criticalDetail && summary.criticalDetail.length ? ce('div', { className: 'ma-card', style: { borderColor: TK.red } },
         ce('div', { className: 'ma-card-t' }, ce('span', { className: 'ma-tag red' }, 'Critical'), 'Every critical error'),
         summary.criticalDetail.map(function (c, i) {
           var def = criticalErrorDef(c.code);
@@ -3347,7 +3820,7 @@
             (sec.items || []).map(function (it) {
               var s = summary.rubricScores[it.id];
               if (typeof s !== 'number') s = 0;
-              var col = s === 2 ? 'var(--green)' : s === 1 ? 'var(--orange)' : 'var(--red)';
+              var col = s === 2 ? TK.greenFg : s === 1 ? TK.orangeFg : TK.redFg;
               return ce('div', { key: it.id, className: 'ma-bar', style: { gridTemplateColumns: 'auto 1fr auto', padding: '4px 0' } },
                 ce('span', { style: { color: col, fontWeight: 900, width: 16 } }, s === 2 ? '✓' : s === 1 ? '~' : '✕'),
                 ce('span', null, it.title, it.critical ? ce('span', { className: 'ma-tag red', style: { marginLeft: 6 } }, 'critical') : null),
@@ -3391,7 +3864,7 @@
    * ======================================================================== */
 
   var MODES = [
-    { id: 'mar', icon: 'MAR', name: 'MAR Simulation', desc: 'Work a real Medication Administration Record through the full procedure. Traps fire when you trigger them.' },
+    { id: 'mar', icon: 'MAR', name: 'MAR Simulation', desc: 'Work a real Medication Administration Record through the full procedure. What is on the chart is what you get — nothing is announced in advance.' },
     { id: 'rubric', icon: '/40', name: 'Rubric Practice', desc: 'The official 40-point rubric, item by item, with the three scoring levels and pass/fail determination.' },
     { id: 'drill', icon: '6R', name: 'Six Rights & Three Checks', desc: 'Timed rapid-fire drill. Name the right being violated, place the check, judge the identifier.' },
     { id: 'skills', icon: 'INJ', name: 'Injection Skills', desc: 'Route reference plus a clickable site selector — pick the right site for the drug and the patient.' },
@@ -3403,7 +3876,9 @@
     var results = savedResults();
     var stats = savedStats();
     var mocks = results.filter(function (r) { return r.mode === 'mock'; });
-    var passRate = results.length ? Math.round(results.filter(function (r) { return r.passed; }).length / results.length * 100) : 0;
+    var started = results.length > 0;
+    var passRate = started ? Math.round(results.filter(function (r) { return r.passed; }).length / results.length * 100) : 0;
+    var mocksPassed = mocks.filter(function (r) { return r.passed; }).length;
     var totalCrit = results.reduce(function (n, r) { return n + ((r.criticalErrors || []).length); }, 0);
 
     var rubricStats = stats.rubric || {};
@@ -3426,21 +3901,37 @@
             ce('span', { className: 'ma-modedesc' }, m.desc));
         })),
 
+      /* Zero state shows em dashes, not a red 0%. A student who has never run
+         anything has not earned a failing grade. */
       ce('div', { className: 'ma-card' },
         ce('div', { className: 'ma-card-t' }, 'Where you stand'),
         ce('div', { className: 'ma-big' },
-          ce('div', { className: 'ma-stat' }, ce('b', null, String(results.length)), ce('span', null, 'Runs graded')),
           ce('div', { className: 'ma-stat' },
-            ce('b', { style: { color: passRate >= 80 ? 'var(--green)' : passRate >= 50 ? 'var(--orange)' : 'var(--red)' } }, passRate + '%'),
-            ce('span', null, 'Pass rate')),
+            ce('b', { style: started ? null : { color: TK.tx3 } }, started ? String(results.length) : '—'),
+            ce('span', null, 'Runs graded')),
           ce('div', { className: 'ma-stat' },
-            ce('b', { style: { color: totalCrit ? 'var(--red)' : 'var(--green)' } }, String(totalCrit)),
+            ce('b', {
+              style: {
+                color: !started ? TK.tx3
+                  : passRate >= 80 ? TK.greenFg : passRate >= 50 ? TK.orangeFg : TK.redFg
+              }
+            }, started ? passRate + '%' : '—'),
+            ce('span', null, 'Practice pass rate')),
+          ce('div', { className: 'ma-stat' },
+            ce('b', { style: { color: !started ? TK.tx3 : (totalCrit ? TK.redFg : TK.greenFg) } },
+              started ? String(totalCrit) : '—'),
             ce('span', null, 'Critical errors')),
-          ce('div', { className: 'ma-stat' }, ce('b', null, String(mocks.length)), ce('span', null, 'Mock checkoffs'))),
-        results.length === 0
+          ce('div', { className: 'ma-stat' },
+            ce('b', { style: mocks.length ? null : { color: TK.tx3 } },
+              mocks.length ? mocksPassed + ' of ' + mocks.length : '—'),
+            ce('span', null, 'Mock checkoffs passed'))),
+        !started
           ? ce('div', { className: 'ma-muted', style: { marginTop: 12 } },
             'Nothing recorded yet. Start with MAR Simulation — the Eric Doe chart has the allergy trap that fails more students than anything else.')
-          : null),
+          : ce('div', { className: 'ma-muted', style: { marginTop: 12 } },
+            mocks.length
+              ? 'Practice runs and mock checkoffs are counted separately. "Mock checkoffs passed" is the number that answers "am I ready".'
+              : 'Single-medication practice only so far. Signoff Readiness is the mode that answers "am I ready".')),
 
       weakest.length ? ce('div', { className: 'ma-card' },
         ce('div', { className: 'ma-card-t' }, 'Weakest rubric items'),

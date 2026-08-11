@@ -2,18 +2,35 @@
 /* ============================================================================
  * MedMaster AI proxy  —  netlify/functions/ai.js
  * ----------------------------------------------------------------------------
- * Keeps the owner's Anthropic API key on the server. The browser never sees it.
+ * Keeps the owner's OpenRouter API key on the server. The browser never sees it.
  *
- * Flow for every request:
- *   1. CORS preflight / method check
- *   2. Verify the caller's Firebase ID token (RS256 + Google's public x509 certs)
- *   3. Load the user's tier (/userTiers/<uid>) and app AI config (/appConfig/aiConfig)
- *   4. Enforce: AI enabled, model allowlist, daily quota, maxTokens cap
- *   5. Proxy to https://api.anthropic.com/v1/messages (streaming or not)
- *   6. Record one usage tick in /aiUsage/<uid>/<YYYY-MM-DD>
+ * Two actions, both POST /api/ai:
+ *
+ *   { action: 'chat' }        (the default — omit `action` and you get this)
+ *     1. CORS preflight / method check
+ *     2. Verify the caller's Firebase ID token (RS256 + Google's public x509 certs)
+ *     3. Load the user's tier (/userTiers/<uid>) and app AI config (/appConfig/aiConfig)
+ *     4. Enforce: AI enabled, model allowlist, daily quota, maxTokens cap,
+ *        and the owner's daily DOLLAR ceiling (/appConfig/aiConfig/softCapUsd)
+ *     5. Proxy to https://openrouter.ai/api/v1/chat/completions (streaming or not)
+ *     6. Record one usage tick in /aiUsage/<uid>/<YYYY-MM-DD> and the real dollar
+ *        cost OpenRouter reported into /aiSpend/<YYYY-MM-DD> (see SPEND LEDGER)
+ *
+ *   { action: 'listModels' }  (OWNER ONLY)
+ *     Server-side fetch of https://openrouter.ai/api/v1/models, trimmed down to
+ *     {id, name, contextLength, promptPrice, completionPrice, isFree} and cached
+ *     in module memory for ten minutes. Powers the Admin Panel model picker.
+ *
+ * OpenRouter speaks the OpenAI chat-completions shape, NOT the Anthropic shape:
+ *   - the system prompt is the first message with role 'system', not a top-level field
+ *   - non-streaming text is at data.choices[0].message.content
+ *   - streaming deltas are at choices[0].delta.content and end with `data: [DONE]`
+ *   - usage is {prompt_tokens, completion_tokens}, and OpenRouter reports the real
+ *     dollar cost, so nothing here needs a hardcoded per-model price table
+ *     (prices vary enormously across the catalog and change without notice)
  *
  * Environment variables (set in Netlify -> Site settings -> Environment variables):
- *   ANTHROPIC_API_KEY    (required)  sk-ant-...
+ *   OPENROUTER_API_KEY   (required)  sk-or-v1-...   from https://openrouter.ai/keys
  *   FIREBASE_DB_URL      (required)  https://medmaster-a2507-default-rtdb.firebaseio.com
  *   FIREBASE_PROJECT_ID  (optional)  medmaster-a2507  (derived from DB URL if absent)
  *   FIREBASE_DB_SECRET   (optional)  legacy DB secret; if absent we forward the
@@ -22,6 +39,33 @@
  *
  * No external dependencies — Netlify has no package.json here. Node 18+ globals
  * (fetch, AbortController, TextDecoder) and node:crypto only.
+ *
+ * ----------------------------------------------------------------------------
+ * SPEND LEDGER  —  /aiSpend/<YYYY-MM-DD>   (all money stored as INTEGER
+ * microdollars, because RTDB's atomic {'.sv':{increment:n}} is exact for
+ * integers and lossy for floats. $0.000123 -> 123.)
+ *
+ *   /aiSpend/<day>/total6                 microdollars spent site-wide that day
+ *   /aiSpend/<day>/calls                  number of billed calls that day
+ *   /aiSpend/<day>/byModel/<slug>6        microdollars per model  (slug sanitized)
+ *   /aiSpend/<day>/byFeature/<feature>6   microdollars per feature (tutor/sim/…)
+ *   /aiSpend/<day>/byUser/<uid>/usd6      microdollars per user
+ *   /aiSpend/<day>/byUser/<uid>/n         calls per user
+ *
+ * The whole ledger is written with ONE multi-path RTDB PATCH per call.
+ *
+ * REQUIRED SECURITY RULES — paste this next to the existing "aiUsage" block or
+ * the ledger silently writes nothing (every write here is best-effort and never
+ * fails the student's request). Admin Panel -> AI -> Spend shows the same
+ * snippet and tells the owner when the node is unreadable.
+ *
+ *   "aiSpend": {
+ *     ".read":  "auth != null && auth.token.email === 'codingky@gmail.com'",
+ *     "$day":   { ".write": "auth != null" }
+ *   }
+ *
+ * (Writes are increment-only server values issued by this function on behalf of
+ * the signed-in caller; nothing in the browser ever writes here.)
  * ==========================================================================*/
 
 var crypto = require('crypto');
@@ -29,28 +73,56 @@ var crypto = require('crypto');
 /* ------------------------------------------------------------------ config */
 
 var OWNER_EMAIL         = 'codingky@gmail.com';
-var ANTHROPIC_URL       = 'https://api.anthropic.com/v1/messages';
-var ANTHROPIC_VERSION   = '2023-06-01';
+var OPENROUTER_URL      = 'https://openrouter.ai/api/v1/chat/completions';
+var OPENROUTER_MODELS   = 'https://openrouter.ai/api/v1/models';
+// OpenRouter attribution headers — these put the app on the OpenRouter leaderboard
+// and are what shows up in the activity log next to each request.
+var OPENROUTER_REFERER  = 'https://medmaster.guru';
+var OPENROUTER_TITLE    = 'MedMaster';
+// Ask OpenRouter to report token counts and the real dollar cost. Set to false if
+// a provider ever rejects the field; everything else keeps working without it.
+var REQUEST_USAGE_ACCOUNTING = true;
 var GOOGLE_CERT_URL     = 'https://www.googleapis.com/service_accounts/v1/cert/securetoken@system.gserviceaccount.com';
 var QUOTA_TZ            = 'America/New_York'; // day boundary for daily limits (client uses the same)
 var UPSTREAM_TIMEOUT_MS = 120000;
+var MODELS_TIMEOUT_MS   = 20000;
+var MODELS_CACHE_MS     = 10 * 60 * 1000; // ten minutes, so the admin panel cannot hammer it
 var MAX_MESSAGES        = 60;
 var MAX_CHARS_TOTAL     = 200000;
 
+// Daily dollar ceiling defaults, overridable from /appConfig/aiConfig.
+//   capMode 'warn'  -> the number is only reported in the admin panel
+//   capMode 'block' -> the function refuses new calls once the day is over cap
+var DEFAULT_SOFT_CAP_USD = 2;
+var DEFAULT_CAP_MODE     = 'warn';
+// Features a caller may tag a request with. Anything else is filed as 'other'.
+var KNOWN_FEATURES = ['tutor', 'sim', 'patient', 'medadmin', 'community', 'questions', 'debrief', 'sbar', 'admin', 'other'];
+
+/* Verified OpenRouter slugs. Only these two were confirmed against the live
+ * catalog; the other three in js/ai.js MODEL_CATALOG are unverified and may 404.
+ * Load the live list in Admin Panel -> AI -> Models to check. */
+var VERIFIED_PAID_MODELS = ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'];
+
 // Mirror of DEFAULT_AI_CONFIG in js/ai.js. Used when /appConfig/aiConfig is
 // missing or unreadable so the app still works on a fresh deploy.
+// Free ships with NO models on purpose: OpenRouter's ':free' slugs rotate too
+// often to hardcode. The owner picks real ones from the live catalog.
 var DEFAULT_AI_CONFIG = {
   enabled: true,
   allowModelChoice: false,
+  softCapUsd: DEFAULT_SOFT_CAP_USD,
+  capMode: DEFAULT_CAP_MODE,
   tiers: {
-    free:       { models: ['claude-haiku-4-5-20251001'], dailyLimit: 25, maxTokens: 1024 },
-    plus:       { models: ['claude-haiku-4-5-20251001', 'claude-sonnet-5'], dailyLimit: 200, maxTokens: 2048 },
-    pro:        { models: ['claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5'], dailyLimit: 1000, maxTokens: 4096 },
+    // Free gets a small real allowance rather than a wall (see DR10). It is
+    // only spendable once the owner assigns a model to the free tier.
+    free:       { models: [], dailyLimit: 5, maxTokens: 1024 },
+    plus:       { models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'], dailyLimit: 150, maxTokens: 2048 },
+    pro:        { models: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-3.1-flash-lite', 'deepseek/deepseek-v4-flash', 'z-ai/glm-5.2', 'google/gemini-3-flash-preview'], dailyLimit: 600, maxTokens: 4096 },
     instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192 }
   }
 };
 
-var DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
+var DEFAULT_MODEL = VERIFIED_PAID_MODELS[0];
 
 /* ------------------------------------------------------------- tiny helpers */
 
@@ -59,6 +131,7 @@ function corsHeaders(origin) {
     'Access-Control-Allow-Origin': origin || '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Expose-Headers': 'X-MM-Tier, X-MM-Model, X-MM-Used, X-MM-Limit, X-MM-Prompt-Tokens, X-MM-Completion-Tokens, X-MM-Cost',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin'
   };
@@ -296,17 +369,46 @@ function dbPut(path, value, idToken) {
   });
 }
 
+// Multi-path update. RTDB's REST PATCH accepts deep keys ("a/b/c") and server
+// values ({'.sv':{increment:n}}) per key, so the whole spend ledger for one call
+// lands in a single request instead of six.
+function dbPatch(path, obj, idToken) {
+  var base = dbBase();
+  if (!base) return Promise.resolve(null);
+  var url = base + '/' + (path ? path : '') + '.json?' + dbAuthParam(idToken);
+  return fetchWithTimeout(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(obj)
+  }, 10000).then(function (res) {
+    if (!res.ok) {
+      logErr('dbPatch ' + path, new Error('status ' + res.status));
+      return null;
+    }
+    return res.json().catch(function () { return null; });
+  }).catch(function (e) {
+    logErr('dbPatch ' + path, e);
+    return null;
+  });
+}
+
 /* ------------------------------------------------------------- tier plumbing */
 
 function normalizeConfig(raw) {
   var cfg = {
     enabled: true,
     allowModelChoice: false,
+    softCapUsd: DEFAULT_SOFT_CAP_USD,
+    capMode: DEFAULT_CAP_MODE,
     tiers: {}
   };
   var src = (raw && typeof raw === 'object') ? raw : {};
   cfg.enabled = src.enabled !== false;
   cfg.allowModelChoice = src.allowModelChoice === true;
+  if (typeof src.softCapUsd === 'number' && isFinite(src.softCapUsd) && src.softCapUsd >= 0) {
+    cfg.softCapUsd = src.softCapUsd;
+  }
+  if (src.capMode === 'block' || src.capMode === 'warn') cfg.capMode = src.capMode;
 
   var name, dt, st;
   for (name in DEFAULT_AI_CONFIG.tiers) {
@@ -388,7 +490,172 @@ function sanitizeMessages(raw) {
   return out.length ? out : null;
 }
 
+/* --------------------------------------------------------- OpenRouter plumbing */
+
+function openRouterHeaders(apiKey, extra) {
+  var h = {
+    'Authorization': 'Bearer ' + apiKey,
+    'HTTP-Referer': OPENROUTER_REFERER,
+    'X-Title': OPENROUTER_TITLE
+  };
+  if (extra) { for (var k in extra) { if (Object.prototype.hasOwnProperty.call(extra, k)) h[k] = extra[k]; } }
+  return h;
+}
+
+/**
+ * Turn {system, messages} into the OpenAI-style message array OpenRouter wants.
+ * The system prompt is NOT a top-level field here — it is the first message.
+ */
+function buildChatMessages(system, messages) {
+  var out = [];
+  if (typeof system === 'string' && system.trim()) {
+    out.push({ role: 'system', content: system.slice(0, 40000) });
+  }
+  for (var i = 0; i < messages.length; i++) out.push(messages[i]);
+  return out;
+}
+
+// choices[0].message.content is normally a plain string, but a few providers
+// return OpenAI's structured-part array. Accept both.
+function textFromOpenRouter(data) {
+  if (!data || !Array.isArray(data.choices) || !data.choices.length) return '';
+  var msg = data.choices[0] ? data.choices[0].message : null;
+  if (!msg) return '';
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg.content)) {
+    var out = '';
+    for (var i = 0; i < msg.content.length; i++) {
+      var part = msg.content[i];
+      if (part && typeof part.text === 'string') out += part.text;
+    }
+    return out;
+  }
+  return '';
+}
+
+function finishReason(data) {
+  if (!data || !Array.isArray(data.choices) || !data.choices.length) return null;
+  var c = data.choices[0];
+  return (c && typeof c.finish_reason === 'string') ? c.finish_reason : null;
+}
+
+// OpenRouter reports {prompt_tokens, completion_tokens} (plus `cost` in dollars
+// when usage accounting is on). Anthropic's input_tokens/output_tokens are gone.
+function normalizeUsage(u) {
+  var usage = (u && typeof u === 'object') ? u : {};
+  return {
+    promptTokens: typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : 0,
+    completionTokens: typeof usage.completion_tokens === 'number' ? usage.completion_tokens : 0,
+    totalTokens: typeof usage.total_tokens === 'number' ? usage.total_tokens : 0,
+    cost: typeof usage.cost === 'number' ? usage.cost : null
+  };
+}
+
+// Trim one entry of https://openrouter.ai/api/v1/models down to what the admin
+// panel needs. Prices are per-token USD strings such as "0.0000004".
+function trimModel(m) {
+  if (!m || typeof m !== 'object' || typeof m.id !== 'string' || !m.id) return null;
+  var pricing = (m.pricing && typeof m.pricing === 'object') ? m.pricing : {};
+  var prompt = priceString(pricing.prompt);
+  var completion = priceString(pricing.completion);
+  var ctx = 0;
+  if (typeof m.context_length === 'number') ctx = m.context_length;
+  else if (m.top_provider && typeof m.top_provider.context_length === 'number') ctx = m.top_provider.context_length;
+  return {
+    id: m.id,
+    name: (typeof m.name === 'string' && m.name) ? m.name : m.id,
+    contextLength: ctx,
+    promptPrice: prompt,
+    completionPrice: completion,
+    isFree: isZeroPrice(prompt) && isZeroPrice(completion)
+  };
+}
+
+function priceString(v) {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' && isFinite(v)) return String(v);
+  return '';
+}
+
+function isZeroPrice(s) {
+  if (s === '') return false;
+  var n = parseFloat(s);
+  return isFinite(n) && n === 0;
+}
+
+// Module-scope cache: warm lambdas reuse it, cold starts refetch.
+var modelsCache = { list: null, fetchedAt: 0, expiresAt: 0 };
+
+function getOpenRouterModels(apiKey) {
+  var now = Date.now();
+  if (modelsCache.list && now < modelsCache.expiresAt) {
+    return Promise.resolve({ list: modelsCache.list, fetchedAt: modelsCache.fetchedAt, cached: true });
+  }
+  return fetchWithTimeout(OPENROUTER_MODELS, {
+    method: 'GET',
+    headers: openRouterHeaders(apiKey)
+  }, MODELS_TIMEOUT_MS).then(function (res) {
+    if (!res.ok) {
+      return res.text().then(function (t) {
+        logErr('openrouter models ' + res.status, new Error(String(t).slice(0, 1000)));
+        var msg = 'OpenRouter would not return its model list.';
+        if (res.status === 401) msg = 'OpenRouter rejected OPENROUTER_API_KEY. Check the key in Netlify and redeploy.';
+        if (res.status === 429) msg = 'OpenRouter is rate limiting the model list. Try again in a minute.';
+        throw { httpStatus: 502, code: 'server', message: msg };
+      }, function () {
+        throw { httpStatus: 502, code: 'server', message: 'OpenRouter would not return its model list.' };
+      });
+    }
+    return res.json().then(function (data) {
+      var raw = (data && Array.isArray(data.data)) ? data.data : [];
+      var list = [];
+      for (var i = 0; i < raw.length; i++) {
+        var t = trimModel(raw[i]);
+        if (t) list.push(t);
+      }
+      list.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+      modelsCache = { list: list, fetchedAt: Date.now(), expiresAt: Date.now() + MODELS_CACHE_MS };
+      return { list: list, fetchedAt: modelsCache.fetchedAt, cached: false };
+    });
+  }, function (e) {
+    logErr('openrouter models fetch', e);
+    throw { httpStatus: 504, code: 'server', message: 'Could not reach OpenRouter to load the model list.' };
+  });
+}
+
 /* ------------------------------------------------------------ SSE aggregation */
+
+// OpenRouter emits SSE comment lines (": OPENROUTER PROCESSING") as keepalives
+// while a slow provider warms up. They are legal SSE but a naive `data:` parser
+// that does not skip them can trip over them, so strip them before we hand the
+// buffered stream to the browser. The client parser skips them too, belt and braces.
+function stripSSEComments(text) {
+  var lines = String(text == null ? '' : text).split('\n');
+  var out = [];
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].charAt(0) === ':') continue;
+    out.push(lines[i]);
+  }
+  return out.join('\n');
+}
+
+// Pull the last `usage` object out of a buffered OpenAI-style SSE body so the
+// real token counts can ride back on the response headers.
+function usageFromSSE(text) {
+  var lines = String(text == null ? '' : text).split('\n');
+  var found = null;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.indexOf('data:') !== 0) continue;
+    var payload = line.slice(5).replace(/^ /, '');
+    if (!payload || payload === '[DONE]') continue;
+    try {
+      var evt = JSON.parse(payload);
+      if (evt && evt.usage && typeof evt.usage === 'object') found = evt.usage;
+    } catch (e) { /* partial or non-JSON frame — ignore */ }
+  }
+  return normalizeUsage(found);
+}
 
 // Netlify's classic (exports.handler) runtime buffers the response body, so we
 // read the upstream SSE stream fully and hand back the raw event text with an
@@ -419,15 +686,32 @@ function readSSE(res) {
   return pump();
 }
 
-function textFromAnthropic(data) {
-  var out = '';
-  if (data && Array.isArray(data.content)) {
-    for (var i = 0; i < data.content.length; i++) {
-      var block = data.content[i];
-      if (block && block.type === 'text' && typeof block.text === 'string') out += block.text;
+/* ------------------------------------------------- action: listModels (owner) */
+
+// Owner-only. The key never leaves the server; the browser only ever sees the
+// trimmed catalog. Cached in module memory for MODELS_CACHE_MS.
+function handleListModels(idToken, projectId, apiKey, origin) {
+  return verifyIdToken(idToken, projectId).catch(function (e) {
+    logErr('token verify (listModels)', e);
+    throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again.' };
+  }).then(function (u) {
+    if (u.email !== OWNER_EMAIL) {
+      throw { httpStatus: 403, code: 'tier-denied', message: 'The OpenRouter model catalog is owner only.' };
     }
-  }
-  return out;
+    return getOpenRouterModels(apiKey);
+  }).then(function (r) {
+    return json(200, {
+      models: r.list,
+      count: r.list.length,
+      fetchedAt: r.fetchedAt,
+      cached: r.cached,
+      cacheMs: MODELS_CACHE_MS
+    }, origin);
+  }).catch(function (e) {
+    if (e && e.code && e.httpStatus) return fail(e.httpStatus, e.code, e.message, origin, e.extra);
+    logErr('listModels unhandled', e);
+    return fail(500, 'server', 'Could not load the OpenRouter model list.', origin);
+  });
 }
 
 /* --------------------------------------------------------------- the handler */
@@ -443,9 +727,9 @@ exports.handler = function (event) {
     return Promise.resolve(fail(405, 'server', 'Use POST.', origin));
   }
 
-  var apiKey = process.env.ANTHROPIC_API_KEY;
+  var apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    logErr('config', new Error('ANTHROPIC_API_KEY is not set'));
+    logErr('config', new Error('OPENROUTER_API_KEY is not set'));
     return Promise.resolve(fail(500, 'server', 'AI is not configured on the server yet.', origin));
   }
 
@@ -467,13 +751,31 @@ exports.handler = function (event) {
     return Promise.resolve(fail(401, 'no-auth', 'You need to be signed in to use AI features.', origin));
   }
 
+  // ---- 1b. which action? ----------------------------------------------------
+  var qs = (event.queryStringParameters && typeof event.queryStringParameters === 'object')
+    ? event.queryStringParameters : {};
+  var action = 'chat';
+  if (typeof body.action === 'string' && body.action) action = body.action;
+  else if (typeof qs.action === 'string' && qs.action) action = qs.action;
+
+  if (action === 'listModels') {
+    return handleListModels(idToken, projectId, apiKey, origin);
+  }
+  if (action !== 'chat') {
+    return Promise.resolve(fail(400, 'server', 'Unknown action "' + String(action).slice(0, 40) + '".', origin));
+  }
+
   var messages = sanitizeMessages(body.messages);
   if (!messages) {
     return Promise.resolve(fail(400, 'server', 'No messages supplied.', origin));
   }
 
   var user = null, cfg = null, tier = 'free', rules = null, model = DEFAULT_MODEL;
-  var isOwner = false, usedToday = 0, limit = 0, key = '';
+  var isOwner = false, usedToday = 0, limit = 0, spent6 = 0;
+  var key = dayKey(new Date(), QUOTA_TZ);
+  // Which part of the app spent this money. Purely for attribution in the admin
+  // panel; it can never widen what the caller is allowed to do.
+  var feature = normalizeFeature(body.feature);
 
   // ---- 2. verify the ID token ----------------------------------------------
   return verifyIdToken(idToken, projectId).catch(function (e) {
@@ -483,19 +785,38 @@ exports.handler = function (event) {
     user = u;
     isOwner = (u.email === OWNER_EMAIL);
 
-    // ---- 3. tier + config --------------------------------------------------
+    // ---- 3. tier + config + today's spend -----------------------------------
     return Promise.all([
       dbGet('userTiers/' + encodeURIComponent(u.uid), idToken),
-      dbGet('appConfig/aiConfig', idToken)
+      dbGet('appConfig/aiConfig', idToken),
+      readSpendToday(key, idToken)
     ]);
   }).then(function (pair) {
     cfg = normalizeConfig(pair[1]);
     tier = resolveTier(cfg, user.email, pair[0]);
     rules = cfg.tiers[tier] || cfg.tiers.free || DEFAULT_AI_CONFIG.tiers.free;
+    spent6 = typeof pair[2] === 'number' ? pair[2] : 0;
 
     // ---- 4a. global kill switch (owner bypasses) ---------------------------
     if (cfg.enabled === false && !isOwner) {
       throw { httpStatus: 503, code: 'ai-disabled', message: 'AI features are temporarily turned off. Check back soon.' };
+    }
+
+    // ---- 4a-ii. daily DOLLAR ceiling ---------------------------------------
+    // This is a site-wide budget brake, not a per-student limit, so it reads as
+    // "AI is off right now" rather than "you did something wrong". Only bites
+    // when the owner has explicitly chosen capMode 'block'. The owner is never
+    // locked out of his own admin panel by it.
+    var cap6 = Math.round((typeof cfg.softCapUsd === 'number' ? cfg.softCapUsd : DEFAULT_SOFT_CAP_USD) * 1e6);
+    if (!isOwner && cfg.capMode === 'block' && cap6 > 0 && spent6 >= cap6) {
+      throw {
+        httpStatus: 503,
+        code: 'ai-disabled',
+        message: 'AI is paused for the rest of today: the site hit its daily AI budget of $' +
+                 (cap6 / 1e6).toFixed(2) + '. This is not your personal limit and nothing you did. ' +
+                 'It resets at midnight Eastern, and everything else in MedMaster still works.',
+        extra: { reason: 'spend-cap', resetsAt: nextResetMs(QUOTA_TZ) }
+      };
     }
 
     // ---- 4b. model allowlist -----------------------------------------------
@@ -503,6 +824,17 @@ exports.handler = function (event) {
     if (!model) {
       model = (Array.isArray(rules.models) && rules.models.length && rules.models[0] !== '*')
         ? rules.models[0] : DEFAULT_MODEL;
+    }
+    // A tier with an empty model list is not "denied", it is "not set up yet".
+    // The free tier ships that way on purpose until the owner picks real
+    // OpenRouter free slugs from the live catalog.
+    if (!isOwner && (!Array.isArray(rules.models) || rules.models.length === 0)) {
+      throw {
+        httpStatus: 403,
+        code: 'tier-denied',
+        message: 'AI is not set up for the ' + tier + ' plan yet. No models have been assigned to it.',
+        extra: { allowedModels: [], tier: tier, reason: 'no-models-configured' }
+      };
     }
     if (!isOwner && !tierAllowsModel(rules, model)) {
       throw {
@@ -514,7 +846,6 @@ exports.handler = function (event) {
     }
 
     // ---- 4c. daily quota ----------------------------------------------------
-    key = dayKey(new Date(), QUOTA_TZ);
     limit = typeof rules.dailyLimit === 'number' ? rules.dailyLimit : 0;
     if (isOwner) limit = -1;
     if (limit === 0) {
@@ -541,42 +872,60 @@ exports.handler = function (event) {
     var wanted = typeof body.maxTokens === 'number' && body.maxTokens > 0 ? Math.floor(body.maxTokens) : capTokens;
     var maxTokens = Math.max(16, Math.min(wanted, capTokens));
 
+    // OpenAI-style temperature range is 0-2, unlike Anthropic's 0-1.
     var temperature = 1;
     if (typeof body.temperature === 'number' && isFinite(body.temperature)) {
-      temperature = Math.max(0, Math.min(1, body.temperature));
+      temperature = Math.max(0, Math.min(2, body.temperature));
     }
 
+    var wantStream = body.stream === true;
+
+    // OpenRouter / OpenAI shape: no top-level `system`, it is the first message.
     var payload = {
       model: model,
+      messages: buildChatMessages(body.system, messages),
       max_tokens: maxTokens,
       temperature: temperature,
-      messages: messages
+      stream: wantStream
     };
-    if (typeof body.system === 'string' && body.system.trim()) {
-      payload.system = body.system.slice(0, 40000);
-    }
-    var wantStream = body.stream === true;
-    if (wantStream) payload.stream = true;
+    if (REQUEST_USAGE_ACCOUNTING) payload.usage = { include: true };
 
-    return fetchWithTimeout(ANTHROPIC_URL, {
+    return fetchWithTimeout(OPENROUTER_URL, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_VERSION
-      },
+      headers: openRouterHeaders(apiKey, { 'content-type': 'application/json' }),
       body: JSON.stringify(payload)
     }, UPSTREAM_TIMEOUT_MS).then(function (res) {
       if (!res.ok) {
         // Log the real upstream body server-side; give the client a safe summary.
         return res.text().then(function (t) {
-          logErr('anthropic ' + res.status, new Error(t.slice(0, 2000)));
+          logErr('openrouter ' + res.status + ' [' + model + ']', new Error(String(t).slice(0, 2000)));
           var msg = 'The AI service could not complete that request.';
-          if (res.status === 429) msg = 'The AI service is rate limited right now. Try again in a moment.';
-          if (res.status === 529 || res.status === 503) msg = 'The AI service is overloaded. Try again in a moment.';
-          if (res.status === 401 || res.status === 403) msg = 'The AI service rejected the server key. The site owner has been notified.';
-          if (res.status === 400) msg = 'That request was not valid for the selected model.';
-          throw { httpStatus: 502, code: 'server', message: msg };
+          var extra = null;
+
+          if (res.status === 401) {
+            msg = 'OpenRouter rejected the server key. The site owner needs to check OPENROUTER_API_KEY.';
+            extra = { reason: 'bad-key' };
+          } else if (res.status === 402) {
+            // NOT the student's daily quota — the owner's OpenRouter balance is empty.
+            msg = 'The site owner\'s OpenRouter account is out of credits, so AI is paused for everyone. ' +
+                  'This is not your daily limit. Add credit at openrouter.ai/credits to turn it back on.';
+            extra = { reason: 'insufficient-credits' };
+          } else if (res.status === 404) {
+            // Almost always a model slug that does not exist on OpenRouter.
+            msg = 'The model "' + model + '" does not exist on OpenRouter. ' +
+                  'Fix the model ID in Admin Panel -> AI -> Models.';
+            extra = { reason: 'unknown-model', model: model };
+          } else if (res.status === 429) {
+            msg = 'OpenRouter is rate limiting this model right now. Try again in a moment.';
+            extra = { reason: 'upstream-rate-limit' };
+          } else if (res.status === 502 || res.status === 503) {
+            msg = 'The model provider is overloaded or down. Try again in a moment, or pick another model.';
+            extra = { reason: 'provider-down' };
+          } else if (res.status === 400) {
+            msg = 'That request was not valid for the selected model.';
+            extra = { reason: 'bad-request', model: model };
+          }
+          throw { httpStatus: 502, code: 'server', message: msg, extra: extra };
         }, function () {
           throw { httpStatus: 502, code: 'server', message: 'The AI service could not complete that request.' };
         });
@@ -586,8 +935,13 @@ exports.handler = function (event) {
       var bump = recordUsage(user.uid, key, usedToday, limit, idToken);
 
       if (wantStream) {
-        return readSSE(res).then(function (sse) {
-          return bump.then(function () {
+        return readSSE(res).then(function (raw) {
+          var sse = stripSSEComments(raw);
+          var u = usageFromSSE(sse);
+          return Promise.all([
+            bump,
+            recordSpend(user.uid, key, u.cost, model, feature, idToken)
+          ]).then(function () {
             var headers = corsHeaders(origin);
             headers['Content-Type'] = 'text/event-stream; charset=utf-8';
             headers['Cache-Control'] = 'no-cache, no-store';
@@ -595,29 +949,43 @@ exports.handler = function (event) {
             headers['X-MM-Model'] = model;
             headers['X-MM-Used'] = String(limit < 0 ? -1 : usedToday + 1);
             headers['X-MM-Limit'] = String(limit);
+            headers['X-MM-Prompt-Tokens'] = String(u.promptTokens);
+            headers['X-MM-Completion-Tokens'] = String(u.completionTokens);
+            if (u.cost != null) headers['X-MM-Cost'] = String(u.cost);
             return { statusCode: 200, headers: headers, body: sse };
           });
         });
       }
 
       return res.json().then(function (data) {
-        return bump.then(function () {
-          var usage = data && data.usage ? data.usage : {};
+        // Real reported usage from OpenRouter. There is no local price table:
+        // per-model pricing varies too widely to guess, so `cost` is whatever
+        // OpenRouter actually billed (null if it did not report one).
+        var u = normalizeUsage(data && data.usage);
+        return Promise.all([
+          bump,
+          recordSpend(user.uid, key, u.cost, model, feature, idToken)
+        ]).then(function () {
           return json(200, {
-            text: textFromAnthropic(data),
+            text: textFromOpenRouter(data),
             model: data && data.model ? data.model : model,
-            stopReason: data ? data.stop_reason : null,
+            stopReason: finishReason(data),
             tier: tier,
             used: limit < 0 ? -1 : usedToday + 1,
             limit: limit,
             resetsAt: nextResetMs(QUOTA_TZ),
-            inputTokens: usage.input_tokens || 0,
-            outputTokens: usage.output_tokens || 0
+            promptTokens: u.promptTokens,
+            completionTokens: u.completionTokens,
+            totalTokens: u.totalTokens,
+            cost: u.cost,
+            // Legacy aliases so anything still reading the old names keeps working.
+            inputTokens: u.promptTokens,
+            outputTokens: u.completionTokens
           }, origin);
         });
       });
     }, function (e) {
-      logErr('anthropic fetch', e);
+      logErr('openrouter fetch', e);
       var aborted = e && (e.name === 'AbortError' || String(e).indexOf('abort') !== -1);
       throw {
         httpStatus: 504,
@@ -635,18 +1003,71 @@ exports.handler = function (event) {
   });
 };
 
-/* --------------------------------------------------------------- usage write */
+/* --------------------------------------------------------- usage + spend write */
 
 // Best-effort: never fail the user's request because the counter write failed.
+// Instructor / owner accounts ARE counted now — their calls are the most likely
+// to be expensive, and a Usage tab that reads 0 for the biggest spender is worse
+// than useless. `limit < 0` only means "no quota", never "do not measure".
 function recordUsage(uid, key, currentCount, limit, idToken) {
-  if (limit < 0) return Promise.resolve(); // unlimited tiers are not metered
   var path = 'aiUsage/' + encodeURIComponent(uid) + '/' + key;
   // Prefer the RTDB atomic server-side increment so parallel calls cannot race.
   return dbPut(path, { '.sv': { increment: 1 } }, idToken).then(function (r) {
-    if (r === null) return dbPut(path, currentCount + 1, idToken);
+    // The non-atomic fallback needs a trustworthy current count. Unlimited tiers
+    // skip the read, so there is nothing safe to fall back to — leave it alone
+    // rather than clobber the day with 1.
+    if (r === null && limit >= 0) return dbPut(path, currentCount + 1, idToken);
     return r;
   }).catch(function (e) {
     logErr('recordUsage', e);
     return null;
   });
+}
+
+// RTDB keys cannot contain . # $ / [ ]
+function safeKey(s) {
+  return String(s == null ? '' : s).replace(/[.#$/[\]]/g, '_').slice(0, 120) || 'unknown';
+}
+
+// Bounded on purpose: the feature tag becomes an RTDB key, so an unrecognised
+// (or hostile) value is filed under 'other' rather than growing the ledger a new
+// child per request.
+function normalizeFeature(v) {
+  var f = String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+  if (!f) return 'other';
+  return KNOWN_FEATURES.indexOf(f) === -1 ? 'other' : f;
+}
+
+/**
+ * Persist the real dollar cost OpenRouter reported. Money is stored as INTEGER
+ * microdollars so the atomic increment is exact. Best-effort and never awaited
+ * for correctness — a failed ledger write must not cost the student their reply.
+ */
+function recordSpend(uid, key, cost, model, feature, idToken) {
+  if (typeof cost !== 'number' || !isFinite(cost) || cost <= 0) return Promise.resolve(null);
+  var micro = Math.round(cost * 1e6);
+  if (!(micro > 0)) return Promise.resolve(null);
+  var inc = { '.sv': { increment: micro } };
+  var one = { '.sv': { increment: 1 } };
+  var day = 'aiSpend/' + key + '/';
+  var patch = {};
+  patch[day + 'total6'] = inc;
+  patch[day + 'calls'] = one;
+  patch[day + 'byModel/' + safeKey(model) + '6'] = inc;
+  patch[day + 'byFeature/' + safeKey(feature) + '6'] = inc;
+  patch[day + 'byUser/' + safeKey(uid) + '/usd6'] = inc;
+  patch[day + 'byUser/' + safeKey(uid) + '/n'] = one;
+  return dbPatch('', patch, idToken).catch(function (e) {
+    logErr('recordSpend', e);
+    return null;
+  });
+}
+
+// Microdollars spent site-wide on `key`'s day. Returns 0 when the node is
+// unreadable (missing rules) — the ceiling can only ever under-report, never
+// lock people out because of a permissions problem.
+function readSpendToday(key, idToken) {
+  return dbGet('aiSpend/' + key + '/total6', idToken).then(function (v) {
+    return typeof v === 'number' && isFinite(v) && v > 0 ? v : 0;
+  }).catch(function () { return 0; });
 }

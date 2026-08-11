@@ -308,6 +308,19 @@
     if (type === 'error' && window.console) window.console.warn('[community] ' + msg);
   }
 
+  /* The shell renders its sign-in screen whenever nobody is signed in, so a
+     reload is a real (if blunt) route to it. Prefer a hook if one exists. */
+  function requestSignIn() {
+    var m = MMx();
+    try { if (typeof m.signIn === 'function') { m.signIn(); return; } } catch (e) { /* ignore */ }
+    try { if (typeof m.requestSignIn === 'function') { m.requestSignIn(); return; } } catch (e) { /* ignore */ }
+    try { window.location.reload(); } catch (e) { /* ignore */ }
+  }
+
+  function reloadPage() {
+    try { window.location.reload(); } catch (e) { /* ignore */ }
+  }
+
   function svTime() {
     try {
       if (window.firebase && firebase.database && firebase.database.ServerValue) {
@@ -566,8 +579,8 @@
       banned: gate.banned,
       banReason: gate.reason,
       canPost: signedIn && hasDb && !gate.banned,
-      blockReason: !hasDb ? 'Community features need a connection.'
-                 : !signedIn ? 'Sign in to contribute.'
+      blockReason: !hasDb ? 'We cannot reach the server right now, so nothing can be saved. Everything else in MedMaster still works.'
+                 : !signedIn ? 'Sign in first - everything here is posted under its author\'s name.'
                  : gate.banned ? gate.reason : ''
     };
   }
@@ -828,15 +841,32 @@
     return m.ai.chat(cfg);
   }
 
+  /* ai.js fills e.message with a generic sentence when it has nothing better,
+     but when the BACKEND diagnosed the problem ("the account funding this is
+     out of credits", "that model does not exist") the real explanation arrives
+     on e.message too. Show that whenever it is not one of the generics - it is
+     the difference between a student blaming themselves and knowing to wait.
+     (DR09 MAJOR #5) */
+  var AI_GENERIC_MSG = {
+    'Sign in to use the AI tutor.': 1,
+    'That model is not included in your plan.': 1,
+    'You have used all of your AI messages for today.': 1,
+    'AI features are turned off right now.': 1,
+    'Could not reach the AI service. Check your connection.': 1,
+    'Something went wrong on our end. Try again in a moment.': 1,
+    'AI is not available right now.': 1
+  };
+
   function aiErrorMessage(err) {
-    var code = err && err.code ? err.code : '';
+    var code = err && err.code ? String(err.code) : '';
+    var raw = (err && err.message) ? String(err.message) : '';
+    if (raw && !AI_GENERIC_MSG[raw]) return raw;
     if (code === 'no-auth') return 'Sign in to use AI assist.';
     if (code === 'tier-denied') return 'AI assist is not included in your plan yet.';
-    if (code === 'quota-exceeded') return 'You have used today’s AI allowance. It resets tomorrow.';
-    if (code === 'ai-disabled') return 'AI assist is turned off right now.';
-    if (code === 'network') return 'Network hiccup - check your connection and try again.';
-    if (code === 'server') return 'The AI service had a problem. Try again in a minute.';
-    return (err && err.message) ? err.message : 'AI assist could not run.';
+    if (code === 'quota-exceeded') return 'You have used today’s AI allowance. It resets at midnight Eastern.';
+    if (code === 'ai-disabled') return 'AI assist is turned off right now. Everything else in the builder works.';
+    if (code === 'network') return 'Network hiccup - check your connection and try again. Nothing you typed is lost.';
+    return 'The AI service had a problem. Try again in a minute - this one is not on you.';
   }
 
   /** Pull the first JSON object/array out of a model response. */
@@ -871,101 +901,126 @@
     st.textContent = [
       '.cm-wrap{max-width:100%;}',
       '.cm-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;}',
-      '.cm-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px;}',
-      '.cm-head h2{font-size:1.25rem;margin:0 0 2px;}',
-      '.cm-sub{color:var(--text2);font-size:0.85rem;line-height:1.5;margin:0;}',
+      '.cm-head{display:flex;align-items:flex-start;gap:var(--sp-3,12px);flex-wrap:wrap;margin-bottom:var(--sp-4,16px);}',
+      '.cm-head h2{font-size:var(--fs-xl,22px);margin:0 0 2px;}',
+      '.cm-sub{color:var(--text2);font-size:var(--fs-base,14px);line-height:var(--lh-normal,1.5);margin:0;}',
       '.cm-spacer{flex:1 1 auto;}',
 
-      /* tabs */
-      '.cm-tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 2px 10px;margin-bottom:6px;scrollbar-width:thin;}',
-      '.cm-tab{flex:0 0 auto;padding:8px 14px;border-radius:20px;border:1px solid var(--surface2);background:transparent;color:var(--text2);font-size:0.82rem;font-weight:600;cursor:pointer;transition:background .18s,color .18s,border-color .18s;white-space:nowrap;}',
+      /* SECTION NAVIGATION — round pills. Only ever used for "which page am I
+         on". Sorting and filtering use .cm-seg below so the two cannot be
+         confused for each other. (DR05 MAJOR-6) */
+      '.cm-tabs{display:flex;gap:var(--sp-2,8px);overflow-x:auto;padding:var(--sp-1,4px) 2px var(--sp-3,12px);margin-bottom:var(--sp-2,8px);scrollbar-width:thin;scroll-snap-type:x proximity;',
+      '-webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 24px),transparent 100%);',
+      'mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 24px),transparent 100%);}',
+      '.cm-tab{flex:0 0 auto;scroll-snap-align:start;display:inline-flex;align-items:center;gap:var(--sp-1,4px);min-height:44px;padding:var(--sp-2,8px) var(--sp-4,16px);border-radius:var(--r-full,999px);border:1px solid var(--border,#334155);background:transparent;color:var(--text2);font-size:var(--fs-sm,13px);font-weight:var(--fw-semi,600);cursor:pointer;transition:background var(--dur-base,.2s),color var(--dur-base,.2s),border-color var(--dur-base,.2s),transform var(--dur-fast,.12s);white-space:nowrap;}',
       '.cm-tab:hover{color:var(--text);border-color:var(--accent);}',
+      '.cm-tab:active{transform:scale(.975);}',
       '.cm-tab[aria-selected="true"],.cm-tab[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff;}',
-      '.cm-tab .cm-tab-count{opacity:.85;font-weight:700;margin-left:6px;}',
+      '.cm-tab .cm-tab-count{opacity:.85;font-weight:var(--fw-bold,700);margin-left:var(--sp-1,4px);}',
+      /* a tab that leads nowhere says so before you tap it */
+      '.cm-tab-empty{opacity:.6;}',
+      '.cm-tab-empty .cm-tab-count{background:transparent;color:var(--text3);font-weight:var(--fw-semi,600);}',
+      '.cm-tab-empty[aria-selected="true"]{opacity:1;}',
+      '.cm-tab-empty[aria-selected="true"] .cm-tab-count{color:#fff;}',
+
+      /* SORT / FILTER — a segmented control. Square, grouped, quieter than a
+         pill, and always introduced by a label so its job is unambiguous. */
+      '.cm-segwrap{display:flex;align-items:center;gap:var(--sp-2,8px);flex-wrap:wrap;margin-bottom:var(--sp-3,12px);}',
+      '.cm-seglab{font-size:var(--fs-2xs,11px);font-weight:var(--fw-bold,700);color:var(--text3);text-transform:uppercase;letter-spacing:.6px;}',
+      '.cm-seg{display:inline-flex;border:1px solid var(--border,#334155);background:var(--surface);border-radius:var(--r-md,10px);padding:2px;overflow:hidden;max-width:100%;overflow-x:auto;scrollbar-width:thin;}',
+      '.cm-segbtn{flex:0 0 auto;min-height:40px;padding:var(--sp-2,8px) var(--sp-3,12px);border:none;background:transparent;color:var(--text2);font-size:var(--fs-sm,13px);font-weight:var(--fw-semi,600);cursor:pointer;border-radius:var(--r-sm,6px);white-space:nowrap;transition:background var(--dur-fast,.12s),color var(--dur-fast,.12s);}',
+      '.cm-segbtn:hover{color:var(--text);background:var(--surface3,#334155);}',
+      '.cm-segbtn:active{transform:scale(.975);}',
+      '.cm-segbtn[aria-pressed="true"]{background:var(--surface3,#334155);color:var(--text);box-shadow:var(--el-1,0 1px 3px rgba(0,0,0,0.30));}',
 
       /* focus */
-      '.cm-wrap button:focus-visible,.cm-wrap a:focus-visible,.cm-wrap input:focus-visible,.cm-wrap textarea:focus-visible,.cm-wrap select:focus-visible,.cm-wrap [tabindex]:focus-visible{outline:3px solid var(--accent);outline-offset:2px;border-radius:6px;}',
+      '.cm-wrap button:focus-visible,.cm-wrap a:focus-visible,.cm-wrap input:focus-visible,.cm-wrap textarea:focus-visible,.cm-wrap select:focus-visible,.cm-wrap [tabindex]:focus-visible{outline:3px solid var(--accent);outline-offset:2px;border-radius:var(--r-sm,6px);}',
       '.cm-wrap input:focus,.cm-wrap textarea:focus,.cm-wrap select:focus{border-color:var(--accent);}',
 
       /* toolbar */
-      '.cm-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;}',
+      '.cm-toolbar{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;align-items:center;margin-bottom:var(--sp-4,16px);}',
       '.cm-toolbar>*{min-width:0;}',
       '.cm-search{flex:1 1 200px;}',
-      '.cm-input,.cm-textarea,.cm-select{background:var(--bg);border:2px solid var(--surface2);border-radius:8px;padding:10px 12px;color:var(--text);font-size:0.95rem;width:100%;font-family:inherit;outline:none;transition:border-color .18s;}',
-      '.cm-textarea{resize:vertical;min-height:88px;line-height:1.55;}',
+      /* 16px floor: anything smaller and iOS Safari zooms the page on focus and
+         never zooms back out. (DR06 CRITICAL #2) */
+      '.cm-input,.cm-textarea,.cm-select{background:var(--bg);border:2px solid var(--border,#334155);border-radius:var(--r-sm,6px);padding:var(--sp-3,12px);color:var(--text);font-size:var(--fs-md,16px);width:100%;font-family:inherit;outline:none;transition:border-color var(--dur-base,.2s);min-height:44px;}',
+      '.cm-textarea{resize:vertical;min-height:88px;line-height:var(--lh-normal,1.5);}',
       '.cm-select{cursor:pointer;}',
       '.cm-input::placeholder,.cm-textarea::placeholder{color:var(--text3);}',
 
       /* fields */
-      '.cm-field{margin-bottom:14px;}',
-      '.cm-label{display:block;font-size:0.8rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;}',
-      '.cm-label .cm-req{color:var(--orange);margin-left:4px;}',
-      '.cm-hint{font-size:0.78rem;color:var(--text3);margin-top:5px;line-height:1.45;}',
-      '.cm-err{font-size:0.8rem;color:var(--red);margin-top:5px;display:flex;gap:6px;align-items:flex-start;font-weight:600;}',
-      '.cm-count{font-size:0.72rem;color:var(--text3);float:right;font-weight:600;letter-spacing:0;text-transform:none;}',
-      '.cm-count.over{color:var(--red);}',
+      '.cm-field{margin-bottom:var(--sp-4,16px);}',
+      '.cm-label{display:block;font-size:var(--fs-xs,12px);font-weight:var(--fw-bold,700);color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:var(--sp-2,8px);}',
+      '.cm-label .cm-req{color:var(--orange-fg,#fbbf24);margin-left:var(--sp-1,4px);}',
+      '.cm-hint{font-size:var(--fs-sm,13px);color:var(--text3);margin-top:var(--sp-1,4px);line-height:var(--lh-normal,1.5);}',
+      '.cm-err{font-size:var(--fs-sm,13px);color:var(--red-fg,#f87171);margin-top:var(--sp-1,4px);display:flex;gap:var(--sp-2,8px);align-items:flex-start;font-weight:var(--fw-semi,600);}',
+      '.cm-count{font-size:var(--fs-2xs,11px);color:var(--text3);float:right;font-weight:var(--fw-semi,600);letter-spacing:0;text-transform:none;}',
+      '.cm-count.over{color:var(--red-fg,#f87171);}',
 
       /* items */
-      '.cm-list{display:flex;flex-direction:column;gap:12px;}',
-      '.cm-item{background:var(--surface);border:1px solid var(--surface2);border-radius:12px;padding:16px;display:flex;gap:12px;align-items:flex-start;}',
-      '.cm-item.cm-clickable{cursor:pointer;transition:border-color .18s,transform .18s;}',
+      '.cm-list{display:flex;flex-direction:column;gap:var(--sp-3,12px);}',
+      '.cm-item{background:var(--surface);border:1px solid var(--border,#334155);border-radius:var(--r-lg,14px);padding:var(--sp-4,16px);display:flex;gap:var(--sp-3,12px);align-items:flex-start;}',
+      '.cm-item>.cm-item-main{min-width:0;}',
+      '.cm-item.cm-clickable{cursor:pointer;transition:border-color var(--dur-base,.2s),transform var(--dur-fast,.12s);}',
       '.cm-item.cm-clickable:hover{border-color:var(--accent);}',
+      '.cm-item.cm-clickable:active{transform:scale(.99);}',
       '.cm-item-main{flex:1 1 auto;min-width:0;}',
-      '.cm-item-title{font-size:1rem;font-weight:700;line-height:1.45;margin:0 0 6px;word-break:break-word;}',
-      '.cm-item-text{color:var(--text);font-size:0.94rem;line-height:1.6;word-break:break-word;}',
-      '.cm-item-foot{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px;font-size:0.78rem;color:var(--text3);}',
+      '.cm-item-title{font-size:var(--fs-md,16px);font-weight:var(--fw-bold,700);line-height:var(--lh-snug,1.35);margin:0 0 var(--sp-2,8px);word-break:break-word;}',
+      '.cm-item-text{color:var(--text);font-size:var(--fs-md,16px);line-height:var(--lh-body,1.65);word-break:break-word;}',
+      '.cm-item-foot{display:flex;gap:var(--sp-3,12px);flex-wrap:wrap;align-items:center;margin-top:var(--sp-3,12px);font-size:var(--fs-sm,13px);color:var(--text3);}',
       '.cm-featured{border-color:var(--orange);box-shadow:inset 3px 0 0 var(--orange);}',
-      '.cm-flag{display:inline-flex;align-items:center;gap:5px;font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.6px;padding:3px 9px;border-radius:20px;border:1px solid currentColor;}',
-      '.cm-flag.pick{color:var(--orange);}',
-      '.cm-flag.help{color:var(--red);}',
-      '.cm-flag.ai{color:var(--accent2);}',
-      '.cm-flag.mine{color:var(--accent);}',
+      '.cm-flag{display:inline-flex;align-items:center;gap:var(--sp-1,4px);font-size:var(--fs-2xs,11px);font-weight:var(--fw-black,800);text-transform:uppercase;letter-spacing:.6px;padding:3px var(--sp-2,8px);border-radius:var(--r-full,999px);border:1px solid currentColor;}',
+      '.cm-flag.pick{color:var(--orange-fg,#fbbf24);}',
+      '.cm-flag.help{color:var(--red-fg,#f87171);}',
+      '.cm-flag.ai{color:var(--accent2-fg,#a78bfa);}',
+      '.cm-flag.mine{color:var(--accent-fg,#60a5fa);}',
       '.cm-removed{opacity:.75;border-style:dashed;}',
-      '.cm-removed-note{background:var(--bg);border-left:3px solid var(--red);padding:10px 12px;border-radius:6px;font-size:0.84rem;color:var(--text2);margin-top:10px;}',
+      '.cm-removed-note{background:var(--bg);border-left:3px solid var(--red);padding:var(--sp-3,12px);border-radius:var(--r-sm,6px);font-size:var(--fs-base,14px);color:var(--text2);margin-top:var(--sp-3,12px);}',
 
-      /* votes */
-      '.cm-vote{display:flex;flex-direction:column;align-items:center;gap:2px;flex:0 0 auto;width:44px;}',
-      '.cm-vote-btn{background:transparent;border:1px solid transparent;border-radius:8px;color:var(--text3);cursor:pointer;width:34px;height:28px;font-size:0.95rem;line-height:1;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;}',
-      '.cm-vote-btn:hover{background:var(--surface2);color:var(--text);}',
-      '.cm-vote-btn[aria-pressed="true"].up{color:var(--green);border-color:var(--green);}',
-      '.cm-vote-btn[aria-pressed="true"].down{color:var(--red);border-color:var(--red);}',
-      '.cm-vote-btn:disabled{opacity:.4;cursor:not-allowed;}',
-      '.cm-score{font-size:0.95rem;font-weight:800;color:var(--text);}',
-      '.cm-score.pos{color:var(--green);}',
-      '.cm-score.neg{color:var(--red);}',
+      /* votes — 44x40 each, because they used to be 34x28 stacked 2px apart */
+      '.cm-vote{display:flex;flex-direction:column;align-items:center;gap:2px;flex:0 0 auto;width:46px;}',
+      '.cm-vote-btn{background:transparent;border:1px solid transparent;border-radius:var(--r-sm,6px);color:var(--text3);cursor:pointer;width:44px;height:40px;font-size:var(--fs-md,16px);line-height:1;display:flex;align-items:center;justify-content:center;transition:background var(--dur-fast,.12s),color var(--dur-fast,.12s),transform var(--dur-fast,.12s);}',
+      '.cm-vote-btn:hover{background:var(--surface3,#334155);color:var(--text);}',
+      '.cm-vote-btn:active{transform:scale(.9);}',
+      '.cm-vote-btn[aria-pressed="true"].up{color:var(--green-fg,#4ade80);border-color:var(--green);}',
+      '.cm-vote-btn[aria-pressed="true"].down{color:var(--red-fg,#f87171);border-color:var(--red);}',
+      '.cm-vote-btn:disabled{opacity:.45;cursor:not-allowed;}',
+      '.cm-score{font-size:var(--fs-base,14px);font-weight:var(--fw-black,800);color:var(--text);}',
+      '.cm-score.pos{color:var(--green-fg,#4ade80);}',
+      '.cm-score.neg{color:var(--red-fg,#f87171);}',
 
       /* author + badges */
-      '.cm-author{display:inline-flex;align-items:center;gap:7px;min-width:0;}',
-      '.cm-avatar{width:24px;height:24px;border-radius:50%;background:var(--surface2);color:var(--text);font-size:0.65rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex:0 0 auto;letter-spacing:.3px;}',
-      '.cm-name{font-weight:700;color:var(--text2);font-size:0.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;}',
-      '.cm-badge{display:inline-flex;align-items:center;gap:4px;font-size:0.68rem;font-weight:800;padding:2px 8px;border-radius:20px;border:1px solid var(--surface2);color:var(--text2);background:var(--bg);white-space:nowrap;}',
-      '.cm-badge.blue{color:var(--accent);border-color:var(--accent);}',
-      '.cm-badge.green{color:var(--green);border-color:var(--green);}',
-      '.cm-badge.orange{color:var(--orange);border-color:var(--orange);}',
-      '.cm-badge.purple{color:var(--accent2);border-color:var(--accent2);}',
-      '.cm-badge-ico{font-size:0.8rem;line-height:1;}',
-      '.cm-badge-row{display:flex;gap:6px;flex-wrap:wrap;}',
+      '.cm-author{display:inline-flex;align-items:center;gap:var(--sp-2,8px);min-width:0;}',
+      '.cm-avatar{width:24px;height:24px;border-radius:var(--r-full,999px);background:var(--surface3,#334155);color:var(--text);font-size:var(--fs-2xs,11px);font-weight:var(--fw-black,800);display:flex;align-items:center;justify-content:center;flex:0 0 auto;letter-spacing:.3px;}',
+      '.cm-name{font-weight:var(--fw-bold,700);color:var(--text2);font-size:var(--fs-sm,13px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;}',
+      '.cm-badge{display:inline-flex;align-items:center;gap:var(--sp-1,4px);font-size:var(--fs-2xs,11px);font-weight:var(--fw-black,800);padding:2px var(--sp-2,8px);border-radius:var(--r-full,999px);border:1px solid var(--border,#334155);color:var(--text2);background:var(--bg);white-space:nowrap;}',
+      '.cm-badge.blue{color:var(--accent-fg,#60a5fa);border-color:var(--accent);}',
+      '.cm-badge.green{color:var(--green-fg,#4ade80);border-color:var(--green);}',
+      '.cm-badge.orange{color:var(--orange-fg,#fbbf24);border-color:var(--orange);}',
+      '.cm-badge.purple{color:var(--accent2-fg,#a78bfa);border-color:var(--accent2);}',
+      '.cm-badge-ico{font-size:var(--fs-sm,13px);line-height:1;}',
+      '.cm-badge-row{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;}',
 
       /* chips */
-      '.cm-chip{display:inline-block;padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:700;background:var(--bg);color:var(--text2);border:1px solid var(--surface2);}',
-      '.cm-chip.easy{color:var(--green);border-color:var(--green);}',
-      '.cm-chip.medium{color:var(--orange);border-color:var(--orange);}',
-      '.cm-chip.hard{color:var(--red);border-color:var(--red);}',
-      '.cm-chip-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}',
+      '.cm-chip{display:inline-block;padding:3px var(--sp-3,12px);border-radius:var(--r-full,999px);font-size:var(--fs-2xs,11px);font-weight:var(--fw-bold,700);background:var(--bg);color:var(--text2);border:1px solid var(--border,#334155);}',
+      '.cm-chip.easy{color:var(--green-fg,#4ade80);border-color:var(--green);}',
+      '.cm-chip.medium{color:var(--orange-fg,#fbbf24);border-color:var(--orange);}',
+      '.cm-chip.hard{color:var(--red-fg,#f87171);border-color:var(--red);}',
+      '.cm-chip-row{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;align-items:center;}',
 
       /* empty / status */
-      '.cm-empty{background:var(--surface);border:1px dashed var(--surface2);border-radius:14px;padding:28px 20px;text-align:center;}',
-      '.cm-empty-ico{font-size:2rem;line-height:1;margin-bottom:10px;color:var(--accent);}',
-      '.cm-empty-title{font-size:1.05rem;font-weight:800;margin-bottom:8px;}',
-      '.cm-empty-text{color:var(--text2);font-size:0.9rem;line-height:1.65;max-width:46ch;margin:0 auto 14px;}',
-      '.cm-empty-actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;}',
-      '.cm-empty-tips{text-align:left;max-width:46ch;margin:14px auto 0;color:var(--text3);font-size:0.84rem;line-height:1.7;}',
-      '.cm-empty-tips li{margin-bottom:4px;}',
-      '.cm-status{display:flex;align-items:center;gap:10px;justify-content:center;padding:22px;color:var(--text2);font-size:0.9rem;}',
-      '.cm-spin{width:18px;height:18px;border-radius:50%;border:2px solid var(--surface2);border-top-color:var(--accent);animation:cmspin .8s linear infinite;flex:0 0 auto;}',
+      '.cm-empty{background:var(--surface);border:1px dashed var(--border-str,#475569);border-radius:var(--r-lg,14px);padding:var(--sp-8,32px) var(--sp-5,20px);text-align:center;}',
+      '.cm-empty-ico{font-size:2rem;line-height:1;margin-bottom:var(--sp-3,12px);color:var(--accent-fg,#60a5fa);}',
+      '.cm-empty-title{font-size:var(--fs-lg,19px);font-weight:var(--fw-black,800);margin-bottom:var(--sp-2,8px);}',
+      '.cm-empty-text{color:var(--text2);font-size:var(--fs-md,16px);line-height:var(--lh-body,1.65);max-width:46ch;margin:0 auto var(--sp-4,16px);}',
+      '.cm-empty-actions{display:flex;gap:var(--sp-2,8px);justify-content:center;flex-wrap:wrap;}',
+      '.cm-empty-tips{text-align:left;max-width:46ch;margin:var(--sp-4,16px) auto 0;color:var(--text3);font-size:var(--fs-base,14px);line-height:var(--lh-body,1.65);}',
+      '.cm-empty-tips li{margin-bottom:var(--sp-1,4px);}',
+      '.cm-status{display:flex;align-items:center;gap:var(--sp-3,12px);justify-content:center;padding:var(--sp-5,20px);color:var(--text2);font-size:var(--fs-base,14px);}',
+      '.cm-spin{width:18px;height:18px;border-radius:var(--r-full,999px);border:2px solid var(--surface3,#334155);border-top-color:var(--accent);animation:cmspin .8s linear infinite;flex:0 0 auto;}',
       '@keyframes cmspin{to{transform:rotate(360deg);}}',
-      '.cm-banner{border-radius:10px;padding:12px 14px;font-size:0.87rem;line-height:1.6;display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;border:1px solid var(--surface2);background:var(--surface);color:var(--text2);}',
-      '.cm-banner .cm-banner-ico{flex:0 0 auto;font-size:1rem;line-height:1.4;}',
+      '.cm-banner{border-radius:var(--r-md,10px);padding:var(--sp-3,12px) var(--sp-4,16px);font-size:var(--fs-base,14px);line-height:var(--lh-body,1.65);display:flex;gap:var(--sp-3,12px);align-items:flex-start;margin-bottom:var(--sp-4,16px);border:1px solid var(--border,#334155);background:var(--surface);color:var(--text2);}',
+      '.cm-banner .cm-banner-ico{flex:0 0 auto;font-size:var(--fs-md,16px);line-height:1.4;}',
       '.cm-banner.warn{border-color:var(--orange);color:var(--text);}',
       '.cm-banner.bad{border-color:var(--red);color:var(--text);}',
       '.cm-banner.good{border-color:var(--green);color:var(--text);}',
@@ -973,111 +1028,123 @@
       '.cm-banner b{color:var(--text);}',
 
       /* buttons row */
-      '.cm-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}',
+      '.cm-actions{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;align-items:center;}',
       '.cm-actions.end{justify-content:flex-end;}',
-      '.cm-linkbtn{background:transparent;border:none;color:var(--text3);font-size:0.78rem;font-weight:700;cursor:pointer;padding:4px 6px;border-radius:6px;}',
-      '.cm-linkbtn:hover{color:var(--accent);background:var(--bg);}',
-      '.cm-linkbtn.danger:hover{color:var(--red);}',
-      '.cm-more{width:100%;margin-top:12px;}',
+      '.cm-linkbtn{display:inline-flex;align-items:center;min-height:44px;background:transparent;border:none;color:var(--text3);font-size:var(--fs-sm,13px);font-weight:var(--fw-bold,700);cursor:pointer;padding:var(--sp-2,8px);border-radius:var(--r-sm,6px);}',
+      '.cm-linkbtn:hover{color:var(--accent-fg,#60a5fa);background:var(--bg);}',
+      '.cm-linkbtn:active{transform:scale(.975);}',
+      '.cm-linkbtn.danger:hover{color:var(--red-fg,#f87171);}',
+      '.cm-more{width:100%;margin-top:var(--sp-3,12px);}',
 
       /* rich text */
-      '.cm-rich p{margin:0 0 6px;line-height:1.65;word-break:break-word;}',
+      '.cm-rich p{margin:0 0 var(--sp-2,8px);line-height:var(--lh-body,1.65);word-break:break-word;}',
       '.cm-rich p:last-child{margin-bottom:0;}',
-      '.cm-rich-gap{height:8px;}',
-      '.cm-code{background:var(--bg);border:1px solid var(--surface2);border-radius:5px;padding:1px 6px;font-family:"Courier New",monospace;font-size:0.88em;color:var(--orange);}',
-      '.cm-mention{color:var(--accent);font-weight:700;}',
-      '.cm-b{color:var(--text);font-weight:800;}',
+      '.cm-rich-gap{height:var(--sp-2,8px);}',
+      '.cm-code{background:var(--bg);border:1px solid var(--border,#334155);border-radius:var(--r-sm,6px);padding:1px 6px;font-family:"Courier New",monospace;font-size:0.88em;color:var(--orange-fg,#fbbf24);}',
+      '.cm-mention{color:var(--accent-fg,#60a5fa);font-weight:var(--fw-bold,700);}',
+      '.cm-b{color:var(--text);font-weight:var(--fw-black,800);}',
 
       /* comments */
-      '.cm-thread{display:flex;flex-direction:column;gap:10px;}',
-      '.cm-comment{background:var(--surface);border:1px solid var(--surface2);border-radius:10px;padding:12px 14px;}',
+      '.cm-thread{display:flex;flex-direction:column;gap:var(--sp-3,12px);}',
+      '.cm-comment{background:var(--surface);border:1px solid var(--border,#334155);border-radius:var(--r-md,10px);padding:var(--sp-3,12px) var(--sp-4,16px);}',
       '.cm-comment.best{border-color:var(--green);box-shadow:inset 3px 0 0 var(--green);}',
-      '.cm-comment-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}',
-      '.cm-comment-foot{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px;}',
-      '.cm-kids{margin-left:14px;padding-left:12px;border-left:2px solid var(--surface2);margin-top:10px;display:flex;flex-direction:column;gap:10px;}',
-      '.cm-mention-pop{position:absolute;z-index:60;background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:4px;max-height:180px;overflow:auto;min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,.45);}',
-      '.cm-mention-opt{display:flex;gap:8px;align-items:center;width:100%;text-align:left;background:transparent;border:none;color:var(--text);padding:7px 9px;border-radius:7px;cursor:pointer;font-size:0.85rem;}',
-      '.cm-mention-opt:hover,.cm-mention-opt.on{background:var(--surface2);}',
+      '.cm-comment-head{display:flex;gap:var(--sp-2,8px);align-items:center;flex-wrap:wrap;margin-bottom:var(--sp-2,8px);}',
+      '.cm-comment-foot{display:flex;gap:var(--sp-2,8px);align-items:center;flex-wrap:wrap;margin-top:var(--sp-2,8px);}',
+      '.cm-kids{margin-left:var(--sp-4,16px);padding-left:var(--sp-3,12px);border-left:2px solid var(--border,#334155);margin-top:var(--sp-3,12px);display:flex;flex-direction:column;gap:var(--sp-3,12px);}',
+      '.cm-mention-pop{position:absolute;z-index:60;background:var(--surface);border:1px solid var(--accent);border-radius:var(--r-md,10px);padding:var(--sp-1,4px);max-height:180px;overflow:auto;min-width:180px;max-width:calc(100vw - 32px);box-shadow:var(--el-3,0 8px 24px rgba(0,0,0,.45));}',
+      '.cm-mention-opt{display:flex;gap:var(--sp-2,8px);align-items:center;width:100%;min-height:44px;text-align:left;background:transparent;border:none;color:var(--text);padding:var(--sp-2,8px);border-radius:var(--r-sm,6px);cursor:pointer;font-size:var(--fs-base,14px);}',
+      '.cm-mention-opt:hover,.cm-mention-opt.on{background:var(--surface3,#334155);}',
       '.cm-composer{position:relative;}',
 
       /* modal */
-      '.cm-modal-back{position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,.62);display:flex;align-items:flex-start;justify-content:center;padding:16px;z-index:1200;overflow:auto;}',
-      '.cm-modal{background:var(--surface);border:1px solid var(--surface2);border-radius:14px;padding:20px;width:100%;max-width:640px;margin:auto;}',
-      '.cm-modal-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}',
-      '.cm-modal-head h3{font-size:1.1rem;margin:0;flex:1 1 auto;}',
-      '.cm-x{background:transparent;border:1px solid var(--surface2);color:var(--text2);width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:1rem;line-height:1;}',
-      '.cm-x:hover{border-color:var(--red);color:var(--red);}',
+      '.cm-modal-back{position:fixed;top:0;right:0;bottom:0;left:0;background:var(--scrim,rgba(15,23,42,0.72));display:flex;align-items:flex-start;justify-content:center;padding:var(--sp-4,16px);z-index:1200;overflow:auto;}',
+      '.cm-modal{background:var(--surface);border:1px solid var(--border,#334155);border-radius:var(--r-lg,14px);padding:var(--sp-5,20px);width:100%;max-width:640px;margin:auto;box-shadow:var(--el-4,0 16px 48px rgba(0,0,0,0.60));}',
+      '.cm-modal-head{display:flex;align-items:center;gap:var(--sp-3,12px);margin-bottom:var(--sp-4,16px);}',
+      '.cm-modal-head h3{font-size:var(--fs-lg,19px);margin:0;flex:1 1 auto;}',
+      '.cm-x{background:transparent;border:1px solid var(--border,#334155);color:var(--text2);width:44px;height:44px;border-radius:var(--r-sm,6px);cursor:pointer;font-size:var(--fs-md,16px);line-height:1;flex:0 0 auto;}',
+      '.cm-x:hover{border-color:var(--red);color:var(--red-fg,#f87171);}',
+      '.cm-x:active{transform:scale(.94);}',
 
       /* steps */
-      '.cm-steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;}',
-      '.cm-stepbtn{flex:1 1 88px;background:var(--bg);border:1px solid var(--surface2);border-radius:8px;padding:8px 6px;color:var(--text3);font-size:0.72rem;font-weight:700;cursor:pointer;text-align:center;}',
-      '.cm-stepbtn[aria-current="step"]{border-color:var(--accent);color:var(--text);background:var(--surface2);}',
-      '.cm-stepbtn .cm-stepnum{display:block;font-size:0.9rem;font-weight:800;color:var(--accent);}',
-      '.cm-stepbtn.done .cm-stepnum{color:var(--green);}',
+      '.cm-steps{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;margin-bottom:var(--sp-4,16px);}',
+      '.cm-stepbtn{flex:1 1 88px;min-height:44px;background:var(--bg);border:1px solid var(--border,#334155);border-radius:var(--r-sm,6px);padding:var(--sp-2,8px) var(--sp-1,4px);color:var(--text3);font-size:var(--fs-2xs,11px);font-weight:var(--fw-bold,700);cursor:pointer;text-align:center;}',
+      '.cm-stepbtn[aria-current="step"]{border-color:var(--accent);color:var(--text);background:var(--surface3,#334155);}',
+      '.cm-stepbtn:active{transform:scale(.975);}',
+      '.cm-stepbtn .cm-stepnum{display:block;font-size:var(--fs-base,14px);font-weight:var(--fw-black,800);color:var(--accent-fg,#60a5fa);}',
+      '.cm-stepbtn.done .cm-stepnum{color:var(--green-fg,#4ade80);}',
 
       /* rows builder */
-      '.cm-rows{display:flex;flex-direction:column;gap:8px;}',
-      '.cm-rowitem{background:var(--bg);border:1px solid var(--surface2);border-radius:10px;padding:10px;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;}',
+      '.cm-rows{display:flex;flex-direction:column;gap:var(--sp-2,8px);}',
+      '.cm-rowitem{background:var(--bg);border:1px solid var(--border,#334155);border-radius:var(--r-md,10px);padding:var(--sp-3,12px);display:flex;gap:var(--sp-2,8px);align-items:flex-start;flex-wrap:wrap;}',
       '.cm-rowitem>.cm-grow{flex:1 1 140px;min-width:0;}',
-      '.cm-del{background:transparent;border:1px solid var(--surface2);color:var(--text3);border-radius:8px;width:34px;height:34px;cursor:pointer;flex:0 0 auto;font-size:0.9rem;}',
-      '.cm-del:hover{border-color:var(--red);color:var(--red);}',
+      '.cm-del{background:transparent;border:1px solid var(--border,#334155);color:var(--text3);border-radius:var(--r-sm,6px);width:44px;height:44px;cursor:pointer;flex:0 0 auto;font-size:var(--fs-base,14px);}',
+      '.cm-del:hover{border-color:var(--red);color:var(--red-fg,#f87171);}',
+      '.cm-del:active{transform:scale(.94);}',
 
       /* grids / boards */
-      '.cm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:12px;}',
-      '.cm-board{display:flex;flex-direction:column;gap:6px;}',
-      '.cm-brow{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--surface2);border-radius:10px;padding:10px 12px;}',
+      '.cm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:var(--sp-3,12px);}',
+      '.cm-board{display:flex;flex-direction:column;gap:var(--sp-2,8px);}',
+      '.cm-brow{display:flex;align-items:center;gap:var(--sp-3,12px);background:var(--surface);border:1px solid var(--border,#334155);border-radius:var(--r-md,10px);padding:var(--sp-3,12px);}',
       '.cm-brow.me{border-color:var(--accent);}',
-      '.cm-rank{width:30px;flex:0 0 auto;font-weight:800;color:var(--text3);font-size:0.85rem;text-align:center;}',
-      '.cm-rank.top{color:var(--orange);}',
-      '.cm-bval{margin-left:auto;font-weight:800;color:var(--text);font-size:0.95rem;flex:0 0 auto;}',
+      '.cm-rank{width:30px;flex:0 0 auto;font-weight:var(--fw-black,800);color:var(--text3);font-size:var(--fs-base,14px);text-align:center;}',
+      '.cm-rank.top{color:var(--orange-fg,#fbbf24);}',
+      '.cm-bval{margin-left:auto;font-weight:var(--fw-black,800);color:var(--text);font-size:var(--fs-base,14px);flex:0 0 auto;}',
       '.cm-bmain{flex:1 1 auto;min-width:0;}',
-      '.cm-bar{height:6px;border-radius:4px;background:var(--surface2);overflow:hidden;margin-top:6px;}',
-      '.cm-bar>i{display:block;height:100%;background:var(--accent);border-radius:4px;}',
+      '.cm-bar{height:6px;border-radius:var(--r-sm,6px);background:var(--surface3,#334155);overflow:hidden;margin-top:var(--sp-2,8px);}',
+      '.cm-bar>i{display:block;height:100%;background:var(--accent);border-radius:var(--r-sm,6px);}',
       '.cm-bar.green>i{background:var(--green);}',
 
       /* option rows in practice */
-      '.cm-opt{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;background:var(--bg);border:2px solid var(--surface2);border-radius:10px;padding:12px;color:var(--text);cursor:pointer;font-size:0.94rem;line-height:1.55;transition:border-color .15s;}',
+      '.cm-opt{display:flex;gap:var(--sp-3,12px);align-items:flex-start;width:100%;min-height:44px;text-align:left;background:var(--bg);border:2px solid var(--border,#334155);border-radius:var(--r-md,10px);padding:var(--sp-3,12px);color:var(--text);cursor:pointer;font-size:var(--fs-md,16px);line-height:var(--lh-body,1.65);transition:border-color var(--dur-fast,.12s),transform var(--dur-fast,.12s);}',
       '.cm-opt:hover{border-color:var(--accent);}',
+      '.cm-opt:active{transform:scale(.99);}',
       '.cm-opt.sel{border-color:var(--accent);}',
       '.cm-opt.right{border-color:var(--green);}',
       '.cm-opt.wrong{border-color:var(--red);}',
-      '.cm-opt-key{flex:0 0 auto;font-weight:800;color:var(--text3);width:18px;}',
+      '.cm-opt-key{flex:0 0 auto;font-weight:var(--fw-black,800);color:var(--text3);width:18px;}',
       '.cm-opt.right .cm-opt-key,.cm-opt.sel .cm-opt-key{color:var(--text);}',
 
       /* notifications */
       '.cm-bellwrap{position:relative;display:inline-block;}',
-      '.cm-bell{background:transparent;border:1px solid var(--surface2);color:var(--text2);border-radius:10px;padding:8px 12px;cursor:pointer;font-size:0.9rem;font-weight:700;display:inline-flex;gap:6px;align-items:center;}',
+      '.cm-bell{background:transparent;border:1px solid var(--border,#334155);color:var(--text2);border-radius:var(--r-md,10px);min-height:44px;padding:var(--sp-2,8px) var(--sp-3,12px);cursor:pointer;font-size:var(--fs-base,14px);font-weight:var(--fw-bold,700);display:inline-flex;gap:var(--sp-2,8px);align-items:center;}',
       '.cm-bell:hover{border-color:var(--accent);color:var(--text);}',
-      '.cm-bell .cm-dot{background:var(--red);color:#fff;border-radius:20px;font-size:0.68rem;font-weight:800;padding:1px 6px;min-width:18px;text-align:center;}',
-      '.cm-pop{position:absolute;right:0;top:calc(100% + 6px);width:min(340px,90vw);background:var(--surface);border:1px solid var(--surface2);border-radius:12px;padding:8px;z-index:120;box-shadow:0 12px 32px rgba(0,0,0,.5);max-height:60vh;overflow:auto;}',
-      '.cm-notif{display:flex;gap:8px;padding:9px 10px;border-radius:8px;font-size:0.84rem;line-height:1.5;color:var(--text2);width:100%;text-align:left;background:transparent;border:none;cursor:pointer;}',
+      '.cm-bell:active{transform:scale(.975);}',
+      '.cm-bell .cm-dot{background:var(--red);color:#fff;border-radius:var(--r-full,999px);font-size:var(--fs-2xs,11px);font-weight:var(--fw-black,800);padding:1px 6px;min-width:18px;text-align:center;}',
+      '.cm-bell .cm-zero{color:var(--text3);font-weight:var(--fw-semi,600);font-size:var(--fs-2xs,11px);}',
+      '.cm-pop{position:absolute;right:0;top:calc(100% + 6px);width:min(340px,90vw);background:var(--surface);border:1px solid var(--border,#334155);border-radius:var(--r-lg,14px);padding:var(--sp-2,8px);z-index:120;box-shadow:var(--el-4,0 16px 48px rgba(0,0,0,0.60));max-height:60vh;overflow:auto;}',
+      '.cm-notif{display:flex;gap:var(--sp-2,8px);padding:var(--sp-3,12px);min-height:44px;border-radius:var(--r-sm,6px);font-size:var(--fs-base,14px);line-height:var(--lh-normal,1.5);color:var(--text2);width:100%;text-align:left;background:transparent;border:none;cursor:pointer;}',
       '.cm-notif:hover{background:var(--bg);}',
       '.cm-notif.unread{background:var(--bg);color:var(--text);}',
-      '.cm-notif.unread .cm-notif-ico{color:var(--accent);}',
+      '.cm-notif.unread .cm-notif-ico{color:var(--accent-fg,#60a5fa);}',
       '.cm-notif-ico{flex:0 0 auto;color:var(--text3);}',
 
       /* misc */
-      '.cm-kv{display:flex;gap:8px;font-size:0.85rem;color:var(--text2);line-height:1.6;}',
-      '.cm-kv b{color:var(--text);font-weight:700;min-width:82px;flex:0 0 auto;}',
-      '.cm-divider{height:1px;background:var(--surface2);margin:16px 0;border:0;}',
-      '.cm-mini{font-size:0.78rem;color:var(--text3);}',
-      '.cm-ai-out{background:var(--bg);border:1px solid var(--accent2);border-radius:10px;padding:14px;margin-top:10px;}',
-      '.cm-ai-out h4{color:var(--accent2);font-size:0.82rem;text-transform:uppercase;letter-spacing:.6px;margin:0 0 8px;}',
+      '.cm-kv{display:flex;gap:var(--sp-2,8px);font-size:var(--fs-base,14px);color:var(--text2);line-height:var(--lh-body,1.65);}',
+      '.cm-kv b{color:var(--text);font-weight:var(--fw-bold,700);min-width:82px;flex:0 0 auto;}',
+      '.cm-divider{height:1px;background:var(--border,#334155);margin:var(--sp-4,16px) 0;border:0;}',
+      '.cm-mini{font-size:var(--fs-sm,13px);color:var(--text3);line-height:var(--lh-normal,1.5);}',
+      '.cm-ai-out{background:var(--bg);border:1px solid var(--accent2);border-radius:var(--r-md,10px);padding:var(--sp-4,16px);margin-top:var(--sp-3,12px);}',
+      '.cm-ai-out h4{color:var(--accent2-fg,#a78bfa);font-size:var(--fs-xs,12px);text-transform:uppercase;letter-spacing:.6px;margin:0 0 var(--sp-2,8px);}',
+      /* "what happens after you post" — the thing neither form used to say */
+      '.cm-nextup{border-left:3px solid var(--accent);background:var(--bg);border-radius:var(--r-sm,6px);padding:var(--sp-3,12px);color:var(--text2);font-size:var(--fs-base,14px);line-height:var(--lh-body,1.65);margin:var(--sp-4,16px) 0;}',
+      '.cm-nextup b{color:var(--text);}',
 
       /* mobile */
       '@media (max-width:640px){',
-      '  .cm-item{padding:13px;gap:9px;}',
-      '  .cm-vote{width:38px;}',
-      '  .cm-modal{padding:16px;border-radius:12px;}',
+      '  .cm-item{padding:var(--sp-3,12px);gap:var(--sp-2,8px);}',
+      '  .cm-modal{padding:var(--sp-4,16px);border-radius:var(--r-lg,14px);}',
       '  .cm-name{max-width:96px;}',
-      '  .cm-head h2{font-size:1.1rem;}',
-      '  .cm-toolbar{gap:6px;}',
-      '  .cm-stepbtn{flex:1 1 70px;font-size:0.66rem;}',
-      '  .cm-kids{margin-left:6px;padding-left:9px;}',
+      '  .cm-head h2{font-size:var(--fs-lg,19px);}',
+      '  .cm-toolbar{gap:var(--sp-2,8px);}',
+      '  .cm-stepbtn{flex:1 1 70px;font-size:var(--fs-2xs,11px);}',
+      '  .cm-kids{margin-left:var(--sp-2,8px);padding-left:var(--sp-2,8px);}',
+      '  .cm-input,.cm-textarea,.cm-select{font-size:16px;}',
       '}',
       '@media (prefers-reduced-motion:reduce){',
-      '  .cm-wrap *,.cm-modal-back *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important;}',
       '  .cm-spin{animation:none;border-top-color:var(--accent);}',
+      '  .cm-tab,.cm-segbtn,.cm-opt,.cm-item.cm-clickable,.cm-vote-btn,.cm-input,.cm-textarea,.cm-select{transition:none;}',
+      '  .cm-tab:active,.cm-segbtn:active,.cm-opt:active,.cm-item.cm-clickable:active,.cm-vote-btn:active,',
+      '  .cm-linkbtn:active,.cm-stepbtn:active,.cm-del:active,.cm-x:active,.cm-bell:active{transform:none;}',
       '}'
     ].join('\n');
     document.head.appendChild(st);
@@ -1099,17 +1166,82 @@
     );
   }
 
+  /* Firebase's own error strings are diagnostics, not copy. They read like
+     `permission_denied at /community/questions: Client doesn't have permission
+     to access the desired data.` and used to render verbatim in nine student
+     facing surfaces. We classify off code/message and then never show either.
+     (DR09 CRITICAL #2) */
+  function classifyError(err) {
+    var code = (err && err.code) ? String(err.code) : '';
+    var raw = '';
+    try { raw = (err && err.message) ? String(err.message) : ''; } catch (e) { raw = ''; }
+    var sig = (code + ' ' + raw).toUpperCase();
+
+    if (code === 'no-db' || sig.indexOf('NO-DB') >= 0) {
+      return {
+        kind: 'offline',
+        text: 'We cannot reach the server right now. This is usually the wifi - hospital and campus ' +
+              'networks often block it. Everything else in MedMaster still works offline.',
+        retryLabel: 'Try reconnecting'
+      };
+    }
+    if (sig.indexOf('PERMISSION_DENIED') >= 0 || sig.indexOf('PERMISSION DENIED') >= 0 || sig.indexOf('UNAUTHORIZED') >= 0) {
+      return {
+        kind: 'permission',
+        text: 'Your account does not have access to this yet. That is a permissions setting on our ' +
+              'side, not something you did - tell your instructor and we will fix it.',
+        retryLabel: ''   // retrying a permissions error cannot succeed
+      };
+    }
+    if (sig.indexOf('NETWORK') >= 0 || sig.indexOf('UNAVAILABLE') >= 0 || sig.indexOf('DISCONNECT') >= 0 ||
+        sig.indexOf('FAILED TO FETCH') >= 0 || sig.indexOf('TIMEOUT') >= 0 || sig.indexOf('OFFLINE') >= 0) {
+      return {
+        kind: 'network',
+        text: 'Cannot reach the server. Check your connection and try again - nothing you have written is lost.',
+        retryLabel: 'Try again'
+      };
+    }
+    return {
+      kind: 'unknown',
+      text: 'Something went wrong loading this. It is not something you did.',
+      retryLabel: 'Try again'
+    };
+  }
+
+  /* Same rule for writes. Our own validation and rate-limit errors are written
+     for humans and carry no code, so they pass through; anything that smells
+     like a Firebase diagnostic gets translated. */
+  function writeErrText(e, fallback) {
+    var code = (e && e.code) ? String(e.code) : '';
+    var raw = '';
+    try { raw = (e && e.message) ? String(e.message) : ''; } catch (x) { raw = ''; }
+    if (!code && raw && raw.indexOf(' at /') < 0 && !/permission[_ ]denied|firebase|Client doesn/i.test(raw)) {
+      return raw;
+    }
+    var info = classifyError(e);
+    if (info.kind === 'permission') {
+      return 'Your account is not allowed to post here yet. That is a permissions setting on our side, ' +
+             'not something you did - tell your instructor and we will fix it.';
+    }
+    if (info.kind === 'offline' || info.kind === 'network') {
+      return 'That did not save - we could not reach the server. Check your connection and try again; ' +
+             'nothing you typed is lost.';
+    }
+    return fallback || info.text;
+  }
+
   function ErrorBox(props) {
-    var err = props.error;
-    var msg = (err && err.code === 'no-db')
-      ? 'Not connected. Check your internet and try again.'
-      : ((err && err.message) ? err.message : 'Something went wrong.');
+    var info = classifyError(props.error);
     return ce(Banner, { tone: 'bad', icon: '!' },
       ce('div', null,
-        ce('div', null, msg),
-        props.onRetry ? ce('button', {
-          className: 'btn btn-outline btn-sm', style: { marginTop: 8 }, onClick: props.onRetry
-        }, 'Try again') : null
+        ce('div', null, info.text),
+        ce('div', { className: 'cm-actions', style: { marginTop: 8 } },
+          (props.onRetry && info.retryLabel) ? ce('button', {
+            className: 'btn btn-outline btn-sm', onClick: props.onRetry
+          }, info.retryLabel) : null,
+          info.kind === 'permission' ? ce('span', { className: 'cm-mini' },
+            'Nothing here is lost - it is just not readable from this account.') : null
+        )
       )
     );
   }
@@ -1243,19 +1375,67 @@
     );
   }
 
+  /* Two different failures used to share one screen, and neither offered the
+     action it demanded. "You are signed out" and "the database is unreachable"
+     are now separate components with a real control each. (DR05 CRITICAL #1,
+     DR09 MAJOR #6) */
+
   function SignInWall(props) {
+    var p = props || {};
     return ce('div', { className: 'cm-wrap' },
       ce('div', { className: 'cm-empty' },
-        ce('div', { className: 'cm-empty-ico', 'aria-hidden': 'true' }, '◎'),
-        ce('div', { className: 'cm-empty-title' }, 'Sign in to use community features'),
+        ce('div', { className: 'cm-empty-ico', 'aria-hidden': 'true' }, '👋'),
+        ce('div', { className: 'cm-empty-title' }, p.title || 'Sign in and the community opens up'),
         ce('p', { className: 'cm-empty-text' },
-          props.message || 'The community is where your cohort trades practice questions, builds scenarios, and answers each other at 11pm before a signoff. Sign in with your student account to join in.'),
+          p.message || 'This is where your cohort trades practice questions, builds scenarios, and answers ' +
+            'each other at 11pm before a signoff. Posts are attributed, so you need an account to join in.'),
+        ce('div', { className: 'cm-empty-actions' },
+          ce('button', { className: 'btn btn-primary', onClick: requestSignIn }, 'Sign in'),
+          p.onBack ? ce('button', { className: 'btn btn-outline', onClick: p.onBack }, 'Back') : null),
         ce('ul', { className: 'cm-empty-tips' },
           ce('li', null, 'Browse and practice questions your classmates wrote'),
           ce('li', null, 'Build and publish clinical scenarios'),
           ce('li', null, 'Ask for help on the stuff that will not stick')
         )
       )
+    );
+  }
+
+  function OfflineWall(props) {
+    var p = props || {};
+    return ce('div', { className: 'cm-wrap' },
+      ce('div', { className: 'cm-empty' },
+        ce('div', { className: 'cm-empty-ico', 'aria-hidden': 'true' }, '⚡'),
+        ce('div', { className: 'cm-empty-title' }, 'Community is offline'),
+        ce('p', { className: 'cm-empty-text' },
+          p.message || 'We cannot reach the server right now. This is usually the wifi - hospital and campus ' +
+            'networks often block it. Your practice, simulations, flashcards and pharm all still work, and ' +
+            'your progress is saved on this device.'),
+        ce('div', { className: 'cm-empty-actions' },
+          ce('button', { className: 'btn btn-primary', onClick: reloadPage }, 'Try reconnecting'),
+          ce('button', { className: 'btn btn-outline', onClick: function () { if (MMx().navigate) MMx().navigate('smart'); } }, 'Study offline instead'))
+      )
+    );
+  }
+
+  /* Sorting and filtering. Deliberately NOT .cm-tab: pills move you between
+     pages, this changes the order of the page you are on. */
+  function Segmented(props) {
+    var opts = props.options || [];
+    return ce('div', { className: 'cm-segwrap' },
+      props.label ? ce('span', { className: 'cm-seglab', id: props.id ? (props.id + '-lab') : undefined }, props.label) : null,
+      ce('div', {
+        className: 'cm-seg', role: 'group',
+        'aria-label': props.ariaLabel || props.label || 'Options'
+      },
+        opts.map(function (o) {
+          return ce('button', {
+            key: o.id, type: 'button', className: 'cm-segbtn',
+            'aria-pressed': props.value === o.id ? 'true' : 'false',
+            onClick: function () { props.onChange(o.id); }
+          }, o.label);
+        })),
+      props.note ? ce('span', { className: 'cm-mini' }, props.note) : null
     );
   }
 
@@ -1304,11 +1484,11 @@
         status: 'open',
         createdAt: now()
       }).then(function () {
-        toast('Report sent to the moderators. Thank you.', 'success');
+        toast('Report sent. A human reviews every report - nothing is removed automatically.', 'success');
         props.onDone();
       })['catch'](function (e) {
         setBusy(false);
-        setErr((e && e.message) ? e.message : 'Could not send that report.');
+        setErr(writeErrText(e, 'Could not send that report. Try again in a moment.'));
       });
     }
 
@@ -1593,12 +1773,12 @@
               text: myName() + ' posted a question in ' + row.category,
               targetType: 'question', targetId: id
             });
-            toast('Question posted. Thanks for feeding the bank.', 'success');
+            toast('Question posted. It is live in the bank now, under your name.', 'success');
             props.onDone(merge(row, { _id: id }));
           });
         })['catch'](function (e) {
           setBusy(false);
-          setFormErr((e && e.message) ? e.message : 'Could not post that question.');
+          setFormErr(writeErrText(e, 'Could not post that question. Try again in a moment - what you wrote is still here.'));
         });
     }
 
@@ -1683,7 +1863,7 @@
                   onChange: function () { toggleCorrect(i); },
                   'aria-label': 'Mark option ' + letter(i) + ' correct'
                 }),
-                ce('span', { style: { fontWeight: 800, color: checked ? 'var(--green)' : 'var(--text3)' } },
+                ce('span', { style: { fontWeight: 800, color: checked ? 'var(--green-fg, #4ade80)' : 'var(--text3)' } },
                   letter(i) + (checked ? ' ✓' : ''))
               ),
               ce('input', {
@@ -1750,6 +1930,13 @@
         ce('span', { className: 'cm-banner-ico', 'aria-hidden': 'true' }, '!'),
         ce('div', null, formErr)) : null,
 
+      // Neither form used to say what happens after you hand it over. (DR05 #20)
+      ce('div', { className: 'cm-nextup' },
+        ce('b', null, 'What happens next: '),
+        'this posts immediately under your name - no approval queue. Classmates vote and comment on ' +
+        'it, and if somebody thinks the keyed answer is wrong they flag it and you get a notification. ' +
+        'You can edit or delete it any time.'),
+
       ce('div', { className: 'cm-actions end', style: { marginTop: 8 } },
         ce('button', { className: 'btn btn-outline', onClick: props.onCancel }, 'Cancel'),
         ce('button', { className: 'btn btn-primary', onClick: submit, disabled: busy },
@@ -1783,7 +1970,7 @@
             return ce('div', { key: i, className: 'cm-opt ' + (right ? 'right' : '') },
               ce('span', { className: 'cm-opt-key', 'aria-hidden': 'true' }, letter(i)),
               ce('span', null, clean(o, LIMIT.option)),
-              right ? ce('span', { style: { marginLeft: 'auto', color: 'var(--green)', fontWeight: 800 } }, '✓ Correct') : null
+              right ? ce('span', { style: { marginLeft: 'auto', color: 'var(--green-fg, #4ade80)', fontWeight: 800 } }, '✓ Correct') : null
             );
           })
         ),
@@ -1957,8 +2144,8 @@
             },
               ce('span', { className: 'cm-opt-key', 'aria-hidden': 'true' }, letter(i)),
               ce('span', null, clean(o, LIMIT.option)),
-              checked && correctSet[i] ? ce('span', { style: { marginLeft: 'auto', fontWeight: 800, color: 'var(--green)' } }, '✓') : null,
-              checked && sel && !correctSet[i] ? ce('span', { style: { marginLeft: 'auto', fontWeight: 800, color: 'var(--red)' } }, '✕') : null
+              checked && correctSet[i] ? ce('span', { style: { marginLeft: 'auto', fontWeight: 800, color: 'var(--green-fg, #4ade80)' } }, '✓') : null,
+              checked && sel && !correctSet[i] ? ce('span', { style: { marginLeft: 'auto', fontWeight: 800, color: 'var(--red-fg, #f87171)' } }, '✕') : null
             );
           })
         ),
@@ -1984,15 +2171,19 @@
   /* ------------------------------------------------------- the bank ----- */
 
   function CommunityQuestionBank(props) {
+    var p = props || {};
     var gate = useCommunityGate();
     var s0 = useState('top');       var sort = s0[0], setSort = s0[1];
     var s1 = useState('');          var search = s1[0], setSearch = s1[1];
     var s2 = useState('');          var cat = s2[0], setCat = s2[1];
     var s3 = useState('');          var diff = s3[0], setDiff = s3[1];
-    var s4 = useState('list');      var view = s4[0], setView = s4[1];
+    var s4 = useState(p.seed ? 'submit' : 'list'); var view = s4[0], setView = s4[1];
     var s5 = useState(null);        var reporting = s5[0], setReporting = s5[1];
     var s6 = useState([]);          var practiceSet = s6[0], setPracticeSet = s6[1];
     var s7 = useState(false);       var loadingPractice = s7[0], setLoadingPractice = s7[1];
+
+    // Arriving with a draft (from the cold-start panel) opens the form on it.
+    useEffect(function () { if (p.seed) setView('submit'); }, [p.seed]);
 
     var sortDef = Q_SORTS.filter(function (s) { return s.id === sort; })[0] || Q_SORTS[0];
     var list = usePaged({ path: P.questions, orderBy: sortDef.field, pageSize: PAGE, key: sort, enabled: gate.hasDb });
@@ -2018,7 +2209,7 @@
     }, [list.items, search, cat, diff]);
 
     function onVote(q, dir) {
-      if (!gate.canPost) { toast(gate.blockReason || 'Sign in to vote.', 'info'); return; }
+      if (!gate.canPost) { toast(gate.blockReason || 'Sign in to vote on your cohort\'s questions.', 'info'); return; }
       var tid = 'question:' + q._id;
       var prev = num(votes[tid], 0);
       var next = prev === dir ? 0 : dir;
@@ -2031,7 +2222,7 @@
       })['catch'](function () {
         setVote(tid, prev);                                   // rollback
         list.patch(q._id, { score: num(q.score, 0) });
-        toast('Vote did not save. Check your connection.', 'error');
+        toast('Your vote did not save - we could not reach the server. It has been put back.', 'error');
       });
     }
 
@@ -2048,7 +2239,7 @@
           }
         })['catch'](function () {
           list.patch(q._id, { featured: !nextVal });
-          toast('Could not update that.', 'error');
+          toast('Could not change the instructor pick. Nothing was saved.', 'error');
         });
     }
 
@@ -2065,7 +2256,7 @@
       if (mine) {
         list.drop(q._id);
         writeAt(P.questions + '/' + q._id, null)['catch'](function () {
-          toast('Delete failed.', 'error'); list.reload();
+          toast('Could not delete that question - it is still there. Try again.', 'error'); list.reload();
         });
       } else {
         list.patch(q._id, { removed: true, removalReason: clean(reason, LIMIT.reason) });
@@ -2082,11 +2273,11 @@
         setView('practice');
       })['catch'](function () {
         setLoadingPractice(false);
-        toast('Could not load the practice set.', 'error');
+        toast('Could not load the practice set. Check your connection and try again.', 'error');
       });
     }
 
-    if (!gate.hasDb) return ce(SignInWall, { message: 'The community needs a live connection. Once you are online and signed in, everything here loads.' });
+    if (!gate.hasDb) return ce(OfflineWall, null);
 
     if (view === 'practice') {
       return ce(CommunityPractice, {
@@ -2105,13 +2296,19 @@
       }
       return ce('div', { className: 'cm-wrap' },
         ce('div', { className: 'cm-head' },
-          ce('button', { className: 'btn btn-outline btn-sm', onClick: function () { setView('list'); } }, '← Back'),
+          ce('button', {
+            className: 'btn btn-outline btn-sm',
+            onClick: function () { setView('list'); if (p.onSeedUsed) p.onSeedUsed(); }
+          }, '← Back'),
           ce('div', null, ce('h2', null, 'Write a question'),
-            ce('p', { className: 'cm-sub' }, 'It goes straight into the shared bank.'))
+            ce('p', { className: 'cm-sub' },
+              p.seed ? 'Started from one you missed. The stem and options are filled in - the rationale is yours.'
+                     : 'It goes straight into the shared bank.'))
         ),
         ce(QuestionSubmit, {
-          onCancel: function () { setView('list'); },
-          onDone: function (row) { list.prepend(row); setView('list'); }
+          initial: p.seed || null,
+          onCancel: function () { setView('list'); if (p.onSeedUsed) p.onSeedUsed(); },
+          onDone: function (row) { list.prepend(row); setView('list'); if (p.onSeedUsed) p.onSeedUsed(); }
         })
       );
     }
@@ -2153,15 +2350,11 @@
         )
       ),
 
-      ce('div', { className: 'cm-tabs', role: 'tablist', 'aria-label': 'Sort questions' },
-        Q_SORTS.map(function (s) {
-          return ce('button', {
-            key: s.id, className: 'cm-tab', role: 'tab',
-            'aria-selected': sort === s.id ? 'true' : 'false',
-            onClick: function () { setSort(s.id); }
-          }, s.label);
-        })
-      ),
+      ce(Segmented, {
+        label: 'Sort', ariaLabel: 'Sort questions', value: sort,
+        options: Q_SORTS.map(function (s) { return { id: s.id, label: s.label }; }),
+        onChange: setSort
+      }),
 
       list.error ? ce(ErrorBox, { error: list.error, onRetry: list.reload }) : null,
       list.loading && !list.items.length ? ce(Spinner, { label: 'Loading questions...' }) : null,
@@ -2331,7 +2524,7 @@
       ce('div', { className: 'cm-comment-head' },
         ce(AuthorChip, { uid: c.authorId, name: c.authorName }),
         ce('span', { className: 'cm-mini' }, c._pending ? 'sending...' : timeAgo(c.createdAt)),
-        c.best ? ce('span', { className: 'cm-flag' , style: { color: 'var(--green)' } }, '✓ Best answer') : null,
+        c.best ? ce('span', { className: 'cm-flag' , style: { color: 'var(--green-fg, #4ade80)' } }, '✓ Best answer') : null,
         c.helpWanted ? ce('span', { className: 'cm-flag help' }, '⛑ Still stuck') : null
       ),
       c.removed
@@ -2467,7 +2660,7 @@
       })['catch'](function (e) {
         list.drop(tempId);                                        // rollback
         setPosting(false);
-        setErr((e && e.message) ? e.message : 'Comment did not save. Try again.');
+        setErr(writeErrText(e, 'Your comment did not save. Try again - the text is still in the box.'));
       });
     }
 
@@ -2480,7 +2673,7 @@
     }
 
     function onVote(c, dir) {
-      if (!gate.canPost) { toast(gate.blockReason || 'Sign in to vote.', 'info'); return; }
+      if (!gate.canPost) { toast(gate.blockReason || 'Sign in to vote on your cohort\'s questions.', 'info'); return; }
       var tid = 'comment:' + c._id;
       var prev = num(votes[tid], 0);
       var next = prev === dir ? 0 : dir;
@@ -2491,7 +2684,7 @@
                  authorId: c.authorId, helpful: true })['catch'](function () {
         setVote(tid, prev);
         list.patch(c._id, { score: num(c.score, 0) });
-        toast('Vote did not save.', 'error');
+        toast('Your vote did not save. It has been put back - try again.', 'error');
       });
     }
 
@@ -2506,7 +2699,7 @@
         }
       })['catch'](function () {
         list.patch(c._id, { best: !nextVal });
-        toast('Could not update that.', 'error');
+        toast('Could not mark that as the best answer. Nothing was saved.', 'error');
       });
     }
 
@@ -2517,7 +2710,7 @@
         if (!window.confirm('Delete your comment?')) return;
         list.drop(c._id);
         writeAt(path + '/' + c._id, null).then(function () { bumpCommentCount(-1); })
-          ['catch'](function () { toast('Delete failed.', 'error'); list.reload(); });
+          ['catch'](function () { toast('Could not delete that comment - it is still there. Try again.', 'error'); list.reload(); });
       } else {
         var reason = window.prompt('Reason for removal (the author will see this):', 'Against community guidelines');
         if (reason === null) return;
@@ -2573,16 +2766,11 @@
             'Discussion' + (count ? ' (' + count + ')' : '')),
           props.compact ? null : ce('p', { className: 'cm-sub' }, 'Be the classmate you wish you had at 11pm.')
         ),
-        count > 1 ? ce('div', { className: 'cm-actions' },
-          ce('button', {
-            className: 'cm-tab', 'aria-pressed': sort === 'top' ? 'true' : 'false',
-            onClick: function () { setSort('top'); }
-          }, 'Top'),
-          ce('button', {
-            className: 'cm-tab', 'aria-pressed': sort === 'newest' ? 'true' : 'false',
-            onClick: function () { setSort('newest'); }
-          }, 'Newest')
-        ) : null
+        count > 1 ? ce(Segmented, {
+          label: 'Sort', ariaLabel: 'Sort comments', value: sort,
+          options: [{ id: 'top', label: 'Top' }, { id: 'newest', label: 'Newest' }],
+          onChange: setSort
+        }) : null
       ),
 
       gate.canPost ? ce('div', { style: { marginBottom: 14 } },
@@ -2669,7 +2857,7 @@
         props.onDone(merge(row, { _id: id }));
       })['catch'](function (e) {
         setBusy(false);
-        setErr((e && e.message) ? e.message : 'Could not post that thread.');
+        setErr(writeErrText(e, 'Could not post that thread. Try again - nothing you wrote is lost.'));
       });
     }
 
@@ -2720,7 +2908,7 @@
     var votes = voteState[0], setVote = voteState[1];
 
     function onVote(t, dir) {
-      if (!gate.canPost) { toast(gate.blockReason || 'Sign in to vote.', 'info'); return; }
+      if (!gate.canPost) { toast(gate.blockReason || 'Sign in to vote on your cohort\'s questions.', 'info'); return; }
       var tid = 'thread:' + t._id;
       var prev = num(votes[tid], 0);
       var next = prev === dir ? 0 : dir;
@@ -2730,7 +2918,7 @@
         ['catch'](function () {
           setVote(tid, prev);
           list.patch(t._id, { score: num(t.score, 0) });
-          toast('Vote did not save.', 'error');
+          toast('Your vote did not save. It has been put back - try again.', 'error');
         });
     }
 
@@ -2739,10 +2927,10 @@
       var nextVal = !t.resolved;
       list.patch(t._id, { resolved: nextVal, helpWanted: nextVal ? false : t.helpWanted });
       updateAt(PATH_THREADS + '/' + t._id, { resolved: nextVal, helpWanted: nextVal ? false : !!t.helpWanted })
-        ['catch'](function () { list.patch(t._id, { resolved: !nextVal }); toast('Could not update.', 'error'); });
+        ['catch'](function () { list.patch(t._id, { resolved: !nextVal }); toast('Could not change whether this is resolved. It has been put back.', 'error'); });
     }
 
-    if (!gate.hasDb) return ce(SignInWall, null);
+    if (!gate.hasDb) return ce(OfflineWall, null);
 
     if (view === 'new') {
       return ce('div', { className: 'cm-wrap' },
@@ -2772,7 +2960,7 @@
           ce('div', { className: 'cm-item-main' },
             ce('div', { className: 'cm-chip-row', style: { marginBottom: 8 } },
               active.helpWanted ? ce('span', { className: 'cm-flag help' }, '⛑ Help wanted') : null,
-              active.resolved ? ce('span', { className: 'cm-flag', style: { color: 'var(--green)' } }, '✓ Resolved') : null,
+              active.resolved ? ce('span', { className: 'cm-flag', style: { color: 'var(--green-fg, #4ade80)' } }, '✓ Resolved') : null,
               ce(Chip, null, active.category || 'Other')
             ),
             ce('h3', { className: 'cm-item-title' }, clean(active.title, LIMIT.title)),
@@ -2822,7 +3010,7 @@
         ce('div', { className: 'cm-item-main' },
           ce('div', { className: 'cm-chip-row', style: { marginBottom: 6 } },
             t.helpWanted && !t.resolved ? ce('span', { className: 'cm-flag help' }, '⛑ Help wanted') : null,
-            t.resolved ? ce('span', { className: 'cm-flag', style: { color: 'var(--green)' } }, '✓ Resolved') : null,
+            t.resolved ? ce('span', { className: 'cm-flag', style: { color: 'var(--green-fg, #4ade80)' } }, '✓ Resolved') : null,
             ce(Chip, null, t.category || 'Other')
           ),
           ce('h3', { className: 'cm-item-title' }, clean(t.title, LIMIT.title)),
@@ -2856,12 +3044,11 @@
         ce('div', { className: 'cm-list' }, helpWanted.map(threadRow))
       ) : null,
 
-      ce('div', { className: 'cm-tabs', role: 'tablist', 'aria-label': 'Sort threads' },
-        ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': sort === 'newest' ? 'true' : 'false',
-          onClick: function () { setSort('newest'); } }, 'Newest'),
-        ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': sort === 'top' ? 'true' : 'false',
-          onClick: function () { setSort('top'); } }, 'Top')
-      ),
+      ce(Segmented, {
+        label: 'Sort', ariaLabel: 'Sort threads', value: sort,
+        options: [{ id: 'newest', label: 'Newest' }, { id: 'top', label: 'Top' }],
+        onChange: setSort
+      }),
 
       list.error ? ce(ErrorBox, { error: list.error, onRetry: list.reload }) : null,
       list.loading && !visible.length ? ce(Spinner, { label: 'Loading threads...' }) : null,
@@ -3015,7 +3202,7 @@
   /** Hand a published community scenario to the simulation engine. */
   function runInSim(doc) {
     var sim = toSimScenario(doc);
-    if (!sim) { toast('That scenario could not be loaded.', 'error'); return; }
+    if (!sim) { toast('That scenario could not be loaded. Its author may have removed it.', 'error'); return; }
     window.COMMUNITY_SIM_SCENARIOS = window.COMMUNITY_SIM_SCENARIOS || {};
     window.COMMUNITY_SIM_SCENARIOS[sim.id] = sim;
     if (window.MM) { window.MM.pendingSimScenario = sim; }
@@ -3327,12 +3514,12 @@
                 targetType: 'scenario', targetId: id
               });
             }
-            toast('Scenario published. Your cohort can run it now.', 'success');
+            toast('Scenario published. Your cohort can run it in the sim engine now.', 'success');
             props.onDone(merge(row, { _id: id }));
           });
         })['catch'](function (e) {
           setBusy(false);
-          setFormErr((e && e.message) ? e.message : 'Could not publish that scenario.');
+          setFormErr(writeErrText(e, 'Could not publish that scenario. Your draft is still here - try again in a moment.'));
         });
     }
 
@@ -3638,7 +3825,7 @@
                         });
                       }
                     }),
-                    ce('span', { style: { fontWeight: 800, color: checked ? 'var(--green)' : 'var(--text3)', width: 16 } }, letter(oi)),
+                    ce('span', { style: { fontWeight: 800, color: checked ? 'var(--green-fg, #4ade80)' : 'var(--text3)', width: 16 } }, letter(oi)),
                     ce('input', { type: 'text', className: 'cm-input', value: o, maxLength: LIMIT.option,
                       'aria-label': 'Question ' + (i + 1) + ' option ' + letter(oi),
                       placeholder: 'Option ' + letter(oi),
@@ -3713,6 +3900,13 @@
 
         formErr ? ce('div', { className: 'cm-banner bad', role: 'alert' },
           ce('span', { className: 'cm-banner-ico', 'aria-hidden': 'true' }, '!'), ce('div', null, formErr)) : null,
+
+        // (DR05 #20) Say what publishing actually does before they do it.
+        ce('div', { className: 'cm-nextup' },
+          ce('b', null, 'What happens next: '),
+          'this goes live immediately under your name - no approval queue. Classmates can run it in ' +
+          'the simulation engine, vote on it, fork it into their own version, and flag anything that ' +
+          'is clinically wrong. You will be notified either way, and you can delete it any time.'),
 
         ce('div', { className: 'cm-actions end', style: { marginTop: 12 } },
           ce('button', { className: 'btn btn-outline', onClick: props.onCancel }, 'Cancel'),
@@ -3822,7 +4016,7 @@
     var votes = voteState[0], setVote = voteState[1];
 
     function onVote(s, dir) {
-      if (!gate.canPost) { toast(gate.blockReason || 'Sign in to vote.', 'info'); return; }
+      if (!gate.canPost) { toast(gate.blockReason || 'Sign in to vote on your cohort\'s questions.', 'info'); return; }
       var tid = 'scenario:' + s._id;
       var prev = num(votes[tid], 0);
       var next = prev === dir ? 0 : dir;
@@ -3831,7 +4025,7 @@
       castVote({ targetId: tid, contentPath: P.scenarios + '/' + s._id, dir: dir, prev: prev, authorId: s.authorId })
         ['catch'](function () {
           setVote(tid, prev); list.patch(s._id, { score: num(s.score, 0) });
-          toast('Vote did not save.', 'error');
+          toast('Your vote did not save. It has been put back - try again.', 'error');
         });
     }
 
@@ -3883,7 +4077,7 @@
             notify(s.authorId, { type: 'featured', text: 'An instructor featured your scenario.',
                                  targetType: 'scenario', targetId: s._id });
           }
-        })['catch'](function () { list.patch(s._id, { featured: !nextVal }); toast('Could not update.', 'error'); });
+        })['catch'](function () { list.patch(s._id, { featured: !nextVal }); toast('Could not change the instructor pick. Nothing was saved.', 'error'); });
     }
 
     function onDelete(s) {
@@ -3892,7 +4086,7 @@
       if (mine) {
         if (!window.confirm('Delete your scenario? People who forked it keep their copies.')) return;
         list.drop(s._id);
-        writeAt(P.scenarios + '/' + s._id, null)['catch'](function () { toast('Delete failed.', 'error'); list.reload(); });
+        writeAt(P.scenarios + '/' + s._id, null)['catch'](function () { toast('Could not delete that scenario - it is still there. Try again.', 'error'); list.reload(); });
       } else {
         var reason = window.prompt('Reason for removal (the author will see this):', 'Clinically inaccurate');
         if (reason === null) return;
@@ -3901,7 +4095,7 @@
       }
     }
 
-    if (!gate.hasDb) return ce(SignInWall, null);
+    if (!gate.hasDb) return ce(OfflineWall, null);
 
     if (view === 'build') {
       if (!gate.canPost) {
@@ -3953,11 +4147,11 @@
           onChange: function (e) { setCat(e.target.value); } },
           ce('option', { value: '' }, 'All categories'),
           CATEGORIES.map(function (c) { return ce('option', { key: c, value: c }, c); })),
-        ce('div', { className: 'cm-tabs', style: { padding: 0, margin: 0 }, role: 'tablist', 'aria-label': 'Sort scenarios' },
-          ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': sort === 'top' ? 'true' : 'false',
-            onClick: function () { setSort('top'); } }, 'Top'),
-          ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': sort === 'newest' ? 'true' : 'false',
-            onClick: function () { setSort('newest'); } }, 'Newest'))
+        ce(Segmented, {
+          label: 'Sort', ariaLabel: 'Sort scenarios', value: sort,
+          options: [{ id: 'top', label: 'Top' }, { id: 'newest', label: 'Newest' }],
+          onChange: setSort
+        })
       ),
 
       list.error ? ce(ErrorBox, { error: list.error, onRetry: list.reload }) : null,
@@ -4053,7 +4247,7 @@
         props.onDone(merge(row, { _id: id }));
       })['catch'](function (e) {
         setBusy(false);
-        setErr((e && e.message) ? e.message : 'Could not create that group.');
+        setErr(writeErrText(e, 'Could not create that group. Try again in a moment.'));
       });
     }
 
@@ -4158,7 +4352,7 @@
                                        targetType: 'group', targetId: group._id });
       })['catch'](function () {
         setGroup(group);
-        toast('Could not join. Try again.', 'error');
+        toast('Could not join that group. Check your connection and try again.', 'error');
       });
     }
 
@@ -4169,7 +4363,7 @@
       setGroup(merge(group, { members: next, memberCount: Object.keys(next).length }));
       writeAt(P.groups + '/' + group._id + '/members/' + uid, null).then(function () {
         return bumpCounter(P.groups + '/' + group._id + '/memberCount', -1);
-      })['catch'](function () { toast('Could not leave.', 'error'); });
+      })['catch'](function () { toast('Could not leave that group - you are still a member.', 'error'); });
     }
 
     function setProgressState(stateId) {
@@ -4178,7 +4372,7 @@
       next[uid] = merge(next[uid], { progress: stateId, progressAt: now() });
       setGroup(merge(group, { members: next }));
       updateAt(P.groups + '/' + group._id + '/members/' + uid, { progress: stateId, progressAt: now() })
-        ['catch'](function () { setGroup(group); toast('Could not save your progress.', 'error'); });
+        ['catch'](function () { setGroup(group); toast('Could not save your progress marker. It has been put back.', 'error'); });
     }
 
     function addDeckItem(kind, row) {
@@ -4191,8 +4385,8 @@
       pushAt(P.groups + '/' + group._id + '/deck', item).then(function (id) {
         deck.prepend(merge(item, { _id: id }));
         setPicking(false);
-        toast('Added to the group deck.', 'success');
-      })['catch'](function () { toast('Could not add that.', 'error'); });
+        toast('Added. Everyone in the group can see it now.', 'success');
+      })['catch'](function () { toast('Could not add that to the group deck. Nothing was saved.', 'error'); });
     }
 
     function addSession() {
@@ -4216,7 +4410,7 @@
       if (going) delete next[uid]; else next[uid] = myName();
       sessions.patch(s._id, { attendees: next });
       writeAt(P.groups + '/' + group._id + '/sessions/' + s._id + '/attendees/' + uid, going ? null : myName())
-        ['catch'](function () { sessions.patch(s._id, { attendees: s.attendees }); toast('Could not update RSVP.', 'error'); });
+        ['catch'](function () { sessions.patch(s._id, { attendees: s.attendees }); toast('Could not save your RSVP. It has been put back.', 'error'); });
     }
 
     var memberIds = Object.keys(members);
@@ -4377,7 +4571,7 @@
       })['catch'](function () { setCodeErr('Could not look that up.'); });
     }
 
-    if (!gate.hasDb) return ce(SignInWall, null);
+    if (!gate.hasDb) return ce(OfflineWall, null);
 
     if (view === 'detail' && active) {
       return ce(GroupPage, { group: active, onBack: function () { setView('list'); list.reload(); } });
@@ -4471,13 +4665,13 @@
   function importDeckLocally(deck) {
     var m = MMx();
     if (typeof m.setProgress !== 'function') {
-      toast('Could not reach your local decks.', 'error');
+      toast('Could not read the flashcard decks saved on this device.', 'error');
       return false;
     }
     var cards = (deck.cards || []).map(function (c) {
       return { term: clean(c.term, 300), definition: clean(c.definition, 1200) };
     }).filter(function (c) { return c.term && c.definition; });
-    if (!cards.length) { toast('That deck has no usable cards.', 'error'); return false; }
+    if (!cards.length) { toast('That deck has no usable cards, so nothing was imported.', 'error'); return false; }
     var local = {
       id: 'deck_' + now(),
       name: clean(deck.name, 50),
@@ -4562,7 +4756,7 @@
         });
       })['catch'](function (e) {
         setBusy(false);
-        setErr((e && e.message) ? e.message : 'Could not publish that deck.');
+        setErr(writeErrText(e, 'Could not publish that deck. Try again - your cards are safe in your own flashcards.'));
       });
     }
 
@@ -4628,10 +4822,10 @@
           })['catch'](function () { });
         }
       })['catch'](function () { list.patch(d._id, { importCount: num(d.importCount, 0) }); });
-      toast('Imported into your flashcards.', 'success');
+      toast('Imported. The cards are in your own flashcards now.', 'success');
     }
 
-    if (!gate.hasDb) return ce(SignInWall, null);
+    if (!gate.hasDb) return ce(OfflineWall, null);
 
     if (view === 'publish') {
       return ce('div', { className: 'cm-wrap' },
@@ -4641,7 +4835,7 @@
             ce('p', { className: 'cm-sub' }, 'Anyone in the cohort can import it into their own flashcards.'))),
         gate.canPost
           ? ce(PublishDeckForm, { onCancel: function () { setView('list'); },
-              onDone: function (row) { list.prepend(row); setView('list'); toast('Deck published.', 'success'); } })
+              onDone: function (row) { list.prepend(row); setView('list'); toast('Deck published. Your cohort can import it now.', 'success'); } })
           : (gate.banned ? ce(BannedNotice, { reason: gate.banReason }) : ce(SignInWall, null)));
     }
 
@@ -4656,11 +4850,11 @@
 
       gate.banned ? ce(BannedNotice, { reason: gate.banReason }) : null,
 
-      ce('div', { className: 'cm-tabs', role: 'tablist', 'aria-label': 'Sort decks' },
-        ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': sort === 'top' ? 'true' : 'false',
-          onClick: function () { setSort('top'); } }, 'Most imported'),
-        ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': sort === 'newest' ? 'true' : 'false',
-          onClick: function () { setSort('newest'); } }, 'Newest')),
+      ce(Segmented, {
+        label: 'Sort', ariaLabel: 'Sort decks', value: sort,
+        options: [{ id: 'top', label: 'Most imported' }, { id: 'newest', label: 'Newest' }],
+        onChange: setSort
+      }),
 
       list.error ? ce(ErrorBox, { error: list.error, onRetry: list.reload }) : null,
       list.loading && !visible.length ? ce(Spinner, { label: 'Loading decks...' }) : null,
@@ -4797,8 +4991,13 @@
           ce('span', { className: 'cm-sr' }, ' ' + def.unit)));
     }
 
-    if (!gate.hasDb) return ce(SignInWall, null);
+    if (!gate.hasDb) return ce(OfflineWall, null);
 
+    /* This page used to render three stacked rows of visually identical pills -
+       the hub's section nav, the board picker and the time range - with nothing
+       saying which one changed the page. The board is now a labelled select
+       (it is a choice of five, not navigation) and the range is a segmented
+       control that reads as a filter. (DR05 MAJOR-6) */
     return ce('div', { className: 'cm-wrap' },
       ce('div', { className: 'cm-head' },
         ce('div', { style: { flex: '1 1 200px' } },
@@ -4806,21 +5005,24 @@
           ce('p', { className: 'cm-sub' },
             'Five different boards, because nursing school is not one skill. Nobody is ranked on anything they did not choose to share.'))),
 
-      ce('div', { className: 'cm-tabs', role: 'tablist', 'aria-label': 'Choose a leaderboard' },
-        BOARDS.map(function (b) {
-          return ce('button', { key: b.id, className: 'cm-tab', role: 'tab',
-            'aria-selected': board === b.id ? 'true' : 'false',
-            onClick: function () { setBoard(b.id); } }, b.label);
-        })),
-
       ce('div', { className: 'cm-toolbar' },
-        ce('p', { className: 'cm-sub', style: { flex: '1 1 200px' } }, def.blurb),
-        def.weekly ? ce('div', { className: 'cm-actions' },
-          ce('button', { className: 'cm-tab', 'aria-pressed': range === 'week' ? 'true' : 'false',
-            onClick: function () { setRange('week'); } }, 'This week'),
-          ce('button', { className: 'cm-tab', 'aria-pressed': range === 'all' ? 'true' : 'false',
-            onClick: function () { setRange('all'); } }, 'All time'))
-          : ce('span', { className: 'cm-mini' }, 'All time')),
+        ce('div', { style: { flex: '1 1 240px' } },
+          ce('label', { className: 'cm-label', htmlFor: 'cm-board-pick' }, 'Board'),
+          ce('select', {
+            id: 'cm-board-pick', className: 'cm-select', value: board,
+            onChange: function (e) { setBoard(e.target.value); }
+          }, BOARDS.map(function (b) { return ce('option', { key: b.id, value: b.id }, b.label); }))),
+        def.weekly
+          ? ce(Segmented, {
+              label: 'Showing', ariaLabel: 'Time range', value: range,
+              options: [{ id: 'week', label: 'This week' }, { id: 'all', label: 'All time' }],
+              onChange: setRange
+            })
+          : ce('div', null,
+              ce('span', { className: 'cm-seglab' }, 'Showing'),
+              ce('div', { className: 'cm-mini' }, 'All time'))),
+
+      ce('p', { className: 'cm-sub', style: { marginBottom: 12 } }, def.blurb),
 
       mover && mover._gain > 0 ? ce(Banner, { tone: 'good', icon: '↗' },
         ce('div', null,
@@ -4871,7 +5073,7 @@
           },
             ce('div', { className: 'cm-chip-row', style: { marginBottom: 6 } },
               ce(CommunityBadge, { id: b.id }),
-              got ? ce('span', { className: 'cm-flag', style: { color: 'var(--green)' } }, '✓ Earned')
+              got ? ce('span', { className: 'cm-flag', style: { color: 'var(--green-fg, #4ade80)' } }, '✓ Earned')
                   : ce('span', { className: 'cm-mini' }, 'Not yet')),
             ce('p', { className: 'cm-mini' }, b.desc));
         })),
@@ -4905,7 +5107,7 @@
       }
       toast('Content removed and the author was told why.', 'success');
     })['catch'](function () {
-      toast('Removal failed.', 'error');
+      toast('Could not remove that. It is still visible to everyone.', 'error');
     });
   }
 
@@ -4928,7 +5130,7 @@
         resolutionNote: clean(extra || '', LIMIT.reason)
       }).then(function () {
         list.patch(rep._id, { status: 'resolved', resolution: action });
-      })['catch'](function () { toast('Could not update the report.', 'error'); });
+      })['catch'](function () { toast('Could not update that report. It is still in the open queue.', 'error'); });
     }
 
     function doRemove(rep) {
@@ -4952,7 +5154,7 @@
         }
         resolve(rep, 'featured');
         toast('Marked as an instructor pick.', 'success');
-      })['catch'](function () { toast('Could not feature that.', 'error'); });
+      })['catch'](function () { toast('Could not mark that as an instructor pick. Nothing changed.', 'error'); });
     }
 
     function doBan(rep) {
@@ -4971,7 +5173,7 @@
         notify(rep.authorId, { type: 'banned', text: 'Your posting access was suspended. Reason: ' + clean(reason, LIMIT.reason),
                                targetType: 'account', targetId: '' });
         resolve(rep, 'banned', reason);
-        toast('Author banned from posting.', 'success');
+        toast('Author banned from posting. They can still read the community.', 'success');
       })['catch'](function () { toast('Ban failed - check your admin permissions.', 'error'); });
     }
 
@@ -5001,7 +5203,7 @@
         resolve(editing, 'edited');
         setEditing(null);
         toast('Edited and the author was notified.', 'success');
-      })['catch'](function () { toast('Edit failed.', 'error'); });
+      })['catch'](function () { toast('Could not save that edit. The original is unchanged.', 'error'); });
     }
 
     var rows = list.items.filter(function (r) {
@@ -5017,14 +5219,15 @@
           ce('h2', null, 'Moderation queue'),
           ce('p', { className: 'cm-sub' }, 'Every removal records a reason the author can see.'))),
 
-      ce('div', { className: 'cm-tabs', role: 'tablist', 'aria-label': 'Filter reports' },
-        ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': filter === 'open' ? 'true' : 'false',
-          onClick: function () { setFilter('open'); } },
-          'Open', openCount ? ce('span', { className: 'cm-tab-count' }, String(openCount)) : null),
-        ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': filter === 'resolved' ? 'true' : 'false',
-          onClick: function () { setFilter('resolved'); } }, 'Resolved'),
-        ce('button', { className: 'cm-tab', role: 'tab', 'aria-selected': filter === 'all' ? 'true' : 'false',
-          onClick: function () { setFilter('all'); } }, 'All')),
+      ce(Segmented, {
+        label: 'Show', ariaLabel: 'Filter reports', value: filter,
+        options: [
+          { id: 'open', label: openCount ? ('Open (' + openCount + ')') : 'Open' },
+          { id: 'resolved', label: 'Resolved' },
+          { id: 'all', label: 'All' }
+        ],
+        onChange: setFilter
+      }),
 
       list.error ? ce(ErrorBox, { error: list.error, onRetry: list.reload }) : null,
       list.loading && !rows.length ? ce(Spinner, { label: 'Loading reports...' }) : null,
@@ -5089,12 +5292,17 @@
     var list = usePaged({ path: P.activity, orderBy: 'createdAt',
       pageSize: props.pageSize || 15, enabled: gate.hasDb });
 
-    if (!gate.hasDb) return ce(SignInWall, null);
+    if (!gate.hasDb) return ce(OfflineWall, null);
+
+    var isEmpty = !list.loading && !list.items.length && !list.error;
 
     return ce('div', { className: 'cm-wrap' },
-      props.hideHeader ? null : ce('div', { className: 'cm-head' },
+      /* The header used to promise "everything your cohort has added lately"
+         directly above "Nothing has happened here yet". It is also nested under
+         the page <h2>, so it is an <h3>. (DR05 Fix 3) */
+      (props.hideHeader || isEmpty) ? null : ce('div', { className: 'cm-head' },
         ce('div', null,
-          ce('h2', null, 'What is happening'),
+          ce('h3', { className: 'cm-item-title', style: { fontSize: 'var(--fs-lg, 19px)' } }, 'What is happening'),
           ce('p', { className: 'cm-sub' }, 'Everything your cohort has added lately.'))),
 
       list.error ? ce(ErrorBox, { error: list.error, onRetry: list.reload }) : null,
@@ -5169,7 +5377,7 @@
       items.forEach(function (n) { if (!n.read) updates[n._id + '/read'] = true; });
       if (!Object.keys(updates).length) return;
       setItems(function (cur) { return cur.map(function (x) { return merge(x, { read: true }); }); });
-      updateAt(P.notifs + '/' + uid, updates)['catch'](function () { toast('Could not mark all read.', 'error'); });
+      updateAt(P.notifs + '/' + uid, updates)['catch'](function () { toast('Could not mark those as read. Try again in a moment.', 'error'); });
     }
 
     if (!uid || !getDb()) return null;
@@ -5178,11 +5386,13 @@
       ce('button', {
         className: 'cm-bell', onClick: function () { setOpen(!open); },
         'aria-expanded': open ? 'true' : 'false',
-        'aria-label': unread ? (unread + ' unread notifications') : 'Notifications'
+        'aria-label': unread ? (unread + ' unread notifications') : 'Notifications, none unread'
       },
         ce('span', { 'aria-hidden': 'true' }, '🔔'),
         ce('span', null, 'Alerts'),
-        unread ? ce('span', { className: 'cm-dot' }, String(unread)) : null),
+        // A muted 0 so "nothing new" is legible without opening the popover.
+        unread ? ce('span', { className: 'cm-dot' }, String(unread))
+               : ce('span', { className: 'cm-zero', 'aria-hidden': 'true' }, '0')),
 
       open ? ce('div', { className: 'cm-pop' },
         ce('div', { className: 'cm-actions', style: { padding: '4px 6px 8px' } },
@@ -5222,37 +5432,142 @@
     { id: 'boards',    label: 'Boards' }
   ];
 
+  /* ------------------------------------------------------------- cold start
+     An empty community is five consecutive dead-end tabs. This is the one
+     screen a founding cohort sees, so it leads with the payoff instead of the
+     ask, names the review loop, and offers a single primary action seeded from
+     a question this student personally got wrong. (DR05 Fix 2) */
+
+  /* `QUESTIONS` is a top-level `const` in the shell, i.e. a lexical global
+     rather than a property of window. Read it both ways. */
+  function appQuestions() {
+    try { if (window.QUESTIONS && window.QUESTIONS.length) return window.QUESTIONS; } catch (e) { /* ignore */ }
+    try { if (typeof QUESTIONS !== 'undefined' && QUESTIONS) return QUESTIONS; } catch (e) { /* ignore */ }
+    return [];
+  }
+
+  /** Turn one of the app's own questions into a QuestionSubmit draft.
+   *  `rationale` is deliberately left empty - writing it is the point. */
+  function seedFromMissed() {
+    var prog = MMx().getProgress ? MMx().getProgress() : null;
+    var missed = (prog && prog.missedQuestions) ? prog.missedQuestions : [];
+    if (!missed.length) return null;
+    var bank = appQuestions();
+    if (!bank.length) return null;
+    var id = missed[missed.length - 1], q = null, i;
+    for (i = 0; i < bank.length; i++) if (bank[i].id === id) { q = bank[i]; break; }
+    if (!q || !q.options || q.options.length < 2) return null;
+
+    var correct = [];
+    if (Object.prototype.toString.call(q.correct) === '[object Array]') {
+      correct = q.correct.slice();
+    } else if (typeof q.correct === 'number') {
+      correct = [q.correct];
+    }
+    var cat = 'Med Math';
+    for (i = 0; i < CATEGORIES.length; i++) if (CATEGORIES[i] === q.category) { cat = q.category; break; }
+    var diff = 'Medium';
+    for (i = 0; i < DIFFICULTIES.length; i++) if (DIFFICULTIES[i] === q.difficulty) { diff = q.difficulty; break; }
+
+    return {
+      text: clean(q.text, LIMIT.qtext),
+      type: 'multiple-choice',
+      options: q.options.slice(0, 8).map(function (o) { return clean(o, LIMIT.option); }),
+      correct: correct,
+      category: cat,
+      difficulty: diff,
+      topic: clean(q.formula || '', LIMIT.topic)
+    };
+  }
+
+  function FirstRun(props) {
+    var seed = props.seed;
+
+    function step(n, title, body) {
+      return ce('div', { className: 'cm-item' },
+        ce('div', { className: 'cm-item-main' },
+          ce('h3', { className: 'cm-item-title' }, n + ' ' + title),
+          ce('p', { className: 'cm-mini' }, body)));
+    }
+
+    return ce('div', { className: 'cm-wrap' },
+      ce('div', { className: 'cm-empty', style: { maxWidth: 620, margin: '0 auto 16px' } },
+        ce('div', { className: 'cm-empty-ico', 'aria-hidden': 'true' }, '◎'),
+        ce('div', { className: 'cm-empty-title' }, 'Your cohort has not started yet. You go first.'),
+        ce('p', { className: 'cm-empty-text' },
+          'This is where your cohort keeps the questions that actually showed up, the scenarios from ' +
+          'lab, and the answer to the thing nobody wants to ask out loud in clinical. It is empty ' +
+          'because it is new, not because it died.'),
+        ce('div', { className: 'cm-empty-actions' },
+          seed
+            ? ce('button', { className: 'btn btn-primary', onClick: function () { props.onSeedQuestion(seed); } },
+                'Post a question you got wrong')
+            : ce('button', { className: 'btn btn-primary', onClick: function () { props.onGo('questions'); } },
+                'Write the first question'),
+          ce('button', { className: 'btn btn-outline', onClick: function () { props.onGo('decks'); } },
+            'Publish a deck you already made')),
+        seed ? ce('p', { className: 'cm-mini', style: { marginTop: 8 } },
+          'We will start you from one you missed - you only have to write the rationale.') : null),
+
+      ce('div', { className: 'cm-grid' },
+        step('①', 'You post', 'A question, a scenario, or a deck. Live immediately, with your name on it.'),
+        step('②', 'Your cohort checks it',
+          'Classmates upvote what is right, comment on what is not, and flag a wrong keyed answer. ' +
+          'Nothing sits in a queue waiting for approval.'),
+        step('③', 'The good stuff rises',
+          'Top-voted questions become the practice set. Instructors can pin the best ones.'),
+        step('④', 'You get it back',
+          'Somebody else writes the OB deck so you do not have to. That is the whole trade.')),
+
+      ce('p', { className: 'cm-mini', style: { textAlign: 'center', marginTop: 14 } },
+        'Writing the rationale is the part that makes it stick. That is not a slogan - it is why this ' +
+        'is a question bank and not a link dump.'));
+  }
+
   function HomePanel(props) {
     var badges = useMyBadges();
+    var pres = props.presence;
     var counts = useAsync(function () {
       if (!getDb()) return null;
-      return Promise.all([
-        fetchPage(P.questions, 'createdAt', 1, null),
-        fetchPage(P.scenarios, 'createdAt', 1, null),
-        ref(PATH_THREADS) ? ref(PATH_THREADS).orderByChild('helpWanted').equalTo(true).limitToLast(5).once('value').then(snapToArray) : []
-      ]).then(function (r) {
-        return { hasQ: r[0].length > 0, hasS: r[1].length > 0,
-                 help: (r[2] || []).filter(function (t) { return !t.resolved && !t.removed; }) };
-      });
+      var r = ref(PATH_THREADS);
+      if (!r) return { help: [] };
+      return r.orderByChild('helpWanted').equalTo(true).limitToLast(5).once('value').then(snapToArray)
+        .then(function (rows) {
+          return { help: (rows || []).filter(function (t) { return !t.resolved && !t.removed; }) };
+        });
     }, [], !!getDb());
     var c = counts[0].data;
+    var help = (c && c.help) ? c.help : [];
+
+    // Nothing anywhere and nobody asking for help: this is a founding cohort.
+    var bare = pres && !pres.questions && !pres.scenarios && !pres.discuss &&
+               !pres.decks && !pres.groups && !help.length;
+
+    if (bare) {
+      return ce(FirstRun, {
+        seed: seedFromMissed(),
+        onGo: props.onGo,
+        onSeedQuestion: props.onSeedQuestion
+      });
+    }
 
     return ce('div', { className: 'cm-wrap' },
       ce(Banner, { icon: '◎' },
         ce('div', null,
-          ce('b', null, 'This place only works if people put things in it. '),
-          'Post the question you got wrong, publish the scenario from lab, answer one classmate. ' +
-          'Everything you contribute is attributed to you and earns badges.')),
+          ce('b', null, 'Write the rationale once and you stop forgetting it. '),
+          'Post the question you got wrong, publish the scenario from lab, answer one classmate - ' +
+          'and somebody else writes the OB deck so you do not have to. Everything you contribute ' +
+          'has your name on it.')),
 
       badges.length ? ce('div', { className: 'card' },
         ce('h3', null, 'Your badges'),
         ce('div', { className: 'cm-badge-row' },
           badges.map(function (id) { return ce(CommunityBadge, { key: id, id: id }); }))) : null,
 
-      (c && c.help && c.help.length) ? ce('div', { className: 'card' },
+      help.length ? ce('div', { className: 'card' },
         ce('h3', null, '⛑ Classmates stuck right now'),
         ce('div', { className: 'cm-list' },
-          c.help.slice(0, 3).map(function (t) {
+          help.slice(0, 3).map(function (t) {
             return ce('div', { key: t._id, className: 'cm-item', style: { padding: 12 } },
               ce('div', { className: 'cm-item-main' },
                 ce('h4', { className: 'cm-item-title', style: { fontSize: '0.95rem' } }, clean(t.title, LIMIT.title)),
@@ -5266,19 +5581,19 @@
         ce('button', { className: 'cm-item cm-clickable', style: { display: 'block', textAlign: 'left' },
           onClick: function () { props.onGo('questions'); } },
           ce('h3', { className: 'cm-item-title' }, '◇ Question bank'),
-          ce('p', { className: 'cm-mini' }, (c && c.hasQ) ? 'Browse, practice, or add one.' : 'Empty - write the first question.')),
+          ce('p', { className: 'cm-mini' }, (!pres || pres.questions) ? 'Browse, practice, or add one.' : 'Empty - write the first question.')),
         ce('button', { className: 'cm-item cm-clickable', style: { display: 'block', textAlign: 'left' },
           onClick: function () { props.onGo('scenarios'); } },
           ce('h3', { className: 'cm-item-title' }, '⚕ Scenario workshop'),
-          ce('p', { className: 'cm-mini' }, (c && c.hasS) ? 'Run a classmate\'s scenario or build one.' : 'Empty - build the first scenario.')),
+          ce('p', { className: 'cm-mini' }, (!pres || pres.scenarios) ? 'Run a classmate\'s scenario or build one.' : 'Empty - build the first scenario.')),
         ce('button', { className: 'cm-item cm-clickable', style: { display: 'block', textAlign: 'left' },
           onClick: function () { props.onGo('discuss'); } },
           ce('h3', { className: 'cm-item-title' }, '💬 Discussion'),
-          ce('p', { className: 'cm-mini' }, 'Ask what you are stuck on.')),
+          ce('p', { className: 'cm-mini' }, (!pres || pres.discuss) ? 'Ask what you are stuck on.' : 'Empty - ask the thing you cannot ask in clinical.')),
         ce('button', { className: 'cm-item cm-clickable', style: { display: 'block', textAlign: 'left' },
           onClick: function () { props.onGo('groups'); } },
           ce('h3', { className: 'cm-item-title' }, '◈ Study groups'),
-          ce('p', { className: 'cm-mini' }, 'One shared goal, visible progress.'))),
+          ce('p', { className: 'cm-mini' }, (!pres || pres.groups) ? 'One shared goal, visible progress.' : 'Empty - three or four people, one deadline.'))),
 
       ce(CommunityActivityFeed, { pageSize: 10, onStart: function () { props.onGo('questions'); } })
     );
@@ -5287,7 +5602,9 @@
   function CommunityHub(props) {
     var s0 = useState((props && props.tab) || 'home');
     var tab = s0[0], setTab = s0[1];
+    var s1 = useState(null); var seed = s1[0], setSeed = s1[1];
     var gate = useCommunityGate();
+    var hasDb = !!getDb();
 
     useEffect(function () {
       if (!getDb() || !myId()) return;
@@ -5299,15 +5616,36 @@
       }
     }, [myId(), !!getDb()]);
 
+    /* Five bounded one-row reads, once, on mount. Without this a student taps
+       through five consecutive empty tabs before learning the place is new.
+       (DR05 Fix 1) */
+    var presState = useAsync(function () {
+      if (!getDb()) return null;
+      return Promise.all([
+        fetchPage(P.questions, 'createdAt', 1, null),
+        fetchPage(P.scenarios, 'createdAt', 1, null),
+        fetchPage(PATH_THREADS, 'createdAt', 1, null),
+        fetchPage(P.decks, 'createdAt', 1, null),
+        fetchPage(P.groups, 'createdAt', 1, null)
+      ]).then(function (r) {
+        return {
+          questions: !!r[0].length, scenarios: !!r[1].length, discuss: !!r[2].length,
+          decks: !!r[3].length, groups: !!r[4].length
+        };
+      });
+    }, [hasDb, myId()], hasDb)[0];
+    var pres = presState.data;
+
     var tabs = TABS.slice();
     if (isAdmin()) tabs.push({ id: 'moderation', label: 'Moderation' });
 
-    if (!getDb()) {
+    /* Three different situations that used to share one headline: the database
+       is unreachable, nobody is signed in, and everything is fine but empty.
+       (DR09 MAJOR #6) */
+    if (!hasDb) {
       return ce('div', { className: 'cm-wrap' },
         ce('div', { className: 'cm-head' }, ce('div', null, ce('h2', null, 'Community'))),
-        ce(SignInWall, {
-          message: 'The community is offline right now - no database connection. Everything else in the app still works.'
-        }));
+        ce(OfflineWall, null));
     }
     if (!gate.signedIn) {
       return ce('div', { className: 'cm-wrap' },
@@ -5315,10 +5653,17 @@
         ce(SignInWall, null));
     }
 
+    function goSeed(s) {
+      setSeed(s);
+      setTab('questions');
+    }
+
     var panel = null;
-    if (tab === 'home')       panel = ce(HomePanel, { onGo: setTab });
-    else if (tab === 'questions')  panel = ce(CommunityQuestionBank, null);
-    else if (tab === 'scenarios')  panel = ce(CommunityScenarioWorkshop, null);
+    if (tab === 'home') {
+      panel = ce(HomePanel, { onGo: setTab, presence: pres, onSeedQuestion: goSeed });
+    } else if (tab === 'questions') {
+      panel = ce(CommunityQuestionBank, { seed: seed, onSeedUsed: function () { setSeed(null); } });
+    } else if (tab === 'scenarios')  panel = ce(CommunityScenarioWorkshop, null);
     else if (tab === 'discuss')    panel = ce(CommunityDiscussionBoard, null);
     else if (tab === 'groups')     panel = ce(CommunityStudyGroups, null);
     else if (tab === 'decks')      panel = ce(CommunityDecks, null);
@@ -5344,11 +5689,15 @@
 
       ce('div', { className: 'cm-tabs', role: 'tablist', 'aria-label': 'Community sections' },
         tabs.map(function (t) {
+          var empty = !!(pres && pres[t.id] === false);
           return ce('button', {
-            key: t.id, className: 'cm-tab', role: 'tab',
+            key: t.id, className: 'cm-tab' + (empty ? ' cm-tab-empty' : ''), role: 'tab',
             'aria-selected': tab === t.id ? 'true' : 'false',
             onClick: function () { setTab(t.id); }
-          }, t.label);
+          },
+            t.label,
+            empty ? ce('span', { className: 'cm-tab-count' }, '0') : null,
+            empty ? ce('span', { className: 'cm-sr' }, ' (nothing here yet)') : null);
         })),
 
       panel

@@ -2,7 +2,7 @@
  * MedMaster - js/ai.js
  * Client AI layer. Implements window.MM.ai per MODULE_CONTRACT.md.
  *
- * The Anthropic API key lives ONLY in the Netlify function (netlify/functions/ai.js).
+ * The OpenRouter API key lives ONLY in the Netlify function (netlify/functions/ai.js).
  * This file never sees it. Every call goes to POST /api/ai with the signed-in
  * user's Firebase ID token; the server verifies it and enforces tier + quota.
  *
@@ -12,23 +12,53 @@
   'use strict';
 
   /* ==========================================================================
-   * MODEL CATALOG
+   * MODEL CATALOG  (OpenRouter slugs)
    * --------------------------------------------------------------------------
-   * OWNER: this is the list Kyle edits when Anthropic ships new models.
-   * Add or remove entries here, then update the per-tier model lists in the
-   * Admin Panel (AI tab). `class` is only a label for the UI: 'free' | 'paid'.
+   * OWNER: every id here is an OpenRouter model slug ("vendor/model"), not an
+   * Anthropic model name. The paid list below is ranked by healthcare benchmark
+   * performance. `class` is only a label for the UI: 'free' | 'paid'.
    * Nothing else in the app hardcodes a model id.
+   *
+   * !! IMPORTANT — UNVERIFIED SLUGS !!
+   * Only these two were confirmed to exist in OpenRouter's live catalog:
+   *     deepseek/deepseek-v4-flash-0731
+   *     z-ai/glm-5.2
+   * The other three (google/gemini-3.1-flash-lite, deepseek/deepseek-v4-flash,
+   * google/gemini-3-flash-preview) are UNVERIFIED and may 404 with
+   * "model does not exist on OpenRouter". Open Admin Panel -> AI -> Models and
+   * click "Load models from OpenRouter" — anything missing from the live catalog
+   * is flagged there before a student ever hits it.
    * ======================================================================== */
   var MODEL_CATALOG = [
-    { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', class: 'free',
-      description: 'Fast and efficient. Great for quick questions and practice.' },
-    { id: 'claude-sonnet-5', name: 'Sonnet 5', class: 'paid',
-      description: 'Balanced speed and depth. Strong clinical reasoning.' },
-    { id: 'claude-opus-5', name: 'Opus 5', class: 'paid',
-      description: 'Deepest reasoning. Best for complex case debriefs.' },
-    { id: 'claude-fable-5', name: 'Fable 5', class: 'paid',
-      description: 'Highly expressive. Best for realistic patient roleplay.' }
+    { id: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash (0731)', class: 'paid',
+      description: 'Top-ranked on healthcare benchmarks. Fast and strong clinical reasoning.' },
+    { id: 'google/gemini-3.1-flash-lite',    name: 'Gemini 3.1 Flash Lite',    class: 'paid',
+      description: 'Very fast, low cost, strong healthcare performance.' },
+    { id: 'deepseek/deepseek-v4-flash',      name: 'DeepSeek V4 Flash',        class: 'paid',
+      description: 'Rolling latest DeepSeek V4 Flash.' },
+    { id: 'z-ai/glm-5.2',                    name: 'GLM 5.2',                  class: 'paid',
+      description: 'Strong clinical reasoning and long-context recall.' },
+    { id: 'google/gemini-3-flash-preview',   name: 'Gemini 3 Flash (Preview)', class: 'paid',
+      description: 'Preview model. Fast with solid healthcare accuracy.' }
   ];
+
+  // Confirmed present in OpenRouter's live catalog. Everything else in
+  // MODEL_CATALOG is a best guess until the admin panel validates it.
+  var VERIFIED_MODEL_IDS = ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'];
+
+  /* --------------------------------------------------------------------------
+   * FREE TIER
+   * OpenRouter's ':free' slugs rotate constantly — a hardcoded guess would 404
+   * within weeks. So the free tier ships with NO models and this hint, and the
+   * owner picks real ones from the live catalog in Admin Panel -> AI -> Models.
+   * While the list is empty, isAvailable() is false for free users and the UI
+   * says "not configured yet" rather than "out of messages".
+   * ------------------------------------------------------------------------ */
+  var FREE_MODEL_HINT =
+    'No free models are assigned yet. Open Admin Panel -> AI -> Models, load the live ' +
+    'OpenRouter catalog, filter to free-only, and assign a couple to the Free tier. ' +
+    'The ones Kyle wanted were Qwen3 235B, DeepSeek-R1 (free), and NVIDIA Nemotron 3 Ultra (free) — ' +
+    'pick whichever of those actually appear in the live list, because ":free" slugs come and go.';
 
   /* --------------------------------------------------------------------------
    * DEFAULT TIER CONFIG
@@ -39,10 +69,18 @@
   var DEFAULT_AI_CONFIG = {
     enabled: true,
     allowModelChoice: false,
+    freeModelHint: FREE_MODEL_HINT,
+    // Daily site-wide dollar ceiling. 'warn' only reports it in the admin panel;
+    // 'block' makes the Netlify function refuse new calls once the day is over.
+    softCapUsd: 2,
+    capMode: 'warn',
     tiers: {
-      free:       { models: ['claude-haiku-4-5-20251001'], dailyLimit: 25, maxTokens: 1024 },
-      plus:       { models: ['claude-haiku-4-5-20251001', 'claude-sonnet-5'], dailyLimit: 200, maxTokens: 2048 },
-      pro:        { models: ['claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5'], dailyLimit: 1000, maxTokens: 4096 },
+      // Free is 5 messages a day, not 0. A zero is a wall; five is enough to see
+      // what the tutor actually does before deciding it is worth money. It only
+      // becomes spendable once the owner assigns a free model to the tier.
+      free:       { models: [], freeModelHint: FREE_MODEL_HINT, dailyLimit: 5, maxTokens: 1024 },
+      plus:       { models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'], dailyLimit: 150, maxTokens: 2048 },
+      pro:        { models: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-3.1-flash-lite', 'deepseek/deepseek-v4-flash', 'z-ai/glm-5.2', 'google/gemini-3-flash-preview'], dailyLimit: 600, maxTokens: 4096 },
       instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192 }
     }
   };
@@ -51,7 +89,66 @@
   var ENDPOINT      = '/api/ai';
   var QUOTA_TZ      = 'America/New_York'; // must match the Netlify function
   var TIER_ORDER    = ['free', 'plus', 'pro', 'instructor'];
+  var TIER_LABEL    = { free: 'Free', plus: 'Plus', pro: 'Pro', instructor: 'Instructor' };
   var LS_MODEL_KEY  = 'mm.ai.model.';
+  var LS_PLAN_SEEN  = 'mm.plan.dismissed';
+  var PLAN_QUIET_MS = 30 * 24 * 60 * 60 * 1000; // a dismissed upgrade prompt stays dismissed for 30 days
+
+  /* ==========================================================================
+   * TIER FEATURE MATRIX
+   * --------------------------------------------------------------------------
+   * Driven by marginal cost, not by what is easiest to withhold.
+   *
+   *   a tutor message      = 1 upstream call  @ ~1500 tokens
+   *   a Live Clinical Scenario run = 10-20 sequential calls + an AI debrief,
+   *                          i.e. 15-25x a tutor message
+   *
+   * That single fact decides the whole split: the generative scenario is the
+   * only genuinely expensive thing in the product, so it is the only thing
+   * gated hard. Everything hand-authored - 1,200+ questions, all 18 written
+   * simulations with vitals timelines and debriefs, flashcards, the med-admin
+   * trainer, X-Ray mode, analytics, the community - costs nothing per use and
+   * is free forever. A student who never pays a cent can pass their dosage
+   * calculation exam with this app; that is the test this split has to survive.
+   *
+   * `true` = included, `false` = not in this plan, {perWeek:n} = included with
+   * a stated cap. Nothing here may ever be phrased as something the student
+   * loses; it is only ever what a plan adds.
+   * ======================================================================== */
+  var AI_FEATURES = [
+    { id: 'tutor',    label: 'AI Tutor',
+      desc: 'A tutor that works problems with you - Socratic questions, a rationale for every distractor, NCLEX-style reasoning on any topic in the bank.',
+      tiers: { free: true, plus: true, pro: true, instructor: true } },
+    { id: 'debrief',  label: 'AI debrief on a written simulation',
+      desc: 'After one of the 18 written sims, an instructor-style debrief of what you actually did. The scored debrief itself is free either way.',
+      tiers: { free: false, plus: true, pro: true, instructor: true } },
+    { id: 'sbar',     label: 'SBAR grading and "ask the instructor"',
+      desc: 'Your handoff report graded element by element, and free-text questions inside the med-admin trainer.',
+      tiers: { free: false, plus: true, pro: true, instructor: true } },
+    { id: 'patient',  label: 'Live Clinical Scenario',
+      desc: 'A generated patient you talk to in free text, who changes as you treat them. It is 15-25 times the cost of a tutor message, which is the only reason it is capped.',
+      tiers: { free: false, plus: { perWeek: 2 }, pro: true, instructor: true } },
+    { id: 'voice',    label: 'Voice in and out',
+      desc: 'Speak to the tutor and the patient, and hear them answer.',
+      tiers: { free: false, plus: false, pro: true, instructor: true } },
+    { id: 'questions', label: 'AI question generation and model choice',
+      desc: 'Generate practice items on any topic, and pick which model answers you.',
+      tiers: { free: false, plus: false, pro: true, instructor: true } },
+    { id: 'cohort',   label: 'Cohort roster, assigned scenarios, student debriefs',
+      desc: 'Instructor tools for running a group.',
+      tiers: { free: false, plus: false, pro: false, instructor: true } }
+  ];
+
+  // What every plan includes that costs nothing per use. Listed first and in
+  // full on purpose: the honest thing should also be the first thing read.
+  var ALWAYS_FREE = [
+    'The complete question bank - guided, challenge and test modes',
+    'All 18 written clinical simulations, with vitals timelines and scored debriefs',
+    'Flashcards, the formula creator and X-Ray mode',
+    'The med-admin trainer (MAR, injections, rubric practice)',
+    'Your dashboard, weak areas, missed bank and streaks',
+    'Community, study rooms and the leaderboard'
+  ];
 
   /* ==========================================================================
    * PERSONAS
@@ -263,7 +360,19 @@
   var subscribers = [];
 
   function cloneConfig(c) {
-    var out = { enabled: c.enabled !== false, allowModelChoice: c.allowModelChoice === true, tiers: {} };
+    var out = {
+      enabled: c.enabled !== false,
+      allowModelChoice: c.allowModelChoice === true,
+      freeModelHint: typeof c.freeModelHint === 'string' ? c.freeModelHint : FREE_MODEL_HINT,
+      softCapUsd: typeof c.softCapUsd === 'number' ? c.softCapUsd : 2,
+      capMode: c.capMode === 'block' ? 'block' : 'warn',
+      // Tier names the OWNER has actually written. Empty until Firebase answers.
+      // This is the discriminator between "your plan excludes this" (a real
+      // product boundary) and "the owner has not finished setting this up"
+      // (never, under any circumstances, an upsell).
+      explicitTiers: {},
+      tiers: {}
+    };
     var k;
     for (k in c.tiers) {
       if (!Object.prototype.hasOwnProperty.call(c.tiers, k)) continue;
@@ -272,6 +381,9 @@
         dailyLimit: c.tiers[k].dailyLimit,
         maxTokens: c.tiers[k].maxTokens
       };
+      if (typeof c.tiers[k].freeModelHint === 'string') {
+        out.tiers[k].freeModelHint = c.tiers[k].freeModelHint;
+      }
     }
     return out;
   }
@@ -284,11 +396,29 @@
 
   function mm() { return window.MM || {}; }
 
+  /**
+   * The Firebase Auth uid, and ONLY that.
+   *
+   * This used to fall back to MM.myId, which is the anonymous community id and
+   * survives sign-out. The fallback made 'signed-out' unreachable: an anonymous
+   * community user looked signed in to the whole AI layer and got the wrong lock
+   * screen, while every server call still 401'd because the ID token was missing.
+   * It also meant tier and usage listeners bound to a uid the server never
+   * writes. Anything that legitimately wants a per-device id uses localId().
+   */
   function currentUid() {
     var m = mm();
     if (m.authUser && m.authUser.uid) return m.authUser.uid;
-    if (m.myId) return m.myId;
     return '';
+  }
+
+  // Per-device key for remembering a model choice. Never used for tier, usage,
+  // quota or anything the server has an opinion about.
+  function localId() {
+    var m = mm();
+    if (m.authUser && m.authUser.uid) return m.authUser.uid;
+    if (m.myId) return m.myId;
+    return 'anon';
   }
 
   function currentEmail() {
@@ -337,10 +467,16 @@
     if (!raw || typeof raw !== 'object') return cfg;
     cfg.enabled = raw.enabled !== false;
     cfg.allowModelChoice = raw.allowModelChoice === true;
+    if (typeof raw.freeModelHint === 'string' && raw.freeModelHint) cfg.freeModelHint = raw.freeModelHint;
+    if (typeof raw.softCapUsd === 'number' && isFinite(raw.softCapUsd) && raw.softCapUsd >= 0) {
+      cfg.softCapUsd = raw.softCapUsd;
+    }
+    if (raw.capMode === 'block' || raw.capMode === 'warn') cfg.capMode = raw.capMode;
     var srcTiers = (raw.tiers && typeof raw.tiers === 'object') ? raw.tiers : {};
     var name;
     for (name in srcTiers) {
       if (!Object.prototype.hasOwnProperty.call(srcTiers, name)) continue;
+      cfg.explicitTiers[name] = true;
       var st = srcTiers[name] || {};
       var base = cfg.tiers[name] || { models: [], dailyLimit: 0, maxTokens: 1024 };
       var models = base.models;
@@ -356,6 +492,8 @@
         dailyLimit: typeof st.dailyLimit === 'number' ? st.dailyLimit : base.dailyLimit,
         maxTokens: typeof st.maxTokens === 'number' ? st.maxTokens : base.maxTokens
       };
+      var hint = typeof st.freeModelHint === 'string' ? st.freeModelHint : base.freeModelHint;
+      if (typeof hint === 'string') cfg.tiers[name].freeModelHint = hint;
     }
     return cfg;
   }
@@ -369,7 +507,12 @@
       if (rec.expiresAt && typeof rec.expiresAt === 'number' && Date.now() > rec.expiresAt) t = 'free';
     } else if (typeof rec === 'string') {
       t = rec;
-    } else if (mm().userTier) {
+    } else if (!state.tierLoaded && mm().userTier) {
+      // Only trust the shell's hint BEFORE Firebase has answered. This module
+      // writes window.MM.userTier itself, so reading it back after a load turned
+      // it into a feedback loop: sign in as a lower-tier account and the old
+      // account's tier stuck, because the fresh (empty) record fell back to the
+      // stale value this very function had written a moment earlier.
       t = mm().userTier;
     }
     if (!state.config.tiers[t]) t = 'free';
@@ -421,6 +564,11 @@
     state.boundUid = want;
     state.tierRecord = null;
     state.tierLoaded = false;
+    // Drop the shell's cached tier when the account changes, or the previous
+    // user's plan leaks into the next one's first render.
+    // ('free' rather than null: the shell declares this as a string and reads it
+    // for a plan label, so the type has to survive the reset.)
+    try { if (window.MM) window.MM.userTier = 'free'; } catch (e) { /* noop */ }
     state.usedToday = 0;
     state.usageLoaded = false;
     state.selectedModel = null;
@@ -454,6 +602,14 @@
   function attach() {
     if (!window.MM) window.MM = {};
     if (window.MM.ai !== api) window.MM.ai = api;
+    // Re-expose the optional tier components if the shell replaced window.MM,
+    // and pick them up late if React finished loading after this module did.
+    if (!window.MM.tierUI) {
+      try {
+        var ui = tierUI();
+        if (ui) window.MM.tierUI = ui;
+      } catch (e) { /* noop */ }
+    }
   }
 
   /* ==========================================================================
@@ -472,14 +628,55 @@
     return e;
   }
 
+  /**
+   * ONE error map for the whole app (DR09: four divergent copies of the same six
+   * codes shipped four different sentences for the same condition). Exported as
+   * MM.ai.FRIENDLY so ai-tutor / ai-scenario / sim-engine / medadmin / community
+   * can delete their private copies.
+   *
+   * Rule for every string here: say what happened, say whether the student can
+   * do anything about it, and name what still works. Never blame the student for
+   * a server-side condition.
+   */
   var FRIENDLY = {
-    'no-auth': 'Sign in to use the AI tutor.',
-    'tier-denied': 'That model is not included in your plan.',
-    'quota-exceeded': 'You have used all of your AI messages for today.',
-    'ai-disabled': 'AI features are turned off right now.',
-    'network': 'Could not reach the AI service. Check your connection.',
+    'no-auth': 'You need to be signed in for this. Your work here is saved - signing in will not lose it.',
+    'tier-denied': 'This one is not included in your plan. Everything else still works.',
+    'quota-exceeded': 'You have used all of today\'s AI messages. They reset at midnight Eastern.',
+    'ai-disabled': 'AI is switched off site-wide right now. The 18 written simulations and everything else still work.',
+    'network': 'Could not reach the AI. Your message is still here - try again when you are back on a connection.',
     'server': 'Something went wrong on our end. Try again in a moment.'
   };
+
+  /**
+   * The server diagnoses OpenRouter failures precisely (out of credits, bad slug,
+   * provider down) and forwards the diagnosis as `reason`. Every consuming UI used
+   * to throw both the message and the reason away and print "something went wrong",
+   * which is the difference between a student blaming themselves and a student
+   * knowing to wait. Exported so nobody has to re-derive it.
+   */
+  var REASON_TEXT = {
+    'insufficient-credits': 'AI is paused for everyone right now - the account funding it is out of credits. This is not your daily limit, and nothing else is affected.',
+    'spend-cap': 'AI is paused for the rest of today because the site hit its daily AI budget. It comes back at midnight Eastern.',
+    'unknown-model': 'The AI model this feature uses is misconfigured, so it cannot answer. The site owner has been given the details.',
+    'bad-key': 'The AI service is not accepting the site\'s key right now. This is a setup problem on our side, not anything you did.',
+    'upstream-rate-limit': 'The AI provider is throttling this model. Try again in a minute.',
+    'provider-down': 'The AI provider is overloaded. Try again in a minute, or switch models.',
+    'no-models-configured': 'No AI model has been assigned to your plan yet. This is a setup step on our side.',
+    'bad-request': 'That request was not valid for the selected model.'
+  };
+
+  /**
+   * MM.ai.errorMessage(err) -> the best sentence available for an error, in
+   * order: the server's own message, then the reason map, then the code map.
+   */
+  function errorMessage(e) {
+    if (!e) return '';
+    if (typeof e === 'string') return FRIENDLY[e] || e;
+    if (e.message) return e.message;
+    if (e.reason && REASON_TEXT[e.reason]) return REASON_TEXT[e.reason];
+    if (e.code && FRIENDLY[e.code]) return FRIENDLY[e.code];
+    return FRIENDLY.server;
+  }
 
   function codeFromStatus(status) {
     if (status === 401) return 'no-auth';
@@ -504,6 +701,10 @@
       if (typeof data.limit === 'number') extra.limit = data.limit;
       if (typeof data.resetsAt === 'number') extra.resetsAt = data.resetsAt;
       if (data.tier) extra.tier = data.tier;
+      // OpenRouter-specific detail so callers can tell "owner is out of credits"
+      // or "that model slug does not exist" apart from a generic server error.
+      if (typeof data.reason === 'string') extra.reason = data.reason;
+      if (typeof data.model === 'string') extra.model = data.model;
     }
     extra.status = res.status;
     return mkErr(code, msg, extra);
@@ -534,7 +735,38 @@
     return window.MM_AI_ENDPOINT ? window.MM_AI_ENDPOINT : ENDPOINT;
   }
 
-  // Parse a buffered or streamed SSE body, firing onToken for each text delta.
+  // Pull the text out of one OpenAI-style streaming choice.
+  // delta.content is normally a string; a few providers send an array of parts.
+  function deltaText(choice) {
+    if (!choice) return '';
+    var d = choice.delta;
+    if (d) {
+      if (typeof d.content === 'string') return d.content;
+      if (Array.isArray(d.content)) {
+        var out = '';
+        for (var i = 0; i < d.content.length; i++) {
+          var part = d.content[i];
+          if (part && typeof part.text === 'string') out += part.text;
+        }
+        return out;
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Parse a buffered or streamed SSE body, firing onToken for each text delta.
+   *
+   * OpenRouter speaks OpenAI-style SSE, NOT Anthropic's typed events:
+   *   - every frame is `data: {json}` whose text lives at choices[0].delta.content
+   *     (there is no content_block_delta / delta.text and no evt.type at all)
+   *   - the stream terminates with the literal `data: [DONE]`
+   *   - OpenRouter interleaves SSE comment lines (": OPENROUTER PROCESSING")
+   *     as keepalives while a slow provider spins up. They are not events; a
+   *     parser that does not skip them will choke, so any line starting with
+   *     ':' is dropped here.
+   *   - errors arrive as a frame with an `error` object rather than a typed event.
+   */
   function consumeSSE(res, onToken) {
     var full = '';
     var buffer = '';
@@ -545,6 +777,7 @@
       var dataStr = '';
       for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
+        if (line.charAt(0) === ':') continue; // ": OPENROUTER PROCESSING" keepalive
         if (line.indexOf('data:') === 0) {
           dataStr += line.slice(5).replace(/^ /, '');
         }
@@ -552,15 +785,27 @@
       if (!dataStr || dataStr === '[DONE]') return;
       var evt = null;
       try { evt = JSON.parse(dataStr); } catch (e) { return; }
-      if (!evt || !evt.type) return;
-      if (evt.type === 'content_block_delta') {
-        var d = evt.delta;
-        if (d && typeof d.text === 'string' && d.text.length) {
-          full += d.text;
-          if (onToken) { try { onToken(d.text, full); } catch (e2) { /* noop */ } }
+      if (!evt || typeof evt !== 'object') return;
+
+      if (evt.error) {
+        var em = (evt.error && typeof evt.error.message === 'string') ? evt.error.message : FRIENDLY.server;
+        sawError = mkErr('server', em);
+        return;
+      }
+
+      var choices = Array.isArray(evt.choices) ? evt.choices : [];
+      for (var c = 0; c < choices.length; c++) {
+        var ch = choices[c];
+        var piece = deltaText(ch);
+        // Some providers send the whole answer as a message on the final frame
+        // instead of streaming deltas. Only take it if nothing streamed at all.
+        if (!piece && !full && ch && ch.message && typeof ch.message.content === 'string') {
+          piece = ch.message.content;
         }
-      } else if (evt.type === 'error') {
-        sawError = mkErr('server', FRIENDLY.server);
+        if (piece) {
+          full += piece;
+          if (onToken) { try { onToken(piece, full); } catch (e2) { /* noop */ } }
+        }
       }
     }
 
@@ -605,13 +850,35 @@
     return pump();
   }
 
+  // The server's own upstream cap is 120s, so nothing legitimate can take longer
+  // than that plus a little slack. Before this, a stalled connection left every
+  // caller waiting forever with no failure path at all (DR09).
+  var REQUEST_TIMEOUT_MS = 130000;
+
   function post(payload) {
-    return fetch(endpoint(), {
+    var ctl = null, timer = null;
+    var opts = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    }).catch(function (e) {
-      throw mkErr('network', FRIENDLY.network, { cause: String(e) });
+    };
+    try {
+      if (typeof AbortController === 'function') {
+        ctl = new AbortController();
+        opts.signal = ctl.signal;
+        timer = setTimeout(function () { try { ctl.abort(); } catch (e) { /* noop */ } }, REQUEST_TIMEOUT_MS);
+      }
+    } catch (e) { ctl = null; }
+
+    return fetch(endpoint(), opts).then(function (res) {
+      if (timer) clearTimeout(timer);
+      return res;
+    }, function (e) {
+      if (timer) clearTimeout(timer);
+      var aborted = e && (e.name === 'AbortError' || String(e).indexOf('abort') !== -1);
+      throw mkErr('network',
+        aborted ? 'The AI did not answer in time. Your message is still here - try again.' : FRIENDLY.network,
+        { cause: String(e), timedOut: !!aborted });
     });
   }
 
@@ -654,7 +921,11 @@
         messages: messages,
         maxTokens: maxTokens,
         temperature: typeof o.temperature === 'number' ? o.temperature : 1,
-        stream: wantStream
+        stream: wantStream,
+        // Attribution only. The server files the dollar cost of this call under
+        // this label so the owner can see WHICH part of the app is spending, not
+        // just that something is. It can never widen what the caller may do.
+        feature: typeof o.feature === 'string' && o.feature ? o.feature : 'other'
       };
 
       function send(streaming) {
@@ -713,10 +984,287 @@
     if (state.config.enabled === false) return false;
     var rules = tierRules();
     var models = allowedModelIds();
+    // No models assigned to this tier (the free tier ships this way until the
+    // owner picks real OpenRouter free slugs) — AI is NOT configured, not "used up".
     if (!models.length) return false;
     if (typeof rules.dailyLimit === 'number' && rules.dailyLimit === 0) return false;
     if (typeof rules.dailyLimit === 'number' && rules.dailyLimit > 0 && state.usedToday >= rules.dailyLimit) return false;
     return true;
+  }
+
+  /* --------------------------------------------------------------- tier + plans */
+
+  function tierLabel(t) { return TIER_LABEL[t] || String(t || 'Free'); }
+
+  function tierIndex(t) {
+    var i = TIER_ORDER.indexOf(t);
+    return i === -1 ? 0 : i;
+  }
+
+  function featureDef(id) {
+    for (var i = 0; i < AI_FEATURES.length; i++) {
+      if (AI_FEATURES[i].id === id) return AI_FEATURES[i];
+    }
+    return null;
+  }
+
+  /**
+   * MM.ai.featureAccess(featureId [, tier]) ->
+   *   { id, label, allowed, cap, tier, tierLabel, neededTier, neededTierLabel }
+   *
+   * `cap` is {perWeek:n} when the plan includes the feature with a stated cap.
+   * `neededTier` is the CHEAPEST plan that includes it, or '' when nothing does.
+   * Unknown ids are allowed - a feature nobody declared is not a paid feature.
+   */
+  function featureAccess(featureId, tier) {
+    var t = tier || resolveTier();
+    var def = featureDef(featureId);
+    if (!def) {
+      return { id: featureId, label: '', allowed: true, cap: null, tier: t,
+               tierLabel: tierLabel(t), neededTier: '', neededTierLabel: '' };
+    }
+    var v = def.tiers[t];
+    var allowed = v === true || (v && typeof v === 'object');
+    var need = '';
+    for (var i = 0; i < TIER_ORDER.length; i++) {
+      var vv = def.tiers[TIER_ORDER[i]];
+      if (vv === true || (vv && typeof vv === 'object')) { need = TIER_ORDER[i]; break; }
+    }
+    // Never point a student at a plan they already have or are above.
+    if (need && tierIndex(need) <= tierIndex(t) && !allowed) need = '';
+    return {
+      id: def.id, label: def.label, desc: def.desc,
+      allowed: allowed,
+      cap: (v && typeof v === 'object') ? v : null,
+      tier: t, tierLabel: tierLabel(t),
+      neededTier: need, neededTierLabel: need ? tierLabel(need) : ''
+    };
+  }
+
+  function canUseFeature(featureId, tier) { return featureAccess(featureId, tier).allowed; }
+
+  /**
+   * MM.ai.getPlans() -> the plan comparison, Free first and fullest.
+   * Pure data; the caller decides how to draw it. `priceNote` is deliberately
+   * not a number - nothing in this codebase knows the price, and inventing one
+   * on a screen a student might act on would be worse than saying so.
+   */
+  function getPlans() {
+    return TIER_ORDER.map(function (t) {
+      return {
+        id: t,
+        label: tierLabel(t),
+        current: t === resolveTier(),
+        dailyMessages: (function () {
+          var r = state.config.tiers[t];
+          var n = r && typeof r.dailyLimit === 'number' ? r.dailyLimit : 0;
+          return n < 0 ? 'Unlimited' : n + ' AI messages a day';
+        })(),
+        features: AI_FEATURES.map(function (f) {
+          var v = f.tiers[t];
+          return {
+            id: f.id, label: f.label, desc: f.desc,
+            included: v === true || (v && typeof v === 'object'),
+            cap: (v && typeof v === 'object') ? v : null
+          };
+        }),
+        alwaysIncluded: t === 'free' ? ALWAYS_FREE.slice() : []
+      };
+    });
+  }
+
+  // A 30-day durable dismissal for any upgrade prompt. No re-prompt, no nag.
+  function isPlanPromptDismissed() {
+    try {
+      var v = parseInt(window.localStorage.getItem(LS_PLAN_SEEN), 10);
+      return isFinite(v) && (Date.now() - v) < PLAN_QUIET_MS;
+    } catch (e) { return false; }
+  }
+
+  function dismissPlanPrompt() {
+    try { window.localStorage.setItem(LS_PLAN_SEEN, String(Date.now())); } catch (e) { /* noop */ }
+    notify();
+    return true;
+  }
+
+  /**
+   * MM.ai.getPlanSummary() -> what the student is on, always answerable, even
+   * when AI is completely unavailable to them.
+   *
+   * The old tier badge rendered only when AI was available, so the one group who
+   * most needed to know their plan - locked-out free students - were the only
+   * group never told.
+   */
+  function getPlanSummary() {
+    var t = resolveTier();
+    var u = getUsage();
+    return {
+      tier: t,
+      label: tierLabel(t),
+      isFree: t === 'free',
+      usage: u,
+      showsUsage: u.limit > 0,
+      alwaysIncluded: ALWAYS_FREE.slice(),
+      blurb: t === 'free'
+        ? 'The full question bank, all 18 written simulations, flashcards, the med-admin trainer and the community are yours on Free. They always will be.'
+        : 'Thanks for supporting MedMaster.'
+    };
+  }
+
+  /* ------------------------------------------------------------ lock states */
+
+  /**
+   * MM.ai.unavailableReason([featureId]) -> null when the thing works, otherwise
+   *   { code, title, message, paywall, plan, planLabel, ... }
+   *
+   * The codes are deliberately five, not four, because the old 'not-configured'
+   * covered two structurally opposite situations:
+   *
+   *   setup-pending  the owner has not finished configuring AI. NEVER carries an
+   *                  upgrade CTA - charging a student to fix our own unfinished
+   *                  setup is a dark pattern, full stop.
+   *   plan-limit     the capability genuinely is not in this plan. This is the
+   *                  only state that may show a plan comparison. On the wire the
+   *                  server calls it 'tier-denied'; `errorCode` carries that so
+   *                  the two names never drift apart again.
+   *   quota-exceeded today's allowance is spent. Reset time only. No upsell -
+   *                  a counter used to nag is where "5 free messages" would stop
+   *                  being a demonstration and start being a trap.
+   *   ai-disabled    switched off site-wide.
+   *   signed-out     no signed-in account.
+   *
+   * The discriminator between setup-pending and plan-limit is isConfigLoaded()
+   * plus an explicit tier entry in the loaded config, exactly as DR10 requires:
+   * if we cannot prove the owner meant to exclude you, we do not ask you for
+   * money. `legacyCode` keeps older consumers working.
+   */
+  function unavailableReason(featureId) {
+    var tier = resolveTier();
+    var label = tierLabel(tier);
+    var rules = tierRules(tier);
+
+    if (!currentUid()) {
+      return {
+        code: 'signed-out', legacyCode: 'signed-out', paywall: false,
+        plan: tier, planLabel: label,
+        title: 'Sign in to use the AI tutor',
+        message: 'You need to be signed in for this - it is how your daily allowance is counted. ' +
+                 'Your work here is saved; signing in will not lose it.',
+        actions: [{ id: 'signin', label: 'Sign in', primary: true }]
+      };
+    }
+
+    if (state.config.enabled === false && !isOwner()) {
+      return {
+        code: 'ai-disabled', legacyCode: 'ai-disabled', paywall: false,
+        plan: tier, planLabel: label,
+        title: 'AI is switched off right now',
+        // Kept deliberately self-contained. ai-tutor.js appends its own copy of
+        // this closing sentence; the dedupe is handled on that side.
+        message: 'The site owner has AI features turned off. Everything else in MedMaster still works.',
+        actions: [{ id: 'sims', label: 'Open the 18 written simulations' }]
+      };
+    }
+
+    // A named capability the plan does not include (AI debrief, Live Scenario,
+    // voice...). Checked before the generic quota so the student gets the
+    // specific answer rather than a message count.
+    if (featureId) {
+      var acc = featureAccess(featureId, tier);
+      if (!acc.allowed) {
+        return planLimitReason(acc, tier, label);
+      }
+    }
+
+    if (isAvailable()) return null;
+
+    // Nothing assigned to this tier at all -> ALWAYS a setup problem, never a
+    // paywall. If the owner's free model slugs 404'd, showing an upgrade prompt
+    // here would be charging for our own breakage.
+    if (!allowedModelIds().length) {
+      return {
+        code: 'setup-pending', legacyCode: 'not-configured', paywall: false,
+        plan: tier, planLabel: label,
+        title: 'The AI tutor is not switched on yet',
+        message: 'We are still setting up the AI tutor for the ' + label + ' plan. ' +
+                 'It is not a limit you have hit and it is not anything you did. ' +
+                 'Nothing else is affected: your question bank, all 18 simulations, flashcards ' +
+                 'and the med-admin trainer are fully open.',
+        actions: [{ id: 'sims', label: 'Back to studying', primary: true }]
+      };
+    }
+
+    if (typeof rules.dailyLimit === 'number' && rules.dailyLimit === 0) {
+      // Zero messages. Only a product boundary if the owner actually wrote this
+      // tier; otherwise it is a default we are looking at, which is setup.
+      var deliberate = state.configLoaded === true && state.config.explicitTiers &&
+                       state.config.explicitTiers[tier] === true;
+      if (!deliberate) {
+        return {
+          code: 'setup-pending', legacyCode: 'not-configured', paywall: false,
+          plan: tier, planLabel: label,
+          title: 'The AI tutor is not switched on yet',
+          message: 'The AI tutor has not been set up for the ' + label + ' plan yet. ' +
+                   'It is not a limit you have hit. Everything else in MedMaster is open as usual.',
+          actions: [{ id: 'sims', label: 'Back to studying', primary: true }]
+        };
+      }
+      return planLimitReason(featureAccess(featureId || 'tutor', tier), tier, label);
+    }
+
+    return {
+      code: 'quota-exceeded', legacyCode: 'quota-exceeded', paywall: false,
+      plan: tier, planLabel: label,
+      used: state.usedToday, limit: rules.dailyLimit, resetsAt: nextResetMs(),
+      title: 'That is today\'s AI messages',
+      message: 'You have used all ' + rules.dailyLimit + ' of today\'s messages on the ' + label +
+               ' plan. They reset at midnight Eastern' + resetClause() + '. ' +
+               'The question bank, all 18 simulations and everything else are open as usual.',
+      actions: [{ id: 'sims', label: 'Run a written simulation', primary: true }]
+    };
+  }
+
+  function resetClause() {
+    try {
+      var d = new Date(nextResetMs());
+      var s = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      return ' - ' + s + ' your time';
+    } catch (e) { return ''; }
+  }
+
+  /**
+   * The one genuine paywall screen. Rules the copy obeys, from DR10:
+   *  - name what the plan ADDS, never what the student risks
+   *  - no countdown, no "spots left", no price-goes-up: there is no scarcity here
+   *    and inventing one is a lie
+   *  - no exam framing. A student under exam stress will buy anything attached to
+   *    fear of failing, which is exactly why nothing here may be
+   *  - state the real reason it costs money, because it is true and checkable
+   *  - the secondary action is "Not now", never a confirmshaming sentence
+   */
+  function planLimitReason(acc, tier, label) {
+    var need = acc.neededTierLabel || 'a paid plan';
+    return {
+      code: 'plan-limit',
+      legacyCode: 'not-configured',
+      errorCode: 'tier-denied',      // the wire code the server sends for this
+      paywall: true,
+      plan: tier, planLabel: label,
+      feature: acc.id, featureLabel: acc.label,
+      upgradeTo: acc.neededTier, upgradeToLabel: acc.neededTierLabel,
+      dismissed: isPlanPromptDismissed(),
+      alwaysIncluded: ALWAYS_FREE.slice(),
+      title: (acc.label || 'This') + ' is part of ' + need,
+      message: (acc.desc ? acc.desc + ' ' : '') +
+               'It runs on paid models, so it costs real money per message - that is the whole reason it is not free. ' +
+               'You are on the ' + label + ' plan, and everything hand-written in MedMaster stays yours on it: ' +
+               'the complete question bank, all 18 written simulations with full debriefs, flashcards, ' +
+               'the med-admin trainer, X-Ray mode, your analytics and the community.',
+      actions: [
+        { id: 'plans', label: 'See what is in each plan', primary: true },
+        { id: 'dismiss', label: 'Not now' }
+      ]
+    };
   }
 
   function getTier() { return resolveTier(); }
@@ -742,7 +1290,7 @@
     return out;
   }
 
-  function lsKey() { return LS_MODEL_KEY + (currentUid() || 'anon'); }
+  function lsKey() { return LS_MODEL_KEY + localId(); }
 
   function getSelectedModel() {
     var allowed = allowedModelIds();
@@ -1014,7 +1562,8 @@
       system: system,
       messages: [{ role: 'user', content: 'STUDENT SBAR TRANSCRIPT:\n' + (text || '(the student said nothing)') }],
       maxTokens: 900,
-      temperature: 0.2
+      temperature: 0.2,
+      feature: 'sbar'
     }).then(function (raw) {
       var parsed = parseJSONLoose(raw, false);
       if (!parsed) {
@@ -1106,7 +1655,8 @@
       system: system,
       messages: [{ role: 'user', content: 'STUDENT PERFORMANCE:\n' + perf }],
       maxTokens: 1600,
-      temperature: 0.5
+      temperature: 0.5,
+      feature: 'debrief'
     }).then(function (md) {
       return (typeof md === 'string' && md.trim()) ? md.trim() : 'No debrief was returned. Try again.';
     }).catch(function (e) {
@@ -1201,7 +1751,8 @@
       system: system,
       messages: [{ role: 'user', content: 'Write ' + n + ' ' + diff + ' questions on: ' + topicStr }],
       maxTokens: Math.min(4096, 500 + n * 320),
-      temperature: 0.7
+      temperature: 0.7,
+      feature: 'questions'
     }).then(function (raw) {
       var parsed = parseJSONLoose(raw, true);
       var arr = Array.isArray(parsed) ? parsed
@@ -1252,7 +1803,9 @@
       role = (role === 'assistant' || role === 'patient') ? 'assistant' : 'user';
       out.push({ role: role, content: content });
     }
-    // Anthropic requires the conversation to start with a user turn.
+    // The server prepends the system prompt, so the conversation itself must
+    // start with a user turn (several OpenRouter providers reject a leading
+    // assistant message outright).
     while (out.length && out[0].role === 'assistant') out.shift();
     return out;
   }
@@ -1297,7 +1850,8 @@
       system: system,
       messages: messages,
       maxTokens: 400,
-      temperature: 1
+      temperature: 1,
+      feature: 'patient'
     }).then(function (t) {
       var out = String(t == null ? '' : t).trim();
       // Belt and braces: strip any stage directions the model slipped in.
@@ -1344,7 +1898,8 @@
       model: o.model,
       maxTokens: o.maxTokens,
       temperature: typeof o.temperature === 'number' ? o.temperature : 0.8,
-      onToken: o.onToken
+      onToken: o.onToken,
+      feature: typeof o.feature === 'string' && o.feature ? o.feature : 'tutor'
     });
   }
 
@@ -1356,6 +1911,7 @@
     // --- contract surface ---
     chat: chat,
     isAvailable: isAvailable,
+    unavailableReason: unavailableReason,
     getTier: getTier,
     getModels: getModels,
     getSelectedModel: getSelectedModel,
@@ -1372,11 +1928,35 @@
     askPersona: askPersona,
     getPersona: getPersona,
 
+    // --- tier / plan surface (all additive) ---
+    TIER_LABEL: TIER_LABEL,
+    AI_FEATURES: AI_FEATURES,
+    ALWAYS_FREE: ALWAYS_FREE,
+    tierLabel: tierLabel,
+    featureAccess: featureAccess,
+    canUseFeature: canUseFeature,
+    getPlans: getPlans,
+    getPlanSummary: getPlanSummary,
+    isPlanPromptDismissed: isPlanPromptDismissed,
+    dismissPlanPrompt: dismissPlanPrompt,
+    FRIENDLY: FRIENDLY,
+    REASON_TEXT: REASON_TEXT,
+    errorMessage: errorMessage,
+
     // --- introspection used by the admin panel and settings UI ---
     MODEL_CATALOG: MODEL_CATALOG,
+    VERIFIED_MODEL_IDS: VERIFIED_MODEL_IDS,
+    FREE_MODEL_HINT: FREE_MODEL_HINT,
     DEFAULT_AI_CONFIG: DEFAULT_AI_CONFIG,
     TIER_ORDER: TIER_ORDER,
     OWNER_EMAIL: OWNER_EMAIL,
+    ENDPOINT: ENDPOINT,
+    endpoint: endpoint,
+    isVerifiedModel: function (id) { return VERIFIED_MODEL_IDS.indexOf(id) !== -1; },
+    getFreeModelHint: function () {
+      return (state.config && typeof state.config.freeModelHint === 'string')
+        ? state.config.freeModelHint : FREE_MODEL_HINT;
+    },
     getConfig: function () { return state.config; },
     isConfigLoaded: function () { return state.configLoaded; },
     getTierRules: function (t) { return tierRules(t); },
@@ -1384,11 +1964,10 @@
     canChooseModel: function () { return state.config.allowModelChoice === true || isOwner(); },
     isBusy: function () { return state.inFlight > 0; },
     getLastError: function () { return state.lastError; },
-    friendlyError: function (e) {
-      if (!e) return '';
-      if (e.code && FRIENDLY[e.code]) return e.message || FRIENDLY[e.code];
-      return e.message || FRIENDLY.server;
-    },
+    // Kept for the existing callers; now routed through the single map so the
+    // server's specific diagnosis ("out of credits", "that slug does not exist")
+    // survives instead of being flattened to "something went wrong".
+    friendlyError: function (e) { return errorMessage(e); },
     dayKey: dayKey,
     parseJSONLoose: parseJSONLoose,
 
@@ -1403,6 +1982,243 @@
     },
     refresh: function () { state.boundUid = null; syncBindings(); }
   };
+
+  /* ==========================================================================
+   * TIER UI  (optional, additive, rendered by the shell)
+   * --------------------------------------------------------------------------
+   * ai.js is a service module and stays one: nothing below runs, and no CSS is
+   * injected, unless the app actually asks for a component. These exist because
+   * the tier states have to live SOMEWHERE and the strings, the honesty rules
+   * and the plan data all live here.
+   *
+   * Exposed as window.MM.tierUI = { PlanCard, PlansPage, LockScreen, TierChip }.
+   * The shell mounts PlanCard as the first section of Settings and PlansPage at
+   * a 'plans' route. There is deliberately NO sidebar plan badge and no banner:
+   * a permanent ambient upsell is exactly what this must not become.
+   * ======================================================================== */
+
+  var STYLE_ID = 'mm-tier-styles';
+
+  function ensureTierStyles() {
+    if (typeof document === 'undefined' || !document.head) return;
+    if (document.getElementById(STYLE_ID)) return;
+    var st = document.createElement('style');
+    st.id = STYLE_ID;
+    st.textContent = [
+      '.mmp-card{background:var(--surface);border:1px solid var(--border,var(--surface2));',
+      'border-radius:var(--r-lg,14px);padding:var(--sp-5,20px);margin-bottom:var(--sp-4,16px)}',
+      '.mmp-h{margin:0 0 var(--sp-2,8px);font-size:var(--fs-lg,19px);font-weight:700;color:var(--text)}',
+      '.mmp-sub{margin:0;color:var(--text2);font-size:var(--fs-base,14px);line-height:var(--lh-body,1.65)}',
+      '.mmp-row{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3,12px);flex-wrap:wrap}',
+      '.mmp-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:var(--r-full,999px);',
+      'font-size:var(--fs-xs,12px);font-weight:700;letter-spacing:.03em;border:1px solid currentColor;background:transparent}',
+      '.mmp-chip.free{color:var(--tier-free,#94a3b8)}',
+      '.mmp-chip.plus{color:var(--tier-plus,#60a5fa)}',
+      '.mmp-chip.pro{color:var(--tier-pro,#a78bfa)}',
+      '.mmp-chip.instructor{color:var(--tier-inst,#2dd4bf)}',
+      '.mmp-meter{height:8px;border-radius:var(--r-full,999px);background:var(--surface3,var(--surface2));overflow:hidden;margin-top:var(--sp-2,8px)}',
+      '.mmp-meter i{display:block;height:100%;background:var(--accent);border-radius:var(--r-full,999px);',
+      'transition:width var(--dur-data,.48s) linear}',
+      '.mmp-list{margin:var(--sp-3,12px) 0 0;padding:0;list-style:none}',
+      '.mmp-list li{position:relative;padding:4px 0 4px 22px;color:var(--text2);',
+      'font-size:var(--fs-base,14px);line-height:var(--lh-normal,1.5)}',
+      '.mmp-list li:before{content:"\\2713";position:absolute;left:0;top:4px;color:var(--green-fg,#4ade80);font-weight:700}',
+      '.mmp-list li.no{color:var(--text3)}',
+      '.mmp-list li.no:before{content:"\\2013";color:var(--text3)}',
+      '.mmp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:var(--sp-3,12px)}',
+      '.mmp-plan{background:var(--surface);border:1px solid var(--border,var(--surface2));',
+      'border-radius:var(--r-lg,14px);padding:var(--sp-4,16px)}',
+      '.mmp-plan.current{border-color:var(--accent)}',
+      '.mmp-plan h4{margin:0 0 2px;font-size:var(--fs-lg,19px);font-weight:700;color:var(--text)}',
+      '.mmp-plan .mmp-when{display:block;color:var(--text3);font-size:var(--fs-xs,12px);margin-bottom:var(--sp-2,8px)}',
+      '.mmp-btn{min-height:44px;padding:0 var(--sp-4,16px);border-radius:var(--r-md,10px);border:1px solid var(--border-str,var(--surface2));',
+      'background:transparent;color:var(--text);font-size:var(--fs-base,14px);font-weight:600;font-family:inherit;cursor:pointer;',
+      'transition:border-color var(--dur-micro,.12s) ease,background var(--dur-micro,.12s) ease}',
+      '.mmp-btn:hover{border-color:var(--accent)}',
+      '.mmp-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
+      '.mmp-btn:active{transform:scale(.975);transition:transform var(--dur-press,.08s) ease}',
+      '.mmp-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}',
+      '.mmp-lock{text-align:left;max-width:640px}',
+      '.mmp-lock .mmp-why{color:var(--text3);font-size:var(--fs-sm,13px);margin-top:var(--sp-3,12px)}',
+      '.mmp-actions{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;margin-top:var(--sp-4,16px)}',
+      '@media (max-width:640px){',
+      '.mmp-card,.mmp-plan{padding:var(--sp-3,13px)}',
+      '.mmp-grid{grid-template-columns:1fr}',
+      '.mmp-btn{width:100%}',
+      '}',
+      '@media (prefers-reduced-motion:reduce){',
+      '.mmp-meter i{transition:none}',
+      '.mmp-btn,.mmp-btn:active{transition:none;transform:none}',
+      '}'
+    ].join('');
+    document.head.appendChild(st);
+  }
+
+  function navigateTo(page) {
+    var m = mm();
+    if (typeof m.navigate === 'function') { try { m.navigate(page); return true; } catch (e) { /* noop */ } }
+    return false;
+  }
+
+  function buildTierUI(React) {
+    var ce = React.createElement;
+
+    function TierChip(props) {
+      ensureTierStyles();
+      var t = (props && props.tier) || resolveTier();
+      return ce('span', { className: 'mmp-chip ' + t }, tierLabel(t));
+    }
+
+    /** The only honest home for a plan indicator: Settings, on request. */
+    function PlanCard(props) {
+      ensureTierStyles();
+      var p = props || {};
+      var s = getPlanSummary();
+      var u = s.usage;
+      var pct = (u && u.limit > 0) ? Math.min(100, Math.round((u.used / u.limit) * 100)) : 0;
+
+      return ce('div', { className: 'mmp-card' },
+        ce('div', { className: 'mmp-row' },
+          ce('div', null,
+            ce('p', { className: 'mmp-h' }, 'Your plan  ', ce(TierChip, { tier: s.tier })),
+            ce('p', { className: 'mmp-sub' }, s.blurb)
+          ),
+          ce('button', {
+            type: 'button', className: 'mmp-btn',
+            onClick: function () {
+              if (p.onComparePlans) p.onComparePlans();
+              else navigateTo('plans');
+            }
+          }, s.isFree ? 'Compare plans' : 'Manage plan')
+        ),
+        u && u.limit > 0 ? ce('div', { style: { marginTop: 16 } },
+          ce('div', { className: 'mmp-row' },
+            ce('span', { style: { fontSize: 'var(--fs-base,14px)', fontWeight: 600 } }, 'AI messages today'),
+            ce('span', { style: { color: 'var(--text3)', fontSize: 'var(--fs-sm,13px)' } },
+              u.used + ' of ' + u.limit + ' used' + (u.used >= u.limit ? ' - resets at midnight Eastern' : ''))
+          ),
+          ce('div', { className: 'mmp-meter' }, ce('i', { style: { width: pct + '%' } }))
+        ) : null,
+        u && u.limit === 0 ? ce('p', { className: 'mmp-sub', style: { marginTop: 12 } },
+          'No AI messages are allocated to this plan yet.') : null
+      );
+    }
+
+    /** Free first and fullest. No prices are invented; the owner sets those. */
+    function PlansPage(props) {
+      ensureTierStyles();
+      var p = props || {};
+      var plans = getPlans();
+
+      return ce('div', { className: 'mmp-lock', style: { maxWidth: 980 } },
+        ce('div', { className: 'mmp-card' },
+          ce('h3', { className: 'mmp-h' }, 'What is in each plan'),
+          ce('p', { className: 'mmp-sub' },
+            'Everything hand-written in MedMaster is on Free and always will be. The paid plans only add ' +
+            'the parts that call a paid AI model, because those cost real money every time they run.')
+        ),
+        ce('div', { className: 'mmp-grid' },
+          plans.map(function (pl) {
+            return ce('div', { className: 'mmp-plan' + (pl.current ? ' current' : ''), key: pl.id },
+              ce('h4', null, pl.label, ' ', pl.current
+                ? ce('span', { className: 'mmp-chip ' + pl.id, style: { marginLeft: 6 } }, 'Your plan') : null),
+              ce('span', { className: 'mmp-when' }, pl.dailyMessages),
+              pl.alwaysIncluded.length
+                ? ce('ul', { className: 'mmp-list' }, pl.alwaysIncluded.map(function (f, i) {
+                    return ce('li', { key: 'a' + i }, f);
+                  }))
+                : ce('p', { className: 'mmp-sub', style: { fontSize: 'var(--fs-sm,13px)' } },
+                    'Everything on Free, plus:'),
+              ce('ul', { className: 'mmp-list' },
+                pl.features.map(function (f) {
+                  return ce('li', { key: f.id, className: f.included ? '' : 'no' },
+                    f.label,
+                    f.cap && f.cap.perWeek ? ' - ' + f.cap.perWeek + ' a week' : '');
+                })
+              )
+            );
+          })
+        ),
+        ce('div', { className: 'mmp-card' },
+          ce('p', { className: 'mmp-sub' },
+            'A Live Clinical Scenario run costs us 15 to 25 times what a tutor message costs, which is why it is ' +
+            'the one thing capped by plan rather than by day. Your progress is yours on any plan, including if ' +
+            'you stop paying.'),
+          ce('div', { className: 'mmp-actions' },
+            ce('button', {
+              type: 'button', className: 'mmp-btn',
+              onClick: function () { if (p.onBack) p.onBack(); else navigateTo('home'); }
+            }, 'Back to studying')
+          )
+        )
+      );
+    }
+
+    /**
+     * Renders an unavailableReason() object. The upgrade CTA appears for exactly
+     * one code - 'plan-limit' - and nowhere else.
+     */
+    function LockScreen(props) {
+      ensureTierStyles();
+      var p = props || {};
+      var r = p.reason || unavailableReason(p.feature);
+      if (!r) return null;
+
+      function run(a) {
+        if (p.onAction && p.onAction(a, r) === true) return;
+        if (a.id === 'plans') { navigateTo('plans'); return; }
+        if (a.id === 'sims') { navigateTo('simulations'); return; }
+        if (a.id === 'dismiss') { dismissPlanPrompt(); return; }
+        if (a.id === 'signin') { navigateTo('settings'); return; }
+      }
+
+      return ce('div', { className: 'mmp-card mmp-lock' },
+        ce('div', { className: 'mmp-row' },
+          ce('h3', { className: 'mmp-h' }, r.title),
+          ce(TierChip, { tier: r.plan })
+        ),
+        ce('p', { className: 'mmp-sub' }, r.message),
+        r.paywall && r.alwaysIncluded ? ce('ul', { className: 'mmp-list' },
+          r.alwaysIncluded.map(function (f, i) { return ce('li', { key: i }, f); })) : null,
+        ce('div', { className: 'mmp-actions' },
+          (r.actions || []).map(function (a) {
+            return ce('button', {
+              key: a.id, type: 'button',
+              className: 'mmp-btn' + (a.primary ? ' primary' : ''),
+              onClick: function () { run(a); }
+            }, a.label);
+          })
+        ),
+        r.code === 'setup-pending' ? ce('p', { className: 'mmp-why' },
+          'Nothing to upgrade here - this one is on us to finish.') : null
+      );
+    }
+
+    return { TierChip: TierChip, PlanCard: PlanCard, PlansPage: PlansPage, LockScreen: LockScreen };
+  }
+
+  var tierUICache = null;
+  function tierUI() {
+    if (tierUICache) return tierUICache;
+    var R = window.React;
+    if (!R || typeof R.createElement !== 'function') return null;
+    tierUICache = buildTierUI(R);
+    return tierUICache;
+  }
+
+  api.tierUI = tierUI;
+  try {
+    if (window.React && typeof window.React.createElement === 'function') {
+      var ui = tierUI();
+      if (ui) {
+        if (!window.MM) window.MM = {};
+        window.MM.tierUI = ui;
+        window.MMPlanCard = ui.PlanCard;
+        window.MMPlansPage = ui.PlansPage;
+        window.MMLockScreen = ui.LockScreen;
+      }
+    }
+  } catch (e) { /* a UI-less environment is fine; the service layer is unaffected */ }
 
   /* ==========================================================================
    * BOOT

@@ -107,6 +107,14 @@
       }
     },
 
+    "aiSpend": {
+      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".write": false,
+      "$day": {
+        ".indexOn": ["total6"]
+      }
+    },
+
     "community": {
       "profiles": {
         ".read": "auth != null",

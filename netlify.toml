@@ -2,7 +2,7 @@
 # MedMaster (medmaster.guru) — Netlify configuration
 # ----------------------------------------------------------------------------
 # Static site, no build step. The only server-side code is the AI proxy in
-# netlify/functions/ai.js, which holds the Anthropic API key.
+# netlify/functions/ai.js, which holds the OpenRouter API key.
 # ============================================================================
 
 [build]
