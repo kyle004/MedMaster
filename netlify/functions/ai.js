@@ -134,17 +134,124 @@ var DEFAULT_IMAGE_LIMITS  = { free: 0, plus: 5, pro: 40, instructor: -1 };
 // into the student's text allowance (and text calls never eat into images).
 var IMAGE_USAGE_SUFFIX    = '_img';
 
-/* Verified OpenRouter slugs. Only these two were confirmed against the live
- * catalog; the other three in js/ai.js MODEL_CATALOG are unverified and may 404.
- * Load the live list in Admin Panel -> AI -> Models to check. */
-var VERIFIED_PAID_MODELS = ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'];
+/* --------------------------------------------------------- verified slugs ---
+ * Every slug below was present in OpenRouter's live /api/v1/models catalog on
+ * 2026-08-12, with the prices and context lengths recorded in MODEL_PRICING.md.
+ * The old note here said only two were confirmed and the rest might 404; that
+ * is no longer true and the warning has been removed rather than left to rot.
+ *
+ * MIRROR OF js/ai.js. VERIFIED_TEXT_MODELS / _FREE_ / _IMAGE_ / _VIDEO_ and the
+ * DEFAULT_AI_CONFIG below must stay byte-identical to the client copy - the
+ * client previews the routing decision and the server enforces it, so a drift
+ * between the two shows up as "the panel said one model, the bill says another".
+ * ------------------------------------------------------------------------- */
+var VERIFIED_TEXT_MODELS = [
+  'deepseek/deepseek-v4-flash-0731',
+  'google/gemini-3.1-flash-lite',
+  'deepseek/deepseek-v4-flash',
+  'z-ai/glm-5.2',
+  'google/gemini-3-flash-preview',
+  'deepseek/deepseek-v4-pro',
+  'tencent/hy3',
+  'xiaomi/mimo-v2.5',
+  'google/gemini-3.6-flash',
+  'qwen/qwen3.8-max'
+];
 
-// Mirror of DEFAULT_AI_CONFIG in js/ai.js. Used when /appConfig/aiConfig is
-// missing or unreadable so the app still works on a fresh deploy.
-// Free ships with NO models on purpose: OpenRouter's ':free' slugs rotate too
-// often to hardcode. The owner picks real ones from the live catalog.
-// `featureModels` is optional on every tier: { <KNOWN_FEATURES id>: '<slug>' }.
-// It only ever picks BETWEEN models the tier already allows — see resolveModelWith().
+var VERIFIED_FREE_MODELS = [
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'nvidia/nemotron-3.5-lightning:free',
+  'nvidia/nemotron-3-nano-30b-a3b:free',
+  'google/gemma-4-31b-it:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'openai/gpt-oss-20b:free',
+  'poolside/laguna-s-2.1:free',
+  'poolside/laguna-xs-2.1:free',
+  'inclusionai/ling-3.0-tiny:free',
+  'liquid/lfm-2.5-2.6b:free',
+  'cohere/north-mini-code:free',
+  'nvidia/nemotron-nano-9b-v2:free',
+  'nvidia/nemotron-nano-12b-v2-vl:free',
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+  'nvidia/nemotron-3.5-content-safety:free'
+];
+
+var VERIFIED_IMAGE_MODELS = [
+  'x-ai/grok-imagine-image-2.0',
+  'qwen/qwen-image-3',
+  'qwen/qwen-image-3-pro',
+  'black-forest-labs/flux.2-klein-4b',
+  'black-forest-labs/flux.2-pro',
+  'black-forest-labs/flux.2-max',
+  'recraft/recraft-v4.1-utility',
+  'recraft/recraft-v4.1',
+  'recraft/recraft-v4',
+  'recraft/recraft-v3',
+  'krea/krea-2-medium-turbo',
+  'bytedance-seed/seedream-4.5',
+  'google/gemini-2.5-flash-image',
+  'google/gemini-3.1-flash-image',
+  'google/gemini-3.1-flash-lite-image',
+  'google/gemini-3-pro-image',
+  'openai/gpt-image-1-mini',
+  'openai/gpt-image-2',
+  'openai/gpt-5.4-image-2',
+  'microsoft/mai-image-2.5-pro'
+];
+
+var VERIFIED_VIDEO_MODELS = [
+  'bytedance/seedance-2.0-mini',
+  'bytedance/seedance-2.5',
+  'bytedance/seedance-2.0-fast',
+  'bytedance/seedance-2.0',
+  'bytedance/seedance-1.5-pro',
+  'black-forest-labs/flux-3-video',
+  'minimax/hailuo-3',
+  'minimax/hailuo-2.3',
+  'runway/aleph-2',
+  'runway/gen-4.5',
+  'x-ai/grok-imagine-video-1.5',
+  'x-ai/grok-imagine-video',
+  'alibaba/happyhorse-1.1',
+  'alibaba/happyhorse-1.0',
+  'alibaba/wan-2.7',
+  'alibaba/wan-2.6',
+  'kwaivgi/kling-v3.0-pro',
+  'kwaivgi/kling-v3.0-std',
+  'kwaivgi/kling-video-o1',
+  'google/veo-3.1-fast',
+  'google/veo-3.1-lite',
+  'google/veo-3.1',
+  'openai/sora-2-pro'
+];
+
+// The five paid TEXT models the tier defaults are built from, in healthcare
+// rank order. Kept as its own name because DEFAULT_MODEL comes off the front.
+var VERIFIED_PAID_MODELS = VERIFIED_TEXT_MODELS.slice(0, 5);
+
+var VERIFIED_MODEL_IDS = []
+  .concat(VERIFIED_TEXT_MODELS, VERIFIED_FREE_MODELS, VERIFIED_IMAGE_MODELS, VERIFIED_VIDEO_MODELS);
+
+/* ------------------------------------------------------ default AI config ---
+ * EXACT mirror of DEFAULT_AI_CONFIG in js/ai.js, which is itself a copy of
+ * RECOMMENDED_AI_CONFIG there. Used when /appConfig/aiConfig is missing or
+ * unreadable so the app still works on a fresh deploy.
+ *
+ * THE ROUTING ARGUMENT, in one line each (the long form lives in js/ai.js):
+ *   - deepseek/deepseek-v4-flash-0731 is #1 on healthcare AND $0.08/$0.18 per
+ *     1M tokens, so it is the workhorse for every text feature on every tier.
+ *   - z-ai/glm-5.2 ($0.49/$1.54) takes debrief and SBAR on Pro/Instructor only:
+ *     graded feedback, once per simulation, worth the deeper model.
+ *   - images: gemini-2.5-flash-image (~$0.039, proven response shape) on Plus,
+ *     flux.2-klein-4b (~$0.014 at 156ms, cheapest AND fastest) on Pro+.
+ *   - free: three ':free' slugs verified live on 2026-08-12, Nemotron 3 Ultra
+ *     (550B total / 55B active MoE, 1M context) first.
+ *
+ * `featureModels` is optional on every tier: { <KNOWN_FEATURES id>: '<slug>' }.
+ * It only ever picks BETWEEN models the tier already allows — see
+ * resolveModelWith(). Every entry below names a model in the same tier's list.
+ * ------------------------------------------------------------------------- */
 var DEFAULT_AI_CONFIG = {
   enabled: true,
   allowModelChoice: false,
@@ -152,16 +259,102 @@ var DEFAULT_AI_CONFIG = {
   capMode: DEFAULT_CAP_MODE,
   imageLimits: { free: 0, plus: 5, pro: 40, instructor: -1 },
   tiers: {
-    // Free gets a small real allowance rather than a wall (see DR10). It is
-    // only spendable once the owner assigns a model to the free tier.
-    free:       { models: [], dailyLimit: 5, maxTokens: 1024, featureModels: {} },
-    plus:       { models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'], dailyLimit: 150, maxTokens: 2048, featureModels: {} },
-    pro:        { models: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-3.1-flash-lite', 'deepseek/deepseek-v4-flash', 'z-ai/glm-5.2', 'google/gemini-3-flash-preview'], dailyLimit: 600, maxTokens: 4096, featureModels: {} },
-    instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192, featureModels: {} }
+    // Free gets a small real allowance rather than a wall (see DR10).
+    free: {
+      models: [
+        'nvidia/nemotron-3-ultra-550b-a55b:free',
+        'nvidia/nemotron-3-super-120b-a12b:free',
+        'google/gemma-4-31b-it:free'
+      ],
+      dailyLimit: 5,
+      maxTokens: 1024,
+      featureModels: {
+        tutor: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        patient: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        codeblue: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        sim: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        medadmin: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        community: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        questions: 'nvidia/nemotron-3-ultra-550b-a55b:free'
+      }
+    },
+    plus: {
+      models: [
+        'deepseek/deepseek-v4-flash-0731',
+        'deepseek/deepseek-v4-flash',
+        'google/gemini-3.1-flash-lite',
+        'google/gemini-2.5-flash-image'
+      ],
+      dailyLimit: 150,
+      maxTokens: 2048,
+      featureModels: {
+        tutor: 'deepseek/deepseek-v4-flash-0731',
+        patient: 'deepseek/deepseek-v4-flash-0731',
+        codeblue: 'deepseek/deepseek-v4-flash-0731',
+        sim: 'deepseek/deepseek-v4-flash-0731',
+        medadmin: 'deepseek/deepseek-v4-flash-0731',
+        community: 'deepseek/deepseek-v4-flash-0731',
+        questions: 'deepseek/deepseek-v4-flash-0731',
+        debrief: 'deepseek/deepseek-v4-flash-0731',
+        sbar: 'deepseek/deepseek-v4-flash-0731',
+        image: 'google/gemini-2.5-flash-image',
+        mnemonic: 'google/gemini-2.5-flash-image',
+        avatar: 'google/gemini-2.5-flash-image'
+      }
+    },
+    pro: {
+      models: [
+        'deepseek/deepseek-v4-flash-0731',
+        'deepseek/deepseek-v4-flash',
+        'google/gemini-3.1-flash-lite',
+        'google/gemini-2.5-flash-image',
+        'z-ai/glm-5.2',
+        'google/gemini-3-flash-preview',
+        'black-forest-labs/flux.2-klein-4b',
+        'qwen/qwen-image-3'
+      ],
+      dailyLimit: 600,
+      maxTokens: 4096,
+      featureModels: {
+        tutor: 'deepseek/deepseek-v4-flash-0731',
+        patient: 'deepseek/deepseek-v4-flash-0731',
+        codeblue: 'deepseek/deepseek-v4-flash-0731',
+        sim: 'deepseek/deepseek-v4-flash-0731',
+        medadmin: 'deepseek/deepseek-v4-flash-0731',
+        community: 'deepseek/deepseek-v4-flash-0731',
+        questions: 'deepseek/deepseek-v4-flash-0731',
+        debrief: 'z-ai/glm-5.2',
+        sbar: 'z-ai/glm-5.2',
+        image: 'black-forest-labs/flux.2-klein-4b',
+        mnemonic: 'black-forest-labs/flux.2-klein-4b',
+        avatar: 'black-forest-labs/flux.2-klein-4b'
+      }
+    },
+    instructor: {
+      models: ['*'],
+      dailyLimit: -1,
+      maxTokens: 8192,
+      featureModels: {
+        tutor: 'deepseek/deepseek-v4-flash-0731',
+        patient: 'deepseek/deepseek-v4-flash-0731',
+        codeblue: 'deepseek/deepseek-v4-flash-0731',
+        sim: 'deepseek/deepseek-v4-flash-0731',
+        medadmin: 'deepseek/deepseek-v4-flash-0731',
+        community: 'deepseek/deepseek-v4-flash-0731',
+        questions: 'deepseek/deepseek-v4-flash-0731',
+        debrief: 'z-ai/glm-5.2',
+        sbar: 'z-ai/glm-5.2',
+        image: 'black-forest-labs/flux.2-klein-4b',
+        mnemonic: 'black-forest-labs/flux.2-klein-4b',
+        avatar: 'black-forest-labs/flux.2-klein-4b'
+      }
+    }
   }
 };
 
-var DEFAULT_MODEL = VERIFIED_PAID_MODELS[0];
+// #1 on healthcare and near-cheapest, so the last-resort fallback costs nothing
+// to make the best one. Identical to DEFAULT_MODEL in js/ai.js.
+var DEFAULT_MODEL = 'deepseek/deepseek-v4-flash-0731';
 
 /* ------------------------------------------------------------- tiny helpers */
 
@@ -1764,6 +1957,13 @@ exports._internals = {
   KNOWN_FEATURES: KNOWN_FEATURES,
   DEFAULT_MODEL: DEFAULT_MODEL,
   DEFAULT_AI_CONFIG: DEFAULT_AI_CONFIG,
+  // Exported so a test can assert the client and server verified lists match.
+  VERIFIED_MODEL_IDS: VERIFIED_MODEL_IDS,
+  VERIFIED_TEXT_MODELS: VERIFIED_TEXT_MODELS,
+  VERIFIED_FREE_MODELS: VERIFIED_FREE_MODELS,
+  VERIFIED_IMAGE_MODELS: VERIFIED_IMAGE_MODELS,
+  VERIFIED_VIDEO_MODELS: VERIFIED_VIDEO_MODELS,
+  VERIFIED_PAID_MODELS: VERIFIED_PAID_MODELS,
   DEFAULT_IMAGE_LIMITS: DEFAULT_IMAGE_LIMITS,
   IMAGE_USAGE_SUFFIX: IMAGE_USAGE_SUFFIX,
   IMAGE_TIMEOUT_MS: IMAGE_TIMEOUT_MS,

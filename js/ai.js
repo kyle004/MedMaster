@@ -19,36 +19,257 @@
    * performance. `class` is only a label for the UI: 'free' | 'paid'.
    * Nothing else in the app hardcodes a model id.
    *
-   * !! IMPORTANT — UNVERIFIED SLUGS !!
-   * Only these two were confirmed to exist in OpenRouter's live catalog:
-   *     deepseek/deepseek-v4-flash-0731
-   *     z-ai/glm-5.2
-   * The other three (google/gemini-3.1-flash-lite, deepseek/deepseek-v4-flash,
-   * google/gemini-3-flash-preview) are UNVERIFIED and may 404 with
-   * "model does not exist on OpenRouter". Open Admin Panel -> AI -> Models and
-   * click "Load models from OpenRouter" — anything missing from the live catalog
-   * is flagged there before a student ever hits it.
+   * VERIFIED 2026-08-12 against OpenRouter's live /api/v1/models catalog.
+   * All five paid slugs, the free slugs in VERIFIED_FREE_MODELS, and the image
+   * and video slugs below were present in that fetch, with the prices and
+   * context lengths recorded in MODEL_PRICING. The old "these three are
+   * unverified and may 404" warning is gone because it is no longer true.
+   *
+   * The healthcare ranking is the owner's ranked list from
+   * openrouter.ai/rankings (health category) — that page hydrates client-side
+   * and has no public API, so the ORDER is owner-maintained while the PRICES
+   * and CONTEXT LENGTHS are live API data. See MODEL_PRICING.md in the repo
+   * root for the full reference, including the image and video tables that are
+   * deliberately NOT in this catalog.
+   *
+   * MODEL_CATALOG is the *display* list for the tier/model pickers: five paid
+   * text models, in healthcare rank order. Free, image and video slugs are not
+   * listed here on purpose — they are picked from the LIVE catalog in
+   * Admin Panel -> AI -> Models, because those lists churn fastest.
    * ======================================================================== */
   var MODEL_CATALOG = [
     { id: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash (0731)', class: 'paid',
-      description: 'Top-ranked on healthcare benchmarks. Fast and strong clinical reasoning.' },
+      healthRank: 1, priceIn: 0.08, priceOut: 0.18, context: 1049000,
+      description: '#1 on healthcare AND near-cheapest at $0.08/$0.18 per 1M tokens. ' +
+        'There is no tradeoff to make here, which is why it is the default everywhere.' },
     { id: 'google/gemini-3.1-flash-lite',    name: 'Gemini 3.1 Flash Lite',    class: 'paid',
-      description: 'Very fast, low cost, strong healthcare performance.' },
+      healthRank: 2, priceIn: 0.25, priceOut: 1.50, context: 1049000,
+      description: '#2 on healthcare. $0.25/$1.50 per 1M. Very fast; a good second opinion model.' },
     { id: 'deepseek/deepseek-v4-flash',      name: 'DeepSeek V4 Flash',        class: 'paid',
-      description: 'Rolling latest DeepSeek V4 Flash.' },
+      healthRank: 3, priceIn: 0.14, priceOut: 0.28, context: 1049000,
+      description: '#3 on healthcare. $0.14/$0.28 per 1M. The rolling-latest DeepSeek V4 Flash, ' +
+        'so it moves under you; the pinned 0731 build is the stable one.' },
     { id: 'z-ai/glm-5.2',                    name: 'GLM 5.2',                  class: 'paid',
-      description: 'Strong clinical reasoning and long-context recall.' },
+      healthRank: 4, priceIn: 0.49, priceOut: 1.54, context: 1049000,
+      description: '#4 on healthcare. $0.49/$1.54 per 1M. Deeper reasoning; worth the ~6x output ' +
+        'price on graded feedback (debriefs, SBAR) and nothing else.' },
     { id: 'google/gemini-3-flash-preview',   name: 'Gemini 3 Flash (Preview)', class: 'paid',
-      description: 'Preview model. Fast with solid healthcare accuracy.' }
+      healthRank: 5, priceIn: 0.50, priceOut: 3.00, context: 1049000,
+      description: '#5 on healthcare. $0.50/$3.00 per 1M. A preview model, so treat it as ' +
+        'something that can change or vanish without notice.' }
   ];
 
-  // Confirmed present in OpenRouter's live catalog. Everything else in
-  // MODEL_CATALOG is a best guess until the admin panel validates it.
-  var VERIFIED_MODEL_IDS = ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'];
+  // Shown under the model list in the admin panel, so the five entries above are
+  // never mistaken for "everything MedMaster can run".
+  var MODEL_CATALOG_NOTE =
+    'These five are the paid TEXT models, in healthcare-rank order, with prices verified against ' +
+    'OpenRouter on 2026-08-12. Free, image and video models are not listed here because those ' +
+    'slugs churn fastest - load the live catalog on the Models tab and pick from that. ' +
+    'MODEL_PRICING.md in the repo root has the full reference table.';
+
+  /* --------------------------------------------------------------------------
+   * VERIFIED SLUGS  (live OpenRouter catalog, fetched 2026-08-12)
+   * Split by modality so the admin panel can say which list a slug came from.
+   * VERIFIED_MODEL_IDS is the flat union and is what isVerifiedModel() checks.
+   * Mirrored by netlify/functions/ai.js — keep the two in sync.
+   * ------------------------------------------------------------------------ */
+  var VERIFIED_TEXT_MODELS = [
+    'deepseek/deepseek-v4-flash-0731',
+    'google/gemini-3.1-flash-lite',
+    'deepseek/deepseek-v4-flash',
+    'z-ai/glm-5.2',
+    'google/gemini-3-flash-preview',
+    'deepseek/deepseek-v4-pro',
+    'tencent/hy3',
+    'xiaomi/mimo-v2.5',
+    'google/gemini-3.6-flash',
+    'qwen/qwen3.8-max'
+  ];
+
+  var VERIFIED_FREE_MODELS = [
+    'nvidia/nemotron-3-ultra-550b-a55b:free',
+    'nvidia/nemotron-3-super-120b-a12b:free',
+    'nvidia/nemotron-3.5-lightning:free',
+    'nvidia/nemotron-3-nano-30b-a3b:free',
+    'google/gemma-4-31b-it:free',
+    'google/gemma-4-26b-a4b-it:free',
+    'openai/gpt-oss-20b:free',
+    'poolside/laguna-s-2.1:free',
+    'poolside/laguna-xs-2.1:free',
+    'inclusionai/ling-3.0-tiny:free',
+    'liquid/lfm-2.5-2.6b:free',
+    'cohere/north-mini-code:free',
+    'nvidia/nemotron-nano-9b-v2:free',
+    'nvidia/nemotron-nano-12b-v2-vl:free',
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+    'nvidia/nemotron-3.5-content-safety:free'
+  ];
+
+  var VERIFIED_IMAGE_MODELS = [
+    'x-ai/grok-imagine-image-2.0',
+    'qwen/qwen-image-3',
+    'qwen/qwen-image-3-pro',
+    'black-forest-labs/flux.2-klein-4b',
+    'black-forest-labs/flux.2-pro',
+    'black-forest-labs/flux.2-max',
+    'recraft/recraft-v4.1-utility',
+    'recraft/recraft-v4.1',
+    'recraft/recraft-v4',
+    'recraft/recraft-v3',
+    'krea/krea-2-medium-turbo',
+    'bytedance-seed/seedream-4.5',
+    'google/gemini-2.5-flash-image',
+    'google/gemini-3.1-flash-image',
+    'google/gemini-3.1-flash-lite-image',
+    'google/gemini-3-pro-image',
+    'openai/gpt-image-1-mini',
+    'openai/gpt-image-2',
+    'openai/gpt-5.4-image-2',
+    'microsoft/mai-image-2.5-pro'
+  ];
+
+  var VERIFIED_VIDEO_MODELS = [
+    'bytedance/seedance-2.0-mini',
+    'bytedance/seedance-2.5',
+    'bytedance/seedance-2.0-fast',
+    'bytedance/seedance-2.0',
+    'bytedance/seedance-1.5-pro',
+    'black-forest-labs/flux-3-video',
+    'minimax/hailuo-3',
+    'minimax/hailuo-2.3',
+    'runway/aleph-2',
+    'runway/gen-4.5',
+    'x-ai/grok-imagine-video-1.5',
+    'x-ai/grok-imagine-video',
+    'alibaba/happyhorse-1.1',
+    'alibaba/happyhorse-1.0',
+    'alibaba/wan-2.7',
+    'alibaba/wan-2.6',
+    'kwaivgi/kling-v3.0-pro',
+    'kwaivgi/kling-v3.0-std',
+    'kwaivgi/kling-video-o1',
+    'google/veo-3.1-fast',
+    'google/veo-3.1-lite',
+    'google/veo-3.1',
+    'openai/sora-2-pro'
+  ];
+
+  // The flat union. Every slug here was present in the 2026-08-12 live catalog,
+  // so "unverified slug" warnings for any of them are now false alarms.
+  var VERIFIED_MODEL_IDS = []
+    .concat(VERIFIED_TEXT_MODELS, VERIFIED_FREE_MODELS, VERIFIED_IMAGE_MODELS, VERIFIED_VIDEO_MODELS);
+
+  /* --------------------------------------------------------------------------
+   * PRICES  (live OpenRouter figures, fetched 2026-08-12)
+   * text  : dollars per 1,000,000 tokens, plus context length in tokens
+   * image : approximate dollars per image. For token-priced image models this is
+   *         output-tokens x rate, so it MOVES WITH RESOLUTION - see the note in
+   *         MODEL_PRICING.md. It is an estimate, never a quote.
+   * video : the cheapest configuration OpenRouter shows on the model page
+   *         ("from $"). The API returns NO per-request video pricing at all, so
+   *         there is no duration or resolution breakdown to report here.
+   * Used only for display (admin panel previews, MODEL_PRICING.md). Nothing
+   * here gates access or is sent upstream.
+   * ------------------------------------------------------------------------ */
+  var MODEL_PRICING = {
+    text: {
+      'deepseek/deepseek-v4-flash-0731':          { in: 0.08, out: 0.18, ctx: 1049000, healthRank: 1 },
+      'google/gemini-3.1-flash-lite':             { in: 0.25, out: 1.50, ctx: 1049000, healthRank: 2 },
+      'deepseek/deepseek-v4-flash':               { in: 0.14, out: 0.28, ctx: 1049000, healthRank: 3 },
+      'z-ai/glm-5.2':                             { in: 0.49, out: 1.54, ctx: 1049000, healthRank: 4 },
+      'google/gemini-3-flash-preview':            { in: 0.50, out: 3.00, ctx: 1049000, healthRank: 5 },
+      'deepseek/deepseek-v4-pro':                 { in: 1.17, out: 2.34, ctx: 1049000, healthRank: 0 },
+      'tencent/hy3':                              { in: 0.13, out: 0.53, ctx: 262000,  healthRank: 0 },
+      'xiaomi/mimo-v2.5':                         { in: 0.14, out: 0.28, ctx: 1050000, healthRank: 0 },
+      'google/gemini-3.6-flash':                  { in: 1.50, out: 7.50, ctx: 1049000, healthRank: 0 },
+      'qwen/qwen3.8-max':                         { in: 2.00, out: 6.00, ctx: 1000000, healthRank: 0 }
+    },
+    free: {
+      'nvidia/nemotron-3-ultra-550b-a55b:free':   { in: 0, out: 0, ctx: 1000000, params: 550, active: 55 },
+      'nvidia/nemotron-3-super-120b-a12b:free':   { in: 0, out: 0, ctx: 262000,  params: 120, active: 12 },
+      'nvidia/nemotron-3.5-lightning:free':       { in: 0, out: 0, ctx: 1000000 },
+      'nvidia/nemotron-3-nano-30b-a3b:free':      { in: 0, out: 0, ctx: 256000,  params: 30, active: 3 },
+      'google/gemma-4-31b-it:free':               { in: 0, out: 0, ctx: 262000,  params: 31 },
+      'google/gemma-4-26b-a4b-it:free':           { in: 0, out: 0, ctx: 262000,  params: 26, active: 4 },
+      'openai/gpt-oss-20b:free':                  { in: 0, out: 0, ctx: 131000,  params: 20 }
+    },
+    image: {
+      'x-ai/grok-imagine-image-2.0':              { perImage: 0.010, note: 'API image price field = $0.01' },
+      'qwen/qwen-image-3':                        { perImage: 0.030, note: 'site ~$0.03; API image field $0.003 - the two fields measure different things' },
+      'qwen/qwen-image-3-pro':                    { perImage: 0.040 },
+      'black-forest-labs/flux.2-klein-4b':        { perImage: 0.014, latencyMs: 156, tps: 1135, note: 'cheapest AND fastest of the image models' },
+      'black-forest-labs/flux.2-pro':             { perImage: 0.030 },
+      'black-forest-labs/flux.2-max':             { perImage: 0.070 },
+      'recraft/recraft-v4.1-utility':             { perImage: 0.035 },
+      'recraft/recraft-v4.1':                     { perImage: 0.035 },
+      'recraft/recraft-v4':                       { perImage: 0.040 },
+      'recraft/recraft-v3':                       { perImage: 0.040 },
+      'krea/krea-2-medium-turbo':                 { perImage: 0.015 },
+      'bytedance-seed/seedream-4.5':              { perImage: 0.040 },
+      'google/gemini-2.5-flash-image':            { perImage: 0.039, latencyMs: 630, tps: 179, note: 'Nano Banana. ~1290 output tokens x $0.00003' },
+      'google/gemini-3.1-flash-image':            { perImage: 0.077, latencyMs: 12482, note: 'Nano Banana 2. Slow: ~12.5s to first token' },
+      'google/gemini-3.1-flash-lite-image':       { perImage: 0.039 },
+      'google/gemini-3-pro-image':                { perImage: 0.155 },
+      'openai/gpt-image-1-mini':                  { perImage: 0.010, note: 'cheap on paper, but the latency data is poor' },
+      'openai/gpt-image-2':                       { perImage: null,  note: '$8/$8 per 1M tokens; no per-image figure published' },
+      'openai/gpt-5.4-image-2':                   { perImage: null,  note: '$8/$15 per 1M tokens; no per-image figure published' },
+      'microsoft/mai-image-2.5-pro':              { perImage: null,  note: '$5/1M + $0.000108 per input image' }
+    },
+    video: {
+      'bytedance/seedance-2.0-mini':              { from: 0.01345 },
+      'bytedance/seedance-2.5':                   { from: 0.1028 },
+      'bytedance/seedance-2.0-fast':              { from: 0.04035 },
+      'bytedance/seedance-2.0':                   { from: 0.06726 },
+      'bytedance/seedance-1.5-pro':               { from: 0.02306 },
+      'black-forest-labs/flux-3-video':           { from: 0.17 },
+      'minimax/hailuo-3':                         { from: 0.13 },
+      'minimax/hailuo-2.3':                       { from: 0.0817 },
+      'runway/aleph-2':                           { from: 0.28 },
+      'runway/gen-4.5':                           { from: 0.12 },
+      'x-ai/grok-imagine-video-1.5':              { from: 0.08 },
+      'x-ai/grok-imagine-video':                  { from: 0.05 },
+      'alibaba/happyhorse-1.1':                   { from: 0.0988 },
+      'alibaba/happyhorse-1.0':                   { from: 0.0988 },
+      'alibaba/wan-2.7':                          { from: 0.10 },
+      'alibaba/wan-2.6':                          { from: 0.04 },
+      'kwaivgi/kling-v3.0-pro':                   { from: 0.168 },
+      'kwaivgi/kling-v3.0-std':                   { from: 0.126 },
+      'kwaivgi/kling-video-o1':                   { from: 0.112 },
+      'google/veo-3.1-fast':                      { from: 0.10 },
+      'google/veo-3.1-lite':                      { from: 0.05 },
+      'google/veo-3.1':                           { from: 0.40 },
+      'openai/sora-2-pro':                        { from: 0.30 }
+    }
+  };
+
+  /**
+   * MM.ai.priceLabel(slug) -> a short human price for display, or '' when the
+   * slug is not in the 2026-08-12 snapshot. Never throws, never guesses: an
+   * unknown slug gets an empty string so the caller renders nothing rather than
+   * a made-up number.
+   */
+  function priceLabel(slug) {
+    var id = typeof slug === 'string' ? slug.trim() : '';
+    if (!id) return '';
+    var t = MODEL_PRICING.text[id];
+    if (t) return '$' + t.in.toFixed(2) + ' in / $' + t.out.toFixed(2) + ' out per 1M tok';
+    if (MODEL_PRICING.free[id]) return 'free';
+    var im = MODEL_PRICING.image[id];
+    if (im) {
+      return (typeof im.perImage === 'number')
+        ? '~$' + im.perImage.toFixed(3) + ' / image'
+        : 'per-image price not published';
+    }
+    var v = MODEL_PRICING.video[id];
+    if (v) return 'from $' + v.from.toFixed(5).replace(/0+$/, '').replace(/\.$/, '') + ' / clip';
+    if (/:free$/.test(id)) return 'free';
+    return '';
+  }
 
   // The last-resort model, identical to DEFAULT_MODEL in netlify/functions/ai.js.
-  // Step 4 of the resolution order below.
-  var DEFAULT_MODEL = VERIFIED_MODEL_IDS[0];
+  // Step 4 of the resolution order below. #1 on healthcare and near-cheapest, so
+  // the fallback costs nothing to make the best one.
+  var DEFAULT_MODEL = 'deepseek/deepseek-v4-flash-0731';
 
   /* --------------------------------------------------------------------------
    * ROUTABLE FEATURE IDS
@@ -71,25 +292,88 @@
 
   /* --------------------------------------------------------------------------
    * FREE TIER
-   * OpenRouter's ':free' slugs rotate constantly — a hardcoded guess would 404
-   * within weeks. So the free tier ships with NO models and this hint, and the
-   * owner picks real ones from the live catalog in Admin Panel -> AI -> Models.
-   * While the list is empty, isAvailable() is false for free users and the UI
-   * says "not configured yet" rather than "out of messages".
+   * OpenRouter's ':free' slugs rotate constantly. The three below WERE in the
+   * live catalog on 2026-08-12, so they now ship as the default free tier
+   * instead of an empty list — but they can still be retired upstream at any
+   * time, which is what this hint is for. If the free tier ever ends up empty,
+   * isAvailable() is false for free users and the UI says "not configured yet"
+   * rather than "out of messages".
    * ------------------------------------------------------------------------ */
   var FREE_MODEL_HINT =
-    'No free models are assigned yet. Open Admin Panel -> AI -> Models, load the live ' +
-    'OpenRouter catalog, filter to free-only, and assign a couple to the Free tier. ' +
-    'The ones Kyle wanted were Qwen3 235B, DeepSeek-R1 (free), and NVIDIA Nemotron 3 Ultra (free) — ' +
-    'pick whichever of those actually appear in the live list, because ":free" slugs come and go.';
+    'The Free tier ships with three models that were live on OpenRouter on 2026-08-12: ' +
+    'NVIDIA Nemotron 3 Ultra 550B-A55B (free), Nemotron 3 Super 120B-A12B (free) and Gemma 4 31B IT (free). ' +
+    '":free" slugs get retired without notice, so if Free users start seeing errors, open ' +
+    'Admin Panel -> AI -> Models, load the live catalog, filter to free-only, and re-assign. ' +
+    'Nemotron 3 Ultra is the one to keep first: 1M context and the largest of the three.';
 
-  /* --------------------------------------------------------------------------
-   * DEFAULT TIER CONFIG
-   * Mirrored by netlify/functions/ai.js. Live values come from Firebase at
-   * /appConfig/aiConfig; this is the fallback before that loads (or if it is
-   * never written).  dailyLimit -1 = unlimited.  models ['*'] = every model.
-   * ------------------------------------------------------------------------ */
-  var DEFAULT_AI_CONFIG = {
+  /* ==========================================================================
+   * RECOMMENDED CONFIG  --  best results at the lowest cost
+   * --------------------------------------------------------------------------
+   * This is the whole routing argument in one object. It is what the admin
+   * panel's "Apply recommended setup" button writes to /appConfig/aiConfig, and
+   * DEFAULT_AI_CONFIG below is a copy of it so a fresh install behaves the same
+   * without anyone pressing anything.
+   *
+   * THE REASONING, so it can be argued with instead of just inherited:
+   *
+   * 1. WORKHOUSE EVERYWHERE: deepseek/deepseek-v4-flash-0731.
+   *    It is #1 on the healthcare ranking AND $0.08/$0.18 per 1M tokens, which
+   *    is within a rounding error of the cheapest paid model in the catalog.
+   *    There is no quality-versus-cost tradeoff to agonise over here: the best
+   *    one is also the cheap one. Every text feature runs on it unless there is
+   *    a specific reason not to.
+   *
+   * 2. TWO EXCEPTIONS, both graded feedback: debrief and sbar on Pro and
+   *    Instructor run on z-ai/glm-5.2 ($0.49/$1.54). These are the only calls
+   *    where the student receives a JUDGEMENT rather than a conversation, they
+   *    happen once per simulation rather than once per turn, and a deeper model
+   *    is worth ~6x the output price on a handful of calls a day. Plus keeps
+   *    the workhorse: at 150 messages/day the volume does not justify it.
+   *
+   * 3. IMAGES: Plus uses google/gemini-2.5-flash-image (Nano Banana, ~$0.039 an
+   *    image) because its response shape is the one js/images.js is proven
+   *    against. Pro and Instructor use black-forest-labs/flux.2-klein-4b
+   *    (~$0.014 an image, 156ms to first token) - the cheapest AND the fastest
+   *    image model in the catalog, which is not a combination that usually
+   *    exists. gemini-2.5-flash-image stays in the Pro allow-list as the
+   *    fallback if Klein's output shape ever disappoints.
+   *
+   * 4. FREE: the three verified free slugs, Nemotron 3 Ultra first. It is a
+   *    550B-total / 55B-active MoE with 1M context - a genuinely capable model
+   *    at $0 - and it was the one originally asked for.
+   *
+   * 5. Every featureModels entry names a model that is ALREADY in that tier's
+   *    `models` list. An entry outside the allow-list is silently ignored by
+   *    both the client and the server, so it would look configured and behave
+   *    as though it were not. Nothing here does that.
+   *
+   * MODEL_PRICING.md in the repo root is the price reference these choices came
+   * from. netlify/functions/ai.js carries a byte-identical copy of the DEFAULT
+   * below; the two files must always agree.
+   * ======================================================================== */
+
+  // Text: the one model that is both best and cheapest.
+  var M_WORKHORSE = 'deepseek/deepseek-v4-flash-0731';
+  // Text: deeper reasoning, used ONLY for graded feedback on the top tiers.
+  var M_GRADER    = 'z-ai/glm-5.2';
+  // Image: proven response shape, ~$0.039/img.
+  var M_IMG_SAFE  = 'google/gemini-2.5-flash-image';
+  // Image: cheapest AND fastest, ~$0.014/img at 156ms.
+  var M_IMG_CHEAP = 'black-forest-labs/flux.2-klein-4b';
+  // Free: 550B total / 55B active MoE, 1M context, $0.
+  var M_FREE      = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+
+  // The seven conversational features all take the same model. Spelled out per
+  // tier rather than generated, because this object is also read by a human
+  // deciding what to change.
+  function conversationalRoutes(slug) {
+    return {
+      tutor: slug, patient: slug, codeblue: slug, sim: slug,
+      medadmin: slug, community: slug, questions: slug
+    };
+  }
+
+  var RECOMMENDED_AI_CONFIG = {
     enabled: true,
     allowModelChoice: false,
     freeModelHint: FREE_MODEL_HINT,
@@ -102,19 +386,129 @@
     imageLimits: { free: 0, plus: 5, pro: 40, instructor: -1 },
     tiers: {
       // Free is 5 messages a day, not 0. A zero is a wall; five is enough to see
-      // what the tutor actually does before deciding it is worth money. It only
-      // becomes spendable once the owner assigns a free model to the tier.
+      // what the tutor actually does before deciding it is worth money.
       //
       // `featureModels` is optional per tier: { <KNOWN_FEATURES id>: '<slug>' }.
-      // It routes individual parts of the app to different models (a cheap fast
-      // one for patient turns, a stronger one for debriefs) and may only ever
-      // choose BETWEEN the models already in `models`.
-      free:       { models: [], freeModelHint: FREE_MODEL_HINT, dailyLimit: 5, maxTokens: 1024, featureModels: {} },
-      plus:       { models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'], dailyLimit: 150, maxTokens: 2048, featureModels: {} },
-      pro:        { models: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-3.1-flash-lite', 'deepseek/deepseek-v4-flash', 'z-ai/glm-5.2', 'google/gemini-3-flash-preview'], dailyLimit: 600, maxTokens: 4096, featureModels: {} },
-      instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192, featureModels: {} }
+      // It routes individual parts of the app to different models and may only
+      // ever choose BETWEEN the models already in `models`.
+      free: {
+        models: [
+          'nvidia/nemotron-3-ultra-550b-a55b:free',
+          'nvidia/nemotron-3-super-120b-a12b:free',
+          'google/gemma-4-31b-it:free'
+        ],
+        freeModelHint: FREE_MODEL_HINT,
+        dailyLimit: 5,
+        maxTokens: 1024,
+        // Free has no debrief, SBAR or image features to route.
+        featureModels: conversationalRoutes(M_FREE)
+      },
+      plus: {
+        models: [
+          'deepseek/deepseek-v4-flash-0731',
+          'deepseek/deepseek-v4-flash',
+          'google/gemini-3.1-flash-lite',
+          'google/gemini-2.5-flash-image'
+        ],
+        dailyLimit: 150,
+        maxTokens: 2048,
+        featureModels: (function () {
+          var fm = conversationalRoutes(M_WORKHORSE);
+          // Plus volume does not justify the grader model; the workhorse is #1
+          // on healthcare anyway.
+          fm.debrief = M_WORKHORSE;
+          fm.sbar = M_WORKHORSE;
+          fm.image = M_IMG_SAFE;
+          fm.mnemonic = M_IMG_SAFE;
+          fm.avatar = M_IMG_SAFE;
+          return fm;
+        }())
+      },
+      pro: {
+        models: [
+          'deepseek/deepseek-v4-flash-0731',
+          'deepseek/deepseek-v4-flash',
+          'google/gemini-3.1-flash-lite',
+          'google/gemini-2.5-flash-image',
+          'z-ai/glm-5.2',
+          'google/gemini-3-flash-preview',
+          'black-forest-labs/flux.2-klein-4b',
+          'qwen/qwen-image-3'
+        ],
+        dailyLimit: 600,
+        maxTokens: 4096,
+        featureModels: (function () {
+          var fm = conversationalRoutes(M_WORKHORSE);
+          fm.debrief = M_GRADER;
+          fm.sbar = M_GRADER;
+          fm.image = M_IMG_CHEAP;
+          fm.mnemonic = M_IMG_CHEAP;
+          fm.avatar = M_IMG_CHEAP;
+          return fm;
+        }())
+      },
+      instructor: {
+        // '*' = every model. The routes below still apply; the wildcard only
+        // removes the allow-list check, it does not remove the routing.
+        models: ['*'],
+        dailyLimit: -1,
+        maxTokens: 8192,
+        featureModels: (function () {
+          var fm = conversationalRoutes(M_WORKHORSE);
+          fm.debrief = M_GRADER;
+          fm.sbar = M_GRADER;
+          fm.image = M_IMG_CHEAP;
+          fm.mnemonic = M_IMG_CHEAP;
+          fm.avatar = M_IMG_CHEAP;
+          return fm;
+        }())
+      }
+    },
+    /* Owner-maintained per-model metadata, keyed the way Firebase requires
+       (. / # $ [ ] are illegal in a key, so they become '_'). healthRank is the
+       owner's openrouter.ai/rankings health position; params is TOTAL billions
+       parsed out of the slug, with the MoE active count in the note because
+       there is nowhere else to put it. Absent = null, never 0. */
+    modelMeta: {
+      'deepseek_deepseek-v4-flash-0731': { healthRank: 1, params: null,
+        note: '#1 health, $0.08/$0.18 per 1M, 1049k ctx. Best AND cheapest - the workhorse.' },
+      'google_gemini-3_1-flash-lite': { healthRank: 2, params: null,
+        note: '#2 health, $0.25/$1.50 per 1M, 1049k ctx.' },
+      'deepseek_deepseek-v4-flash': { healthRank: 3, params: null,
+        note: '#3 health, $0.14/$0.28 per 1M, 1049k ctx. Rolling latest - moves under you.' },
+      'z-ai_glm-5_2': { healthRank: 4, params: null,
+        note: '#4 health, $0.49/$1.54 per 1M. Graded feedback only (debrief, SBAR) on Pro+.' },
+      'google_gemini-3-flash-preview': { healthRank: 5, params: null,
+        note: '#5 health, $0.50/$3.00 per 1M. Preview - can change or vanish.' },
+      'nvidia_nemotron-3-ultra-550b-a55b:free': { healthRank: null, params: 550,
+        note: 'Free. 550B total / 55B active MoE, 1000k ctx. The default free model.' },
+      'nvidia_nemotron-3-super-120b-a12b:free': { healthRank: null, params: 120,
+        note: 'Free. 120B total / 12B active MoE, 262k ctx.' },
+      'google_gemma-4-31b-it:free': { healthRank: null, params: 31,
+        note: 'Free. 31B dense, 262k ctx.' },
+      'google_gemini-2_5-flash-image': { healthRank: null, params: null,
+        note: 'Nano Banana. ~$0.039/img, 630ms. Proven response shape - the safe image choice.' },
+      'black-forest-labs_flux_2-klein-4b': { healthRank: null, params: 4,
+        note: '~$0.014/img at 156ms - cheapest AND fastest image model in the catalog.' }
     }
   };
+
+  /* --------------------------------------------------------------------------
+   * DEFAULT TIER CONFIG
+   * Mirrored by netlify/functions/ai.js. Live values come from Firebase at
+   * /appConfig/aiConfig; this is the fallback before that loads (or if it is
+   * never written).  dailyLimit -1 = unlimited.  models ['*'] = every model.
+   *
+   * It is a DEEP COPY of RECOMMENDED_AI_CONFIG rather than a second literal, so
+   * the two can never drift. A fresh install therefore boots already routed the
+   * recommended way; the admin button exists because an EXISTING install has
+   * explicit tiers stored in Firebase, and stored tiers beat code defaults.
+   * ------------------------------------------------------------------------ */
+  function deepCopyConfig(c) {
+    try { return JSON.parse(JSON.stringify(c)); } catch (e) { return c; }
+  }
+
+  var DEFAULT_AI_CONFIG = deepCopyConfig(RECOMMENDED_AI_CONFIG);
 
   var OWNER_EMAIL   = 'codingky@gmail.com';
   var ENDPOINT      = '/api/ai';
@@ -479,7 +873,12 @@
       // (never, under any circumstances, an upsell).
       explicitTiers: {},
       imageLimits: normalizeImageLimits(c.imageLimits),
-      tiers: {}
+      tiers: {},
+      // Display-only per-model metadata (healthcare rank, params, note). Carried
+      // through the clone so the shipped defaults are visible before Firebase
+      // answers; normalizeConfig() replaces it wholesale when a stored config
+      // exists, because the owner's copy is the authority once he has one.
+      modelMeta: normalizeModelMetaMap(c.modelMeta)
     };
     var k;
     for (k in c.tiers) {
@@ -525,6 +924,33 @@
       v = v.trim();
       if (!v || v.length > 200) continue;
       out[id] = v;
+    }
+    return out;
+  }
+
+  /**
+   * Owner-maintained per-model metadata: { <slugKey>: {healthRank, params, note} }.
+   * Keys are model slugs with Firebase's illegal characters (. / # $ [ ]) turned
+   * into '_'. Values are clamped to exactly those three fields so a stored blob
+   * cannot smuggle anything else into the config. A value that is not a positive
+   * finite number is null, never 0 - "unknown" and "rank zero" are different
+   * claims and only one of them is honest. Never throws.
+   */
+  function normalizeModelMetaMap(raw) {
+    var out = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    var mk, mv;
+    for (mk in raw) {
+      if (!Object.prototype.hasOwnProperty.call(raw, mk)) continue;
+      mv = raw[mk];
+      if (!mv || typeof mv !== 'object' || Array.isArray(mv)) continue;
+      out[mk] = {
+        healthRank: (typeof mv.healthRank === 'number' && isFinite(mv.healthRank) && mv.healthRank > 0)
+          ? Math.round(mv.healthRank) : null,
+        params: (typeof mv.params === 'number' && isFinite(mv.params) && mv.params > 0)
+          ? mv.params : null,
+        note: typeof mv.note === 'string' ? mv.note.slice(0, 200) : ''
+      };
     }
     return out;
   }
@@ -825,23 +1251,7 @@
        Firebase forbids those characters in keys. Values are small objects;
        anything non-object is dropped. The admin panel writes this; nothing
        here grants or denies access, so passthrough is safe. */
-    cfg.modelMeta = {};
-    if (raw.modelMeta && typeof raw.modelMeta === 'object' && !Array.isArray(raw.modelMeta)) {
-      var mk;
-      for (mk in raw.modelMeta) {
-        if (!Object.prototype.hasOwnProperty.call(raw.modelMeta, mk)) continue;
-        var mv = raw.modelMeta[mk];
-        if (mv && typeof mv === 'object' && !Array.isArray(mv)) {
-          cfg.modelMeta[mk] = {
-            healthRank: (typeof mv.healthRank === 'number' && isFinite(mv.healthRank) && mv.healthRank > 0)
-              ? Math.round(mv.healthRank) : null,
-            params: (typeof mv.params === 'number' && isFinite(mv.params) && mv.params > 0)
-              ? mv.params : null,
-            note: typeof mv.note === 'string' ? mv.note.slice(0, 200) : ''
-          };
-        }
-      }
-    }
+    cfg.modelMeta = normalizeModelMetaMap(raw.modelMeta);
     var srcTiers = (raw.tiers && typeof raw.tiers === 'object') ? raw.tiers : {};
     var name;
     for (name in srcTiers) {
@@ -934,7 +1344,8 @@
    */
   function resolveModelFor(featureId, opts) {
     var o = opts || {};
-    var tier = o.tier || resolveTier();
+    var liveTier = resolveTier();
+    var tier = o.tier || liveTier;
     var rules = tierRules(tier);
     var r = resolveModelWith(rules, featureId, {
       requested: o.model,
@@ -942,8 +1353,21 @@
       allowModelChoice: state.config.allowModelChoice === true
     });
     if (r.source === 'caller' || r.source === 'featureModels') return r.model;
-    // Not routed: fall back to the existing selection logic, which itself
-    // returns models[0] unless the student is allowed to choose and has.
+
+    /* Not routed. The per-device model choice applies next - but ONLY when the
+     * question is about THIS user's own tier.
+     *
+     * getSelectedModel() reads allowedModelIds(), which reads tierRules() with
+     * no argument, i.e. the LIVE tier. So when the admin panel asks
+     * resolveModelFor('other', {tier: 'pro'}) while signed in as a free user, it
+     * used to get back the FREE tier's models[0] and label it as Pro's answer.
+     * There is no such thing as a device preference for somebody else's tier, so
+     * a cross-tier preview returns the tier's own answer instead. Routed
+     * features never reached this line, which is why the recommended config -
+     * where everything except 'admin' and 'other' is routed - mostly hid it.
+     * The server, which is the authority, was always right. */
+    if (o.tier && o.tier !== liveTier) return r.model;
+
     var sel = getSelectedModel();
     return sel || r.model;
   }
@@ -2680,9 +3104,25 @@
 
     // --- introspection used by the admin panel and settings UI ---
     MODEL_CATALOG: MODEL_CATALOG,
+    MODEL_CATALOG_NOTE: MODEL_CATALOG_NOTE,
     VERIFIED_MODEL_IDS: VERIFIED_MODEL_IDS,
+    VERIFIED_TEXT_MODELS: VERIFIED_TEXT_MODELS,
+    VERIFIED_FREE_MODELS: VERIFIED_FREE_MODELS,
+    VERIFIED_IMAGE_MODELS: VERIFIED_IMAGE_MODELS,
+    VERIFIED_VIDEO_MODELS: VERIFIED_VIDEO_MODELS,
+    // Live OpenRouter prices as of 2026-08-12, for display only. priceLabel()
+    // returns '' for anything not in the snapshot rather than inventing a number.
+    MODEL_PRICING: MODEL_PRICING,
+    priceLabel: priceLabel,
     FREE_MODEL_HINT: FREE_MODEL_HINT,
     DEFAULT_AI_CONFIG: DEFAULT_AI_CONFIG,
+    /* The full aiConfig the admin panel's "Apply recommended setup" writes.
+     * DEFAULT_AI_CONFIG is a deep copy of this, so code defaults and the
+     * one-click apply can never disagree. Handed out as a fresh deep copy on
+     * every read: the caller is about to merge his own dailyLimits into it and
+     * must not be able to mutate the shipped object while doing so. */
+    RECOMMENDED_AI_CONFIG: RECOMMENDED_AI_CONFIG,
+    getRecommendedConfig: function () { return deepCopyConfig(RECOMMENDED_AI_CONFIG); },
     TIER_ORDER: TIER_ORDER,
     OWNER_EMAIL: OWNER_EMAIL,
     ENDPOINT: ENDPOINT,

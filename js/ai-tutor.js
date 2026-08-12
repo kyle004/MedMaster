@@ -822,8 +822,19 @@
     /* --------------------------------------------------- still checking
        Shaped like the chat that is about to replace it: same header, same
        card, same message-sized lines. No lock, no upgrade copy, no error
-       styling, and it disappears the instant the tier lands. */
-    if (!available && resolving) {
+       styling, and it disappears the instant the tier lands.
+
+       Gate: while resolving, only the optimistic tier cache may unlock the
+       UI early (it is this uid's own last-known tier, so the chip it shows
+       is right). Without a cached tier there is NO verdict of any kind
+       before the tier record lands - the old `!available && resolving`
+       condition let a Pro user's first paint render a FREE-tier chat
+       (wrong chip, wrong quota) for ~800ms once Free gained real models. */
+    var cachedTier = '';
+    try {
+      if (A && typeof A.getCachedTier === 'function') cachedTier = String(A.getCachedTier() || '');
+    } catch (e) { cachedTier = ''; }
+    if (resolving && !cachedTier) {
       return ce('div', null,
         ce('h2', { style: { marginBottom: 6 } }, '🎓 AI Tutor'),
         ce('div', { className: 'mm-chk-box', style: { padding: 20 } },

@@ -760,6 +760,233 @@
     return [];
   }
 
+  /* ==========================================================================
+   * RECOMMENDED SETUP  (the pure half - no React, no Firebase, no DOM)
+   * --------------------------------------------------------------------------
+   * WHY THIS EXISTS AT ALL, precisely:
+   *
+   *   Changing DEFAULT_AI_CONFIG in js/ai.js fixes nothing for an install that
+   *   already has a config in Firebase. normalizeConfig() honours EXPLICIT
+   *   stored tiers: the moment /appConfig/aiConfig/tiers/plus exists - even as
+   *   `{models: []}` - that empty list is the answer, and the shipped default is
+   *   never consulted. That is correct behaviour (an owner who deliberately
+   *   empties a tier must not have it re-filled behind him) and it is exactly
+   *   why "Plus has no models assigned" survives a deploy.
+   *
+   *   So the fix has to be a WRITE, and it has to be one the owner triggers and
+   *   can see first. Hence: preview, confirm, one set().
+   *
+   * WHAT IS PRESERVED, and why those five and nothing else:
+   *   enabled, allowModelChoice, softCapUsd, capMode, imageLimits.<tier>,
+   *   tiers.<tier>.dailyLimit and tiers.<tier>.maxTokens.
+   *   Those are the numbers the owner tunes against his own wallet and his own
+   *   students. The recommendation has no opinion about them; it is about WHICH
+   *   MODEL answers WHICH feature. Everything else - the model lists, the
+   *   per-feature routes, the model metadata - is overwritten, and the
+   *   confirmation says so in those words.
+   * ======================================================================== */
+
+  // Config nodes are plain JSON by construction (Firebase cannot store anything
+  // else), so a structured clone is a stringify round trip. Returns null rather
+  // than a half-copy if it ever is not.
+  function jsonClone(v) {
+    try { return JSON.parse(JSON.stringify(v)); } catch (e) { return null; }
+  }
+
+  /** MM.ai's recommended config, deep-copied, or null if js/ai.js is too old. */
+  function recommendedConfig() {
+    var a = ai();
+    if (!a) return null;
+    if (typeof a.getRecommendedConfig === 'function') {
+      try {
+        var got = a.getRecommendedConfig();
+        if (got && typeof got === 'object' && !Array.isArray(got)) return got;
+      } catch (e) { /* fall through */ }
+    }
+    if (a.RECOMMENDED_AI_CONFIG && typeof a.RECOMMENDED_AI_CONFIG === 'object' &&
+        !Array.isArray(a.RECOMMENDED_AI_CONFIG)) {
+      return jsonClone(a.RECOMMENDED_AI_CONFIG);
+    }
+    return null;
+  }
+
+  /** A short price for a slug, from MM.ai's verified snapshot. '' when unknown. */
+  function modelPriceLabel(slug) {
+    var a = ai();
+    if (a && typeof a.priceLabel === 'function') {
+      try {
+        var s = a.priceLabel(slug);
+        if (typeof s === 'string') return s;
+      } catch (e) { /* noop */ }
+    }
+    return '';
+  }
+
+  /**
+   * buildRecommendedWrite(current, rec) -> the exact object to set() at
+   * /appConfig/aiConfig, or null if `rec` is unusable.
+   *
+   * Pure. `current` is the merged live config (mergeWithDefaults shape) and may
+   * be null. Nothing is read from the DOM, MM, or Firebase.
+   */
+  function buildRecommendedWrite(current, rec) {
+    var out = jsonClone(rec);
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return null;
+    if (!out.tiers || typeof out.tiers !== 'object') out.tiers = {};
+    // explicitTiers is a DERIVED field of js/ai.js normalizeConfig(). Writing it
+    // back into Firebase would store a computed value as though it were input.
+    if (Object.prototype.hasOwnProperty.call(out, 'explicitTiers')) delete out.explicitTiers;
+
+    var cur = (current && typeof current === 'object' && !Array.isArray(current)) ? current : null;
+    if (!cur) return out;
+
+    // --- the owner's own numbers win ---
+    if (typeof cur.enabled === 'boolean') out.enabled = cur.enabled;
+    out.allowModelChoice = cur.allowModelChoice === true;
+    if (typeof cur.softCapUsd === 'number' && isFinite(cur.softCapUsd) && cur.softCapUsd >= 0) {
+      out.softCapUsd = cur.softCapUsd;
+    }
+    if (cur.capMode === 'block' || cur.capMode === 'warn') out.capMode = cur.capMode;
+
+    var curLimits = (cur.imageLimits && typeof cur.imageLimits === 'object' && !Array.isArray(cur.imageLimits))
+      ? cur.imageLimits : null;
+    if (curLimits && out.imageLimits && typeof out.imageLimits === 'object') {
+      for (var lk in out.imageLimits) {
+        if (!Object.prototype.hasOwnProperty.call(out.imageLimits, lk)) continue;
+        if (typeof curLimits[lk] === 'number' && isFinite(curLimits[lk])) {
+          out.imageLimits[lk] = Math.floor(curLimits[lk]);
+        }
+      }
+    }
+
+    var curTiers = (cur.tiers && typeof cur.tiers === 'object' && !Array.isArray(cur.tiers)) ? cur.tiers : {};
+    for (var tk in out.tiers) {
+      if (!Object.prototype.hasOwnProperty.call(out.tiers, tk)) continue;
+      var ct = (curTiers[tk] && typeof curTiers[tk] === 'object' && !Array.isArray(curTiers[tk]))
+        ? curTiers[tk] : null;
+      if (!ct) continue;
+      if (typeof ct.dailyLimit === 'number' && isFinite(ct.dailyLimit)) out.tiers[tk].dailyLimit = ct.dailyLimit;
+      if (typeof ct.maxTokens === 'number' && isFinite(ct.maxTokens) && ct.maxTokens > 0) {
+        out.tiers[tk].maxTokens = ct.maxTokens;
+      }
+    }
+
+    /* modelMeta is MERGED, not replaced: the owner may have ranked or annotated
+       models the recommendation says nothing about, and an "apply the routing"
+       button has no business deleting his notes. The recommended entries win on
+       the slugs they cover. */
+    var curMeta = (cur.modelMeta && typeof cur.modelMeta === 'object' && !Array.isArray(cur.modelMeta))
+      ? cur.modelMeta : null;
+    if (curMeta) {
+      var merged = jsonClone(curMeta) || {};
+      var recMeta = (out.modelMeta && typeof out.modelMeta === 'object') ? out.modelMeta : {};
+      for (var mk in recMeta) {
+        if (Object.prototype.hasOwnProperty.call(recMeta, mk)) merged[mk] = recMeta[mk];
+      }
+      out.modelMeta = merged;
+    }
+    if (typeof cur.modelMetaImportedAt === 'number' && isFinite(cur.modelMetaImportedAt) &&
+        cur.modelMetaImportedAt > 0) {
+      out.modelMetaImportedAt = cur.modelMetaImportedAt;
+    }
+
+    return out;
+  }
+
+  /**
+   * recommendedPreview(current, next) -> what the write would change, per tier.
+   * Model lists are compared as sets-in-order; feature routes are compared by
+   * the model that would ACTUALLY run (previewRoute), not by what is configured,
+   * because a route pointing outside the allow-list is not a route.
+   */
+  function recommendedPreview(current, next) {
+    var cur = (current && current.tiers) ? current : { tiers: {} };
+    var nxt = (next && next.tiers) ? next : { tiers: {} };
+    var feats = featureRows();
+    var changed = 0;
+
+    var tiers = TIER_ORDER.map(function (t) {
+      var before = modelsOf(cur.tiers[t]);
+      var after = modelsOf(nxt.tiers[t]);
+      var modelsChanged = before.join('|') !== after.join('|');
+      if (modelsChanged) changed++;
+
+      /* A tier with an EMPTY model list does not "run models[0]" - the server
+       * throws 403 no-models-configured before it ever resolves one. So the
+       * before-state for that tier is not a slug, it is nothing, and every
+       * feature on it counts as changed. Rendering previewRoute()'s
+       * DEFAULT_MODEL fallback as though it were the current behaviour would be
+       * the single most misleading thing this preview could say. */
+      var wasDead = before.length === 0;
+
+      var rows = [];
+      for (var i = 0; i < feats.length; i++) {
+        var f = feats[i];
+        var b = previewRoute(cur, t, f.id);
+        var a2 = previewRoute(nxt, t, f.id);
+        var row = {
+          id: f.id,
+          label: f.label,
+          before: wasDead ? '' : (b.model || ''),
+          after: a2.model || '',
+          price: modelPriceLabel(a2.model),
+          changed: wasDead || (b.model || '') !== (a2.model || '')
+        };
+        if (row.changed) changed++;
+        rows.push(row);
+      }
+
+      /* Unchanged routes still need their price shown - "what does this cost"
+       * is the whole question - but one line per feature would be 14 lines of
+       * noise per tier. So they are grouped by the model they land on. */
+      var unchangedRows = rows.filter(function (r) { return !r.changed; });
+      var groups = [], byModel = {};
+      for (var j = 0; j < unchangedRows.length; j++) {
+        var m = unchangedRows[j].after;
+        if (!byModel[m]) { byModel[m] = { model: m, price: modelPriceLabel(m), ids: [] }; groups.push(byModel[m]); }
+        byModel[m].ids.push(unchangedRows[j].id);
+      }
+
+      return {
+        tier: t,
+        label: TIER_LABEL[t],
+        before: before,
+        after: after,
+        wasDead: wasDead,
+        modelsChanged: modelsChanged,
+        rows: rows,
+        changedRows: rows.filter(function (r) { return r.changed; }),
+        unchangedGroups: groups
+      };
+    });
+
+    return { tiers: tiers, changedCount: changed, unchanged: changed === 0 };
+  }
+
+  /** The values the write deliberately leaves alone, as display strings. */
+  function recommendedKept(current) {
+    var cur = (current && typeof current === 'object') ? current : {};
+    var out = [
+      'AI master switch: ' + (cur.enabled === false ? 'off' : 'on'),
+      'Let users choose their model: ' + (cur.allowModelChoice === true ? 'on' : 'off'),
+      'Daily ceiling: $' + (typeof cur.softCapUsd === 'number' ? cur.softCapUsd : DEFAULT_SOFT_CAP_USD) +
+        ' (' + (cur.capMode === 'block' ? 'stop AI' : 'warn only') + ')'
+    ];
+    var tiersObj = (cur.tiers && typeof cur.tiers === 'object') ? cur.tiers : {};
+    var limits = (cur.imageLimits && typeof cur.imageLimits === 'object') ? cur.imageLimits : {};
+    for (var i = 0; i < TIER_ORDER.length; i++) {
+      var t = TIER_ORDER[i];
+      var ct = tiersObj[t] || {};
+      out.push(TIER_LABEL[t] + ': ' +
+        (typeof ct.dailyLimit === 'number'
+          ? (ct.dailyLimit === -1 ? 'unlimited messages' : ct.dailyLimit + ' messages a day')
+          : 'daily limit unset') +
+        ', ' + imageLimitPhrase(limits[t]) +
+        (typeof ct.maxTokens === 'number' ? ', max ' + ct.maxTokens + ' tokens' : ''));
+    }
+    return out;
+  }
+
   function fmtDate(ms) {
     if (!ms) return '';
     try { return new Date(ms).toLocaleDateString(); } catch (e) { return ''; }
@@ -1083,13 +1310,20 @@
     // `quiet` suppresses the per-write toast. A ranking import writes one path
     // per model, and ten "Saved." toasts in a row is noise, not feedback - the
     // caller reports the whole batch once instead. Failures are never quiet.
+    /* Returns a promise of true|false so a caller that needs to know (the
+     * recommended-setup apply, which reports one outcome for one big write) can
+     * wait. It never REJECTS - the failure is already toasted here, and an
+     * unhandled rejection from the twenty existing fire-and-forget callers would
+     * be a worse bug than the one being fixed. */
     function writeCfg(path, value, quiet) {
       var d = db();
-      if (!d) { toast('Firebase not connected.', 'error'); return; }
-      d.ref(CFG_PATH + (path ? '/' + path : '')).set(value).then(function () {
+      if (!d) { toast('Firebase not connected.', 'error'); return Promise.resolve(false); }
+      return d.ref(CFG_PATH + (path ? '/' + path : '')).set(value).then(function () {
         if (!quiet) toast('Saved.', 'success');
+        return true;
       }).catch(function (e) {
         toast('Save failed: ' + (e && e.message ? e.message : 'permission denied'), 'error');
+        return false;
       });
     }
 
@@ -1255,6 +1489,169 @@
   }
 
   /* ==========================================================================
+   * CARD: APPLY RECOMMENDED SETUP   (Settings tab, directly under the switch)
+   * --------------------------------------------------------------------------
+   * Three states and no others:
+   *   idle     - one button, plus a one-line summary of what the setup is
+   *   preview  - the full diff, tier by tier, with a Write button and a Cancel
+   *   (gone)   - after a successful write the live listener re-renders every tab
+   *
+   * Nothing is written until the second button. The preview is computed from the
+   * SAME pure functions the write uses, so what is shown is what lands.
+   * ======================================================================== */
+
+  function RecommendedSetupCard(props) {
+    var config = props.config;
+    var writeCfg = props.writeCfg;
+
+    var openState = useState(false);
+    var open = openState[0], setOpen = openState[1];
+    var busyState = useState(false);
+    var busy = busyState[0], setBusy = busyState[1];
+
+    // Recomputed only when the live config changes. previewRoute() runs
+    // 4 tiers x ~14 features twice, which is cheap but not free.
+    var plan = useMemo(function () {
+      var rec = recommendedConfig();
+      if (!rec) return null;
+      var next = buildRecommendedWrite(config, rec);
+      if (!next) return null;
+      return { next: next, diff: recommendedPreview(config, next), kept: recommendedKept(config) };
+    }, [config]);
+
+    if (!plan) {
+      return ce('div', { className: 'aia-card warn' },
+        ce('p', { className: 'aia-h' }, 'Apply recommended setup'),
+        ce('p', { className: 'aia-desc' },
+          'This needs a build of ', ce('span', { className: 'aia-code' }, 'js/ai.js'),
+          ' that exports ', ce('span', { className: 'aia-code' }, 'RECOMMENDED_AI_CONFIG'),
+          '. The loaded copy does not, so there is nothing to apply. Deploy the current js/ai.js and reopen this panel.')
+      );
+    }
+
+    var diff = plan.diff;
+
+    function doApply() {
+      if (busy) return;
+      setBusy(true);
+      var done = function (ok) {
+        setBusy(false);
+        if (ok !== false) {
+          setOpen(false);
+          toast('Recommended setup applied. Every tab now reflects the new routing.', 'success');
+        }
+      };
+      var r;
+      try { r = writeCfg('', plan.next); } catch (e) { r = null; }
+      if (r && typeof r.then === 'function') { r.then(done); }
+      else { done(true); }   // older writeCfg returns nothing; it toasts its own result
+    }
+
+    /* ---- one tier's block: the model list, then only the routes that MOVE --- */
+    function tierBlock(t) {
+      return ce('div', {
+        key: t.tier,
+        style: { borderTop: '1px solid var(--border,var(--surface2))', paddingTop: 10, marginTop: 10 }
+      },
+        ce('div', { className: 'aia-tierhead' },
+          ce('span', { style: { color: TIER_COLOR[t.tier], fontWeight: 700 } }, t.label),
+          ce('span', { className: 'aia-badge', style: { color: 'var(--text3)' } },
+            t.after.length === 1 && t.after[0] === '*'
+              ? 'every model'
+              : t.after.length + ' model' + (t.after.length === 1 ? '' : 's'))
+        ),
+
+        t.modelsChanged
+          ? ce('div', { className: 'aia-eff' },
+              t.wasDead
+                ? ce('span', { style: { color: 'var(--orange-fg,var(--orange))' } },
+                    'currently has NO models assigned, so every AI call from this tier is refused ' +
+                    '(403, "no models have been assigned"). ')
+                : ce('span', null, 'was ', ce('b', null, t.before.join(', ')), ' -- '),
+              'becomes ', ce('b', null, t.after.join(', '))
+            )
+          : ce('div', { className: 'aia-eff' }, 'models unchanged: ', ce('b', null, t.after.join(', '))),
+
+        t.changedRows.map(function (r) {
+          return ce('div', { key: r.id, className: 'aia-eff' },
+            ce('span', { className: 'aia-featid' }, r.id), ' ',
+            ce('span', { style: { color: 'var(--text3)' } }, (r.before ? r.before : 'nothing runs') + ' -> '),
+            ce('b', null, r.after),
+            r.price ? ce('span', { className: 'price' }, '  ' + r.price) : null
+          );
+        }),
+
+        t.unchangedGroups.map(function (g) {
+          return ce('div', { key: 'u-' + g.model, className: 'aia-eff', style: { color: 'var(--text3)' } },
+            'unchanged: ', g.ids.join(', '), ' -> ', ce('b', null, g.model),
+            g.price ? ce('span', { className: 'price' }, '  ' + g.price) : null
+          );
+        }),
+
+        (!t.changedRows.length && !t.unchangedGroups.length)
+          ? ce('div', { className: 'aia-eff', style: { color: 'var(--text3)' } }, 'no routable features')
+          : null
+      );
+    }
+
+    return ce('div', { className: 'aia-card' + (diff.unchanged ? ' ok' : '') },
+      ce('div', { className: 'aia-row' },
+        ce('p', { className: 'aia-h' }, 'Apply recommended setup'),
+        ce('button', {
+          type: 'button',
+          className: 'btn ' + (open ? 'btn-outline' : 'btn-primary') + ' btn-sm',
+          disabled: busy,
+          'aria-expanded': open ? 'true' : 'false',
+          onClick: function () { setOpen(!open); }
+        }, open ? 'Close preview' : (diff.unchanged ? 'Already applied' : 'Preview changes'))
+      ),
+
+      ce('p', { className: 'aia-desc' },
+        'Routes every feature to ', ce('span', { className: 'aia-code' }, 'deepseek/deepseek-v4-flash-0731'),
+        ' -- the #1 model on healthcare AND, at $0.08/$0.18 per 1M tokens, near the cheapest in the catalog. ' +
+        'Graded feedback (debrief and SBAR) goes to GLM 5.2 on Pro and Instructor, because that is the one ' +
+        'place a deeper model is worth 6x the output price. Pictures use Nano Banana on Plus (proven output ' +
+        'shape) and FLUX.2 Klein 4B on Pro and Instructor (~$0.014 an image at 156ms -- the cheapest AND the ' +
+        'fastest, which is not a combination that usually exists). Free gets the three verified free slugs.'),
+
+      diff.unchanged
+        ? ce('div', { className: 'aia-note ok' },
+            'Your live config already matches the recommendation. Nothing would change.')
+        : ce('p', { className: 'aia-desc' },
+            ce('b', null, diff.changedCount + ' change' + (diff.changedCount === 1 ? '' : 's')),
+            ' from your current config. Nothing is written until you confirm.'),
+
+      open ? ce('div', null,
+        ce('p', { className: 'aia-h', style: { marginTop: 14, fontSize: 'var(--fs-base,14px)' } },
+          'What changes'),
+        diff.tiers.map(tierBlock),
+
+        ce('p', { className: 'aia-h', style: { marginTop: 16, fontSize: 'var(--fs-base,14px)' } },
+          'What is kept exactly as you have it'),
+        ce('ul', { className: 'aia-desc', style: { margin: '6px 0 0', paddingLeft: 18 } },
+          plan.kept.map(function (line, i) { return ce('li', { key: i }, line); })),
+
+        ce('div', { className: 'aia-note warn', style: { marginTop: 14 } },
+          'Confirming overwrites, in one write to ', ce('span', { className: 'aia-code' }, '/appConfig/aiConfig'),
+          ': the model list on every tier, every per-feature route on every tier, and the healthcare rank / ' +
+          'note for the ten models named above. It does NOT touch your daily limits, image limits, spend ' +
+          'ceiling, master switch, model-choice toggle, anyone\'s tier, or any model note you wrote for a ' +
+          'model the recommendation says nothing about.'),
+
+        ce('div', { className: 'aia-row', style: { marginTop: 12 } },
+          ce('button', {
+            type: 'button', className: 'btn btn-primary btn-sm', disabled: busy, onClick: doApply
+          }, busy ? 'Writing...' : 'Write it'),
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm', disabled: busy,
+            onClick: function () { setOpen(false); }
+          }, 'Cancel')
+        )
+      ) : null
+    );
+  }
+
+  /* ==========================================================================
    * TAB: SETTINGS
    * ======================================================================== */
 
@@ -1324,6 +1721,11 @@
           ? 'AI is ON. Students can use the tutor, patient roleplay, SBAR grading, and debriefs within their tier limits.'
           : 'AI is OFF for everyone except you. Students see a friendly "AI is turned off" message instead of an error.')
       ),
+
+      /* Second card on the first tab, deliberately. Code defaults cannot reach an
+       * install that already has explicit tiers in Firebase, so this button is
+       * the only thing that fixes "Plus has no models assigned". */
+      ce(RecommendedSetupCard, { config: config, writeCfg: writeCfg }),
 
       // model choice
       ce('div', { className: 'aia-card' },
@@ -2440,9 +2842,20 @@
               return modelRow(r, isAssigned ? ce('span', { className: 'aia-chip' }, 'assigned') : null);
             })
           )
-        )
+        ),
+
+        /* What the five built-in entries are, and what they are NOT. Without
+         * this the shipped catalog reads as "everything MedMaster can run",
+         * which is how a free or image model ends up looking unsupported. */
+        catalogNote() ? ce('p', { className: 'aia-desc', style: { marginTop: 12 } }, catalogNote()) : null
       )
     );
+  }
+
+  /** MM.ai's note under the built-in catalog. '' if this is an older build. */
+  function catalogNote() {
+    var a = ai();
+    return (a && typeof a.MODEL_CATALOG_NOTE === 'string') ? a.MODEL_CATALOG_NOTE : '';
   }
 
   /* ==========================================================================
@@ -4254,6 +4667,18 @@
     metaFor: metaFor,
     SEED_HEALTH_RANKS: SEED_HEALTH_RANKS,
     FIT_EXPLAIN: FIT_EXPLAIN
+  };
+
+  /* Same deal for the recommended-setup half: the merge and the diff are pure
+   * functions of (currentConfig, recommendedConfig), so they are testable
+   * without Firebase, without React and without a rendered panel. The button
+   * calls exactly these. */
+  AIAdminPanel.recommended = {
+    recommendedConfig: recommendedConfig,
+    buildRecommendedWrite: buildRecommendedWrite,
+    recommendedPreview: recommendedPreview,
+    recommendedKept: recommendedKept,
+    modelPriceLabel: modelPriceLabel
   };
 
   window.AIAdminPanel = AIAdminPanel;
