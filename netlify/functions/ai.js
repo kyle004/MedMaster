@@ -82,7 +82,17 @@ var OPENROUTER_TITLE    = 'MedMaster';
 // Ask OpenRouter to report token counts and the real dollar cost. Set to false if
 // a provider ever rejects the field; everything else keeps working without it.
 var REQUEST_USAGE_ACCOUNTING = true;
-var GOOGLE_CERT_URL     = 'https://www.googleapis.com/service_accounts/v1/cert/securetoken@system.gserviceaccount.com';
+// Google's public x509 signing certificates for Firebase ID tokens, as
+// { kid: "-----BEGIN CERTIFICATE-----..." }. This exact path matters — the
+// /service_accounts/v1/cert/ form 404s, which silently breaks every token
+// verification and surfaces to students as "your session expired".
+// Both entries return the same shape; the second is a documented mirror kept
+// as a fallback so one endpoint change cannot take AI down again.
+var GOOGLE_CERT_URLS = [
+  'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com',
+  'https://www.googleapis.com/service_accounts/v1/metadata/x509/securetoken@system.gserviceaccount.com'
+];
+var GOOGLE_CERT_URL     = GOOGLE_CERT_URLS[0];
 var QUOTA_TZ            = 'America/New_York'; // day boundary for daily limits (client uses the same)
 var UPSTREAM_TIMEOUT_MS = 120000;
 var MODELS_TIMEOUT_MS   = 20000;
@@ -227,18 +237,40 @@ var certCache = { certs: null, expiresAt: 0 };
 function getGoogleCerts() {
   var now = Date.now();
   if (certCache.certs && now < certCache.expiresAt) return Promise.resolve(certCache.certs);
-  return fetchWithTimeout(GOOGLE_CERT_URL, { method: 'GET' }, 10000).then(function (res) {
-    if (!res.ok) throw new Error('cert fetch status ' + res.status);
-    var cc = res.headers.get('cache-control') || '';
-    var m = /max-age=(\d+)/i.exec(cc);
-    var ttl = m ? parseInt(m[1], 10) * 1000 : 3600000;
-    if (!(ttl > 60000)) ttl = 3600000;
-    return res.json().then(function (certs) {
-      certCache.certs = certs;
-      certCache.expiresAt = Date.now() + ttl;
-      return certs;
+
+  // Try each known endpoint in order. Only the last failure is reported, and
+  // the error names every URL tried so a future 404 is diagnosable from the
+  // log line alone rather than requiring a code read.
+  function attempt(i, lastErr) {
+    if (i >= GOOGLE_CERT_URLS.length) {
+      throw new Error('cert fetch failed from all endpoints (' +
+        GOOGLE_CERT_URLS.join(', ') + ') - last error: ' +
+        (lastErr && lastErr.message ? lastErr.message : 'unknown'));
+    }
+    return fetchWithTimeout(GOOGLE_CERT_URLS[i], { method: 'GET' }, 10000).then(function (res) {
+      if (!res.ok) throw new Error('cert fetch status ' + res.status + ' from ' + GOOGLE_CERT_URLS[i]);
+      var cc = res.headers.get('cache-control') || '';
+      var m = /max-age=(\d+)/i.exec(cc);
+      var ttl = m ? parseInt(m[1], 10) * 1000 : 3600000;
+      if (!(ttl > 60000)) ttl = 3600000;
+      return res.json().then(function (certs) {
+        // A valid response is a non-empty map of kid -> PEM string.
+        if (!certs || typeof certs !== 'object' || Array.isArray(certs)) {
+          throw new Error('cert payload not an object from ' + GOOGLE_CERT_URLS[i]);
+        }
+        var kids = Object.keys(certs);
+        if (!kids.length || String(certs[kids[0]]).indexOf('BEGIN CERTIFICATE') === -1) {
+          throw new Error('cert payload not x509 PEM from ' + GOOGLE_CERT_URLS[i]);
+        }
+        certCache.certs = certs;
+        certCache.expiresAt = Date.now() + ttl;
+        return certs;
+      });
+    }).catch(function (e) {
+      return attempt(i + 1, e);
     });
-  });
+  }
+  return attempt(0, null);
 }
 
 function verifySignature(signingInput, signatureB64url, certPem) {
