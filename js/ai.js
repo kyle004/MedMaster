@@ -46,6 +46,29 @@
   // MODEL_CATALOG is a best guess until the admin panel validates it.
   var VERIFIED_MODEL_IDS = ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'];
 
+  // The last-resort model, identical to DEFAULT_MODEL in netlify/functions/ai.js.
+  // Step 4 of the resolution order below.
+  var DEFAULT_MODEL = VERIFIED_MODEL_IDS[0];
+
+  /* --------------------------------------------------------------------------
+   * ROUTABLE FEATURE IDS
+   * Mirror of KNOWN_FEATURES in netlify/functions/ai.js. A tier may name a
+   * different model per feature (tiers[t].featureModels[<id>]); only ids in this
+   * list are routable, and only these are valid keys for spend attribution.
+   * Keep the two lists in sync — the server drops anything it does not know.
+   * ------------------------------------------------------------------------ */
+  var KNOWN_FEATURES = [
+    'tutor', 'sim', 'patient', 'medadmin', 'community', 'questions', 'debrief', 'sbar', 'admin',
+    'image', 'codeblue', 'mnemonic', 'avatar',
+    'other'
+  ];
+
+  // Default per-day image caps by tier. Mirrors DEFAULT_IMAGE_LIMITS on the
+  // server; live values come from /appConfig/aiConfig/imageLimits.
+  // -1 = unlimited, 0 = not in this plan.
+  var DEFAULT_IMAGE_LIMITS = { free: 0, plus: 5, pro: 40, instructor: -1 };
+  var DEFAULT_IMAGE_SIZE = '512x512';
+
   /* --------------------------------------------------------------------------
    * FREE TIER
    * OpenRouter's ':free' slugs rotate constantly — a hardcoded guess would 404
@@ -74,14 +97,22 @@
     // 'block' makes the Netlify function refuse new calls once the day is over.
     softCapUsd: 2,
     capMode: 'warn',
+    // Per-day AI image cap, deliberately far stricter than the message limit and
+    // counted separately (/aiUsage/<uid>/<day>_img on the server).
+    imageLimits: { free: 0, plus: 5, pro: 40, instructor: -1 },
     tiers: {
       // Free is 5 messages a day, not 0. A zero is a wall; five is enough to see
       // what the tutor actually does before deciding it is worth money. It only
       // becomes spendable once the owner assigns a free model to the tier.
-      free:       { models: [], freeModelHint: FREE_MODEL_HINT, dailyLimit: 5, maxTokens: 1024 },
-      plus:       { models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'], dailyLimit: 150, maxTokens: 2048 },
-      pro:        { models: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-3.1-flash-lite', 'deepseek/deepseek-v4-flash', 'z-ai/glm-5.2', 'google/gemini-3-flash-preview'], dailyLimit: 600, maxTokens: 4096 },
-      instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192 }
+      //
+      // `featureModels` is optional per tier: { <KNOWN_FEATURES id>: '<slug>' }.
+      // It routes individual parts of the app to different models (a cheap fast
+      // one for patient turns, a stronger one for debriefs) and may only ever
+      // choose BETWEEN the models already in `models`.
+      free:       { models: [], freeModelHint: FREE_MODEL_HINT, dailyLimit: 5, maxTokens: 1024, featureModels: {} },
+      plus:       { models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'], dailyLimit: 150, maxTokens: 2048, featureModels: {} },
+      pro:        { models: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-3.1-flash-lite', 'deepseek/deepseek-v4-flash', 'z-ai/glm-5.2', 'google/gemini-3-flash-preview'], dailyLimit: 600, maxTokens: 4096, featureModels: {} },
+      instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192, featureModels: {} }
     }
   };
 
@@ -184,7 +215,22 @@
       tiers: { free: false, plus: false, pro: true, instructor: true } },
     { id: 'cohort',   label: 'Cohort roster, assigned scenarios, student debriefs',
       desc: 'Instructor tools for running a group.',
-      tiers: { free: false, plus: false, pro: false, instructor: true } }
+      tiers: { free: false, plus: false, pro: false, instructor: true } },
+
+    /* --- routed features (each may run on its own model; see featureModels) --- */
+
+    { id: 'codeblue', label: 'Code Blue drill',
+      desc: 'A timed emergency you run in real time - rhythm, compressions, drugs, defibrillation - with the clock and the consequences moving whether you act or not.',
+      tiers: { free: false, plus: true, pro: true, instructor: true } },
+    { id: 'mnemonic', label: 'Generated mnemonic art',
+      desc: 'A picture built around the memory hook for a topic, so the association has something to hang on. Each one is a generated image, which is why it sits above the free tier.',
+      tiers: { free: false, plus: false, pro: true, instructor: true } },
+    { id: 'image',    label: 'AI illustrations',
+      desc: 'Generated diagrams and illustrations for whatever you are studying. Images cost several times what a tutor message costs, so they have their own small daily limit.',
+      tiers: { free: false, plus: false, pro: true, instructor: true } },
+    { id: 'avatar',   label: 'Study avatar',
+      desc: 'Your own avatar on the leaderboard and in study rooms. Mostly drawn on the device, so it is included everywhere.',
+      tiers: { free: true, plus: true, pro: true, instructor: true } }
   ];
 
   // What every plan includes that costs nothing per use. Listed first and in
@@ -432,6 +478,7 @@
       // product boundary) and "the owner has not finished setting this up"
       // (never, under any circumstances, an upsell).
       explicitTiers: {},
+      imageLimits: normalizeImageLimits(c.imageLimits),
       tiers: {}
     };
     var k;
@@ -440,11 +487,107 @@
       out.tiers[k] = {
         models: c.tiers[k].models.slice(),
         dailyLimit: c.tiers[k].dailyLimit,
-        maxTokens: c.tiers[k].maxTokens
+        maxTokens: c.tiers[k].maxTokens,
+        featureModels: normalizeFeatureModels(c.tiers[k].featureModels)
       };
       if (typeof c.tiers[k].freeModelHint === 'string') {
         out.tiers[k].freeModelHint = c.tiers[k].freeModelHint;
       }
+    }
+    return out;
+  }
+
+  /* ==========================================================================
+   * PER-FEATURE MODEL ROUTING
+   * --------------------------------------------------------------------------
+   * Mirror of the same three functions in netlify/functions/ai.js. The server is
+   * the only thing that ENFORCES any of this; this copy exists so the UI can say
+   * truthfully which model a feature will use, and so chat() sends the model the
+   * server was going to pick anyway.
+   * ======================================================================== */
+
+  /**
+   * Drop junk from a tier's featureModels map. Admin-written data out of
+   * Firebase can be anything - an object keyed by index, an array, numbers,
+   * nulls, a feature id that no longer exists. Only
+   * `<known feature id> -> <non-empty string>` survives. Never throws.
+   */
+  function normalizeFeatureModels(raw) {
+    var out = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    var k, id, v;
+    for (k in raw) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+      id = String(k == null ? '' : k).toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+      if (!id || KNOWN_FEATURES.indexOf(id) === -1) continue;
+      v = raw[k];
+      if (typeof v !== 'string') continue;
+      v = v.trim();
+      if (!v || v.length > 200) continue;
+      out[id] = v;
+    }
+    return out;
+  }
+
+  function normalizeImageLimits(raw) {
+    var out = {}, k, n;
+    for (k in DEFAULT_IMAGE_LIMITS) {
+      if (Object.prototype.hasOwnProperty.call(DEFAULT_IMAGE_LIMITS, k)) out[k] = DEFAULT_IMAGE_LIMITS[k];
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    for (k in raw) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+      n = raw[k];
+      if (typeof n !== 'number' || !isFinite(n)) continue;
+      out[String(k)] = Math.floor(n);
+    }
+    return out;
+  }
+
+  /**
+   * THE resolution order, identical on the server:
+   *   1. an explicit `model` from the caller, ONLY if the caller is the owner or
+   *      the config allows model choice; otherwise the field is ignored
+   *   2. tiers[tier].featureModels[feature], if it names a model the tier allows
+   *   3. tiers[tier].models[0]
+   *   4. DEFAULT_MODEL
+   *
+   * A featureModels entry outside the tier's allow-list is a misconfiguration:
+   * it is reported on `ignored` and the caller falls through to the tier
+   * default. It is never used, and the server re-checks the result regardless.
+   */
+  function resolveModelWith(rules, feature, opts) {
+    var o = opts || {};
+    var r = (rules && typeof rules === 'object') ? rules : {};
+    var models = Array.isArray(r.models) ? r.models : [];
+    var wildcard = models.indexOf('*') !== -1;
+    var owner = o.isOwner === true;
+    var allowed = function (m) { return !!m && (wildcard || owner || models.indexOf(m) !== -1); };
+    var out = { model: DEFAULT_MODEL, source: 'default', ignored: '' };
+
+    var requested = (typeof o.requested === 'string') ? o.requested.trim() : '';
+    if (requested && (owner || o.allowModelChoice === true)) {
+      out.model = requested;
+      out.source = 'caller';
+      return out;
+    }
+
+    var fm = (r.featureModels && typeof r.featureModels === 'object' && !Array.isArray(r.featureModels))
+      ? r.featureModels : null;
+    var pick = (fm && typeof feature === 'string' && typeof fm[feature] === 'string') ? fm[feature].trim() : '';
+    if (pick) {
+      if (allowed(pick)) {
+        out.model = pick;
+        out.source = 'featureModels';
+        return out;
+      }
+      out.ignored = pick;
+    }
+
+    if (models.length && typeof models[0] === 'string' && models[0] && models[0] !== '*') {
+      out.model = models[0];
+      out.source = 'tierDefault';
+      return out;
     }
     return out;
   }
@@ -675,6 +818,7 @@
       cfg.softCapUsd = raw.softCapUsd;
     }
     if (raw.capMode === 'block' || raw.capMode === 'warn') cfg.capMode = raw.capMode;
+    cfg.imageLimits = normalizeImageLimits(raw.imageLimits);
     var srcTiers = (raw.tiers && typeof raw.tiers === 'object') ? raw.tiers : {};
     var name;
     for (name in srcTiers) {
@@ -693,7 +837,12 @@
       cfg.tiers[name] = {
         models: models,
         dailyLimit: typeof st.dailyLimit === 'number' ? st.dailyLimit : base.dailyLimit,
-        maxTokens: typeof st.maxTokens === 'number' ? st.maxTokens : base.maxTokens
+        maxTokens: typeof st.maxTokens === 'number' ? st.maxTokens : base.maxTokens,
+        // Absent -> keep the shipped default. Present but junk -> an empty map,
+        // i.e. no routing, i.e. models[0]. Never a throw.
+        featureModels: (st.featureModels === undefined || st.featureModels === null)
+          ? normalizeFeatureModels(base.featureModels)
+          : normalizeFeatureModels(st.featureModels)
       };
       var hint = typeof st.freeModelHint === 'string' ? st.freeModelHint : base.freeModelHint;
       if (typeof hint === 'string') cfg.tiers[name].freeModelHint = hint;
@@ -746,6 +895,159 @@
       return MODEL_CATALOG.map(function (m) { return m.id; });
     }
     return list.slice();
+  }
+
+  /**
+   * MM.ai.resolveModelFor(featureId [, opts]) -> the model slug this feature
+   * will actually run on, for display ("Patient turns: GLM 5.2") and for chat().
+   *
+   * opts: { model: '<caller override>', tier: '<tier to preview>' }
+   *
+   * Order is the shared one in resolveModelWith(), with one client-only step
+   * between 3 and 4: when nothing has routed the call, a per-device model choice
+   * (Settings -> model picker, Pro / owner only) still applies, exactly as it
+   * did before routing existed. That choice travels to the server as an explicit
+   * `model`, where it is honoured at step 1 - so the two still agree.
+   */
+  function resolveModelFor(featureId, opts) {
+    var o = opts || {};
+    var tier = o.tier || resolveTier();
+    var rules = tierRules(tier);
+    var r = resolveModelWith(rules, featureId, {
+      requested: o.model,
+      isOwner: isOwner(),
+      allowModelChoice: state.config.allowModelChoice === true
+    });
+    if (r.source === 'caller' || r.source === 'featureModels') return r.model;
+    // Not routed: fall back to the existing selection logic, which itself
+    // returns models[0] unless the student is allowed to choose and has.
+    var sel = getSelectedModel();
+    return sel || r.model;
+  }
+
+  /** MM.ai.getImageLimit([tier]) -> images a day. -1 unlimited, 0 not included. */
+  function getImageLimit(tier) {
+    if (isOwner()) return -1;
+    var t = tier || resolveTier();
+    var limits = (state.config && state.config.imageLimits) ? state.config.imageLimits : DEFAULT_IMAGE_LIMITS;
+    var v = limits[t];
+    if (typeof v === 'number' && isFinite(v)) return Math.floor(v);
+    v = DEFAULT_IMAGE_LIMITS[t];
+    return typeof v === 'number' ? v : 0;
+  }
+
+  /* ==========================================================================
+   * PROMPT HASH  (image cache key)
+   * --------------------------------------------------------------------------
+   * MM.ai.promptHash(prompt, model, size) returns EXACTLY what the Netlify
+   * function returns as `promptHash` on a generateImage response, so the client
+   * can look in its own cache before spending an image call.
+   *
+   * THE ALGORITHM, verbatim (any change here is a breaking change, and the
+   * server copy in netlify/functions/ai.js has to change in the same commit):
+   *
+   *   p = String(prompt).trim().toLowerCase()      // prompt is normalized
+   *   m = String(model)                            // model is NOT normalized
+   *   s = String(size || '512x512')                // size is NOT normalized
+   *   hex = sha256_hex(p + "\n" + m + "\n" + s)    // UTF-8 bytes, lowercase hex
+   *   return hex.slice(0, 32)                      // first 32 hex chars
+   *
+   * SHA-256 is implemented inline below rather than through window.crypto.subtle
+   * because subtle.digest is async, and a cache key you have to await is a cache
+   * key half the call sites will skip. It is ~40 lines and runs in microseconds.
+   * ======================================================================== */
+
+  var SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+
+  function utf8Bytes(str) {
+    var out = [], i, c, c2, cp;
+    for (i = 0; i < str.length; i++) {
+      c = str.charCodeAt(i);
+      if (c < 0x80) { out.push(c); continue; }
+      if (c < 0x800) { out.push(0xc0 | (c >> 6), 0x80 | (c & 63)); continue; }
+      if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+        c2 = str.charCodeAt(i + 1);
+        if (c2 >= 0xdc00 && c2 <= 0xdfff) {
+          cp = 0x10000 + ((c - 0xd800) << 10) + (c2 - 0xdc00);
+          out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+          i++;
+          continue;
+        }
+      }
+      out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    }
+    return out;
+  }
+
+  function rotr32(x, n) { return ((x >>> n) | (x << (32 - n))) >>> 0; }
+
+  function hex8(n) {
+    var s = (n >>> 0).toString(16);
+    while (s.length < 8) s = '0' + s;
+    return s;
+  }
+
+  function sha256Hex(input) {
+    var bytes = utf8Bytes(String(input == null ? '' : input));
+    var len = bytes.length;
+    var hi = Math.floor(len / 536870912);        // (len * 8) >> 32
+    var lo = (len << 3) >>> 0;                   // (len * 8) & 0xffffffff
+    bytes.push(0x80);
+    while (bytes.length % 64 !== 56) bytes.push(0);
+    bytes.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255,
+               (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
+
+    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var w = new Array(64);
+    var i, j, a, b, c, d, e, f, g, h, s0, s1, ch, maj, t1, t2, p;
+
+    for (i = 0; i < bytes.length; i += 64) {
+      for (j = 0; j < 16; j++) {
+        p = i + j * 4;
+        w[j] = ((bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3]) >>> 0;
+      }
+      for (j = 16; j < 64; j++) {
+        s0 = (rotr32(w[j - 15], 7) ^ rotr32(w[j - 15], 18) ^ (w[j - 15] >>> 3)) >>> 0;
+        s1 = (rotr32(w[j - 2], 17) ^ rotr32(w[j - 2], 19) ^ (w[j - 2] >>> 10)) >>> 0;
+        w[j] = (((w[j - 16] + s0) >>> 0) + ((w[j - 7] + s1) >>> 0)) >>> 0;
+      }
+      a = H[0]; b = H[1]; c = H[2]; d = H[3]; e = H[4]; f = H[5]; g = H[6]; h = H[7];
+      for (j = 0; j < 64; j++) {
+        s1 = (rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)) >>> 0;
+        ch = ((e & f) ^ (~e & g)) >>> 0;
+        t1 = (h + s1) >>> 0;
+        t1 = (t1 + ch) >>> 0;
+        t1 = (t1 + SHA256_K[j]) >>> 0;
+        t1 = (t1 + w[j]) >>> 0;
+        s0 = (rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)) >>> 0;
+        maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+        t2 = (s0 + maj) >>> 0;
+        h = g; g = f; f = e;
+        e = (d + t1) >>> 0;
+        d = c; c = b; b = a;
+        a = (t1 + t2) >>> 0;
+      }
+      H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+      H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+    }
+    return H.map(hex8).join('');
+  }
+
+  /** MM.ai.promptHash(prompt, model, size) -> 32 lowercase hex chars. */
+  function promptHash(prompt, model, size) {
+    var p = String(prompt == null ? '' : prompt).trim().toLowerCase();
+    var m = String(model == null ? '' : model);
+    var s = String(size == null || size === '' ? DEFAULT_IMAGE_SIZE : size);
+    return sha256Hex(p + '\n' + m + '\n' + s).slice(0, 32);
   }
 
   /* -------------------------------------------------- firebase live bindings */
@@ -926,7 +1228,10 @@
     'quota-exceeded': 'You have used all of today\'s AI messages. They reset at midnight Eastern.',
     'ai-disabled': 'AI is switched off site-wide right now. The 18 written simulations and everything else still work.',
     'network': 'Could not reach the AI. Your message is still here - try again when you are back on a connection.',
-    'server': 'Something went wrong on our end. Try again in a moment.'
+    'server': 'Something went wrong on our end. Try again in a moment.',
+    // generateImage only: the model that feature is routed to did not produce an
+    // image. A setup problem on our side, never something the student did.
+    'image-unsupported': 'That picture could not be generated - the model this feature is set to use does not return images. Nothing else is affected.'
   };
 
   /**
@@ -972,7 +1277,8 @@
     var data = null;
     try { data = JSON.parse(bodyText); } catch (e) { data = null; }
     var code = (data && typeof data.error === 'string') ? data.error : codeFromStatus(res.status);
-    if (['no-auth', 'tier-denied', 'quota-exceeded', 'ai-disabled', 'network', 'server'].indexOf(code) === -1) {
+    if (['no-auth', 'tier-denied', 'quota-exceeded', 'ai-disabled', 'network', 'server',
+         'image-unsupported'].indexOf(code) === -1) {
       code = codeFromStatus(res.status);
     }
     var msg = (data && data.message) ? data.message : FRIENDLY[code];
@@ -987,6 +1293,10 @@
       // or "that model slug does not exist" apart from a generic server error.
       if (typeof data.reason === 'string') extra.reason = data.reason;
       if (typeof data.model === 'string') extra.model = data.model;
+      // generateImage: `kind:'image'` marks a quota error as the IMAGE cap
+      // rather than the message cap, and `feature` names what was being drawn.
+      if (typeof data.kind === 'string') extra.kind = data.kind;
+      if (typeof data.feature === 'string') extra.feature = data.feature;
     }
     extra.status = res.status;
     return mkErr(code, msg, extra);
@@ -1166,7 +1476,12 @@
 
   /**
    * MM.ai.chat(opts) -> Promise<string>
-   * opts: {system, messages, model, maxTokens, temperature, onToken}
+   * opts: {system, messages, model, maxTokens, temperature, onToken, feature}
+   *
+   * `feature` now does two jobs: spend attribution (as before) and model routing
+   * (new). The model is resolved through MM.ai.resolveModelFor(feature) and sent
+   * explicitly, so the server - which re-resolves it with the same rules from
+   * the same config - lands on the same slug.
    */
   function chat(opts) {
     var o = opts || {};
@@ -1183,7 +1498,8 @@
       return Promise.reject(mkErr('ai-disabled', FRIENDLY['ai-disabled']));
     }
 
-    var model = o.model ? o.model : getSelectedModel();
+    var feature = (typeof o.feature === 'string' && o.feature) ? o.feature : 'other';
+    var model = resolveModelFor(feature, { model: o.model });
     var rules = tierRules();
     var cap = (typeof rules.maxTokens === 'number' && rules.maxTokens > 0) ? rules.maxTokens : 1024;
     var maxTokens = (typeof o.maxTokens === 'number' && o.maxTokens > 0) ? Math.min(o.maxTokens, cap) : cap;
@@ -1204,10 +1520,11 @@
         maxTokens: maxTokens,
         temperature: typeof o.temperature === 'number' ? o.temperature : 1,
         stream: wantStream,
-        // Attribution only. The server files the dollar cost of this call under
-        // this label so the owner can see WHICH part of the app is spending, not
-        // just that something is. It can never widen what the caller may do.
-        feature: typeof o.feature === 'string' && o.feature ? o.feature : 'other'
+        // Attribution AND routing. The server files the dollar cost of this call
+        // under this label so the owner can see WHICH part of the app is
+        // spending, and picks tiers[tier].featureModels[feature] from it. It can
+        // never widen what the caller may do - the allow-list is checked after.
+        feature: feature
       };
 
       function send(streaming) {
@@ -2230,6 +2547,27 @@
      * wait on. While it is true, no gate anywhere in the app may render a
      * verdict; render the neutral checking state instead.
      * ------------------------------------------------------------------- */
+    /* --- per-feature model routing (additive) --------------------------
+     * resolveModelFor('patient') -> the slug that feature will actually run
+     * on, for display and for chat(). resolveModelWith() is the pure form of
+     * the same order, exported so the admin panel can preview another tier's
+     * routing without switching tiers. promptHash() mirrors the server's
+     * generateImage cache key exactly - see the comment above sha256Hex().
+     * ------------------------------------------------------------------- */
+    resolveModelFor: resolveModelFor,
+    resolveModelWith: resolveModelWith,
+    normalizeFeatureModels: normalizeFeatureModels,
+    getFeatureModels: function (t) {
+      var r = tierRules(t || resolveTier());
+      return normalizeFeatureModels(r && r.featureModels);
+    },
+    getImageLimit: getImageLimit,
+    promptHash: promptHash,
+    KNOWN_FEATURES: KNOWN_FEATURES,
+    DEFAULT_MODEL: DEFAULT_MODEL,
+    DEFAULT_IMAGE_LIMITS: DEFAULT_IMAGE_LIMITS,
+    DEFAULT_IMAGE_SIZE: DEFAULT_IMAGE_SIZE,
+
     isResolving: isResolving,
     onResolved: onResolved,
     isTierResolved: function () { return state.tierResolved; },

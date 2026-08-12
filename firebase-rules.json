@@ -117,6 +117,17 @@
       }
     },
 
+    "imageCache": {
+      ".read": "auth != null",
+      ".write": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".indexOn": ["feature", "createdAt"],
+      "$hash": {
+        ".write": "auth != null && (!data.exists() || auth.token.email === 'codingky@gmail.com')",
+        ".validate": "newData.hasChildren(['url','mime','model'])",
+        "hits": { ".write": "auth != null" }
+      }
+    },
+
     "community": {
       "profiles": {
         ".read": "auth != null",

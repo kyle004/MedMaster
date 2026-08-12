@@ -106,7 +106,33 @@ var MAX_CHARS_TOTAL     = 200000;
 var DEFAULT_SOFT_CAP_USD = 2;
 var DEFAULT_CAP_MODE     = 'warn';
 // Features a caller may tag a request with. Anything else is filed as 'other'.
-var KNOWN_FEATURES = ['tutor', 'sim', 'patient', 'medadmin', 'community', 'questions', 'debrief', 'sbar', 'admin', 'other'];
+// This list is doing two jobs now:
+//   1. spend attribution  (/aiSpend/<day>/byFeature/<feature>6)
+//   2. PER-FEATURE MODEL ROUTING — a tier may name a different model per feature
+//      via tiers[tier].featureModels[<id>]. Only ids in this list are routable;
+//      anything else is dropped by normalizeFeatureModels().
+// Mirrored by KNOWN_FEATURES in js/ai.js. Keep the two in sync.
+var KNOWN_FEATURES = [
+  'tutor', 'sim', 'patient', 'medadmin', 'community', 'questions', 'debrief', 'sbar', 'admin',
+  // added for routing: image generation, code-blue drill, mnemonic art, avatars
+  'image', 'codeblue', 'mnemonic', 'avatar',
+  'other'
+];
+
+/* ---------------------------------------------------------------- images ---
+ * Image generation ({ action: 'generateImage' }) rides the same OpenRouter
+ * /chat/completions endpoint, but is metered separately because one image costs
+ * far more than one tutor message. See handleGenerateImage() below.
+ * ------------------------------------------------------------------------- */
+var IMAGE_TIMEOUT_MS      = 60000;   // images are slow; chat's 120s is for text
+var DEFAULT_IMAGE_SIZE    = '512x512';
+var MAX_IMAGE_PROMPT_CHARS = 4000;
+// Stricter per-day cap, kept apart from the text dailyLimit. Overridable from
+// /appConfig/aiConfig/imageLimits. -1 = unlimited, 0 = not in this plan.
+var DEFAULT_IMAGE_LIMITS  = { free: 0, plus: 5, pro: 40, instructor: -1 };
+// Image calls are counted at /aiUsage/<uid>/<YYYY-MM-DD>_img so they never eat
+// into the student's text allowance (and text calls never eat into images).
+var IMAGE_USAGE_SUFFIX    = '_img';
 
 /* Verified OpenRouter slugs. Only these two were confirmed against the live
  * catalog; the other three in js/ai.js MODEL_CATALOG are unverified and may 404.
@@ -117,18 +143,21 @@ var VERIFIED_PAID_MODELS = ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'];
 // missing or unreadable so the app still works on a fresh deploy.
 // Free ships with NO models on purpose: OpenRouter's ':free' slugs rotate too
 // often to hardcode. The owner picks real ones from the live catalog.
+// `featureModels` is optional on every tier: { <KNOWN_FEATURES id>: '<slug>' }.
+// It only ever picks BETWEEN models the tier already allows — see resolveModelWith().
 var DEFAULT_AI_CONFIG = {
   enabled: true,
   allowModelChoice: false,
   softCapUsd: DEFAULT_SOFT_CAP_USD,
   capMode: DEFAULT_CAP_MODE,
+  imageLimits: { free: 0, plus: 5, pro: 40, instructor: -1 },
   tiers: {
     // Free gets a small real allowance rather than a wall (see DR10). It is
     // only spendable once the owner assigns a model to the free tier.
-    free:       { models: [], dailyLimit: 5, maxTokens: 1024 },
-    plus:       { models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'], dailyLimit: 150, maxTokens: 2048 },
-    pro:        { models: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-3.1-flash-lite', 'deepseek/deepseek-v4-flash', 'z-ai/glm-5.2', 'google/gemini-3-flash-preview'], dailyLimit: 600, maxTokens: 4096 },
-    instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192 }
+    free:       { models: [], dailyLimit: 5, maxTokens: 1024, featureModels: {} },
+    plus:       { models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.2'], dailyLimit: 150, maxTokens: 2048, featureModels: {} },
+    pro:        { models: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-3.1-flash-lite', 'deepseek/deepseek-v4-flash', 'z-ai/glm-5.2', 'google/gemini-3-flash-preview'], dailyLimit: 600, maxTokens: 4096, featureModels: {} },
+    instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192, featureModels: {} }
   }
 };
 
@@ -165,6 +194,14 @@ function logErr(where, err) {
   // Server-side only. Never echoed to the client.
   try {
     console.error('[ai] ' + where + ': ' + (err && err.stack ? err.stack : String(err)));
+  } catch (e) { /* ignore */ }
+}
+
+// Non-fatal misconfiguration (a featureModels entry outside the tier's
+// allow-list, an unusable size, ...). Server-side only, never echoed.
+function logWarn(where, message) {
+  try {
+    console.warn('[ai] ' + where + ': ' + String(message));
   } catch (e) { /* ignore */ }
 }
 
@@ -426,12 +463,121 @@ function dbPatch(path, obj, idToken) {
 
 /* ------------------------------------------------------------- tier plumbing */
 
+/**
+ * Sanitize a tier's `featureModels` map on read.
+ *
+ * This is admin-written data coming back out of Firebase, so it can be anything:
+ * an object keyed by index, a stray array, numbers, nulls, a feature id that no
+ * longer exists. Everything that is not `<known feature id> -> <non-empty string>`
+ * is dropped silently. It can never do more than choose between models the tier
+ * is already allowed to use (resolveModelWith() re-checks the allow-list), so a
+ * junk value degrades to the tier default and never escalates anything.
+ */
+function normalizeFeatureModels(raw) {
+  var out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  var k, id, v;
+  for (k in raw) {
+    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+    id = String(k == null ? '' : k).toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+    if (!id || KNOWN_FEATURES.indexOf(id) === -1) continue;
+    v = raw[k];
+    if (typeof v !== 'string') continue;
+    v = v.trim();
+    if (!v || v.length > 200) continue;
+    out[id] = v;
+  }
+  return out;
+}
+
+// Per-day image cap by tier. Same defensive read: only finite numbers survive.
+function normalizeImageLimits(raw) {
+  var out = {}, k, n;
+  for (k in DEFAULT_IMAGE_LIMITS) {
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_IMAGE_LIMITS, k)) out[k] = DEFAULT_IMAGE_LIMITS[k];
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (k in raw) {
+    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+    n = raw[k];
+    if (typeof n !== 'number' || !isFinite(n)) continue;
+    out[String(k)] = Math.floor(n);
+  }
+  return out;
+}
+
+// -1 for the owner, then the configured value, then the shipped default, then 0.
+function imageLimitFor(cfg, tier, isOwner) {
+  if (isOwner) return -1;
+  var limits = (cfg && cfg.imageLimits && typeof cfg.imageLimits === 'object') ? cfg.imageLimits : DEFAULT_IMAGE_LIMITS;
+  var v = limits[tier];
+  if (typeof v === 'number' && isFinite(v)) return Math.floor(v);
+  v = DEFAULT_IMAGE_LIMITS[tier];
+  return typeof v === 'number' ? v : 0;
+}
+
+/* ============================================================================
+ * MODEL RESOLUTION  —  the one order, mirrored byte-for-byte in js/ai.js
+ * ----------------------------------------------------------------------------
+ *   1. an explicit `model` from the caller, ONLY if the caller is the owner or
+ *      the config allows model choice. Otherwise the field is ignored outright.
+ *   2. tiers[tier].featureModels[feature], if it names a model the tier allows
+ *   3. tiers[tier].models[0], the tier default
+ *   4. DEFAULT_MODEL
+ *
+ * A featureModels entry pointing at a model outside the tier's allow-list is a
+ * MISCONFIGURATION, not a grant: it is ignored, reported on `ignored`, and the
+ * caller falls through to the tier default. Nothing in here can widen access —
+ * whatever comes out is still run through tierAllowsModel() by the caller.
+ * ==========================================================================*/
+function resolveModelWith(rules, feature, opts) {
+  var o = opts || {};
+  var r = (rules && typeof rules === 'object') ? rules : {};
+  var models = Array.isArray(r.models) ? r.models : [];
+  var wildcard = models.indexOf('*') !== -1;
+  var isOwner = o.isOwner === true;
+  var allowed = function (m) { return !!m && (wildcard || isOwner || models.indexOf(m) !== -1); };
+  var out = { model: DEFAULT_MODEL, source: 'default', ignored: '' };
+
+  // 1. caller override
+  var requested = (typeof o.requested === 'string') ? o.requested.trim() : '';
+  if (requested && (isOwner || o.allowModelChoice === true)) {
+    out.model = requested;
+    out.source = 'caller';
+    return out;
+  }
+
+  // 2. per-feature routing
+  var fm = (r.featureModels && typeof r.featureModels === 'object' && !Array.isArray(r.featureModels))
+    ? r.featureModels : null;
+  var pick = (fm && typeof feature === 'string' && typeof fm[feature] === 'string') ? fm[feature].trim() : '';
+  if (pick) {
+    if (allowed(pick)) {
+      out.model = pick;
+      out.source = 'featureModels';
+      return out;
+    }
+    out.ignored = pick; // degrade, never escalate
+  }
+
+  // 3. tier default  (a bare '*' is an allow-list, not a usable slug)
+  if (models.length && typeof models[0] === 'string' && models[0] && models[0] !== '*') {
+    out.model = models[0];
+    out.source = 'tierDefault';
+    return out;
+  }
+
+  // 4. shipped default
+  return out;
+}
+
 function normalizeConfig(raw) {
   var cfg = {
     enabled: true,
     allowModelChoice: false,
     softCapUsd: DEFAULT_SOFT_CAP_USD,
     capMode: DEFAULT_CAP_MODE,
+    imageLimits: normalizeImageLimits(null),
     tiers: {}
   };
   var src = (raw && typeof raw === 'object') ? raw : {};
@@ -441,6 +587,7 @@ function normalizeConfig(raw) {
     cfg.softCapUsd = src.softCapUsd;
   }
   if (src.capMode === 'block' || src.capMode === 'warn') cfg.capMode = src.capMode;
+  cfg.imageLimits = normalizeImageLimits(src.imageLimits);
 
   var name, dt, st;
   for (name in DEFAULT_AI_CONFIG.tiers) {
@@ -449,20 +596,26 @@ function normalizeConfig(raw) {
     cfg.tiers[name] = {
       models: dt.models.slice(),
       dailyLimit: dt.dailyLimit,
-      maxTokens: dt.maxTokens
+      maxTokens: dt.maxTokens,
+      featureModels: normalizeFeatureModels(dt.featureModels)
     };
   }
   var srcTiers = (src.tiers && typeof src.tiers === 'object') ? src.tiers : {};
   for (name in srcTiers) {
     if (!Object.prototype.hasOwnProperty.call(srcTiers, name)) continue;
     st = srcTiers[name] || {};
-    var base = cfg.tiers[name] || { models: [], dailyLimit: 0, maxTokens: 1024 };
+    var base = cfg.tiers[name] || { models: [], dailyLimit: 0, maxTokens: 1024, featureModels: {} };
     cfg.tiers[name] = {
       models: Array.isArray(st.models) ? st.models.slice()
             : (st.models && typeof st.models === 'object') ? Object.keys(st.models).filter(function (k) { return st.models[k]; })
             : base.models,
       dailyLimit: typeof st.dailyLimit === 'number' ? st.dailyLimit : base.dailyLimit,
-      maxTokens: typeof st.maxTokens === 'number' ? st.maxTokens : base.maxTokens
+      maxTokens: typeof st.maxTokens === 'number' ? st.maxTokens : base.maxTokens,
+      // Absent -> keep whatever the default tier shipped with. Present but junk
+      // -> an empty map, i.e. no routing, i.e. models[0]. Never a throw.
+      featureModels: (st.featureModels === undefined || st.featureModels === null)
+        ? base.featureModels
+        : normalizeFeatureModels(st.featureModels)
     };
   }
   return cfg;
@@ -583,6 +736,158 @@ function normalizeUsage(u) {
   };
 }
 
+/* ------------------------------------------------------- image plumbing --- */
+
+/**
+ * PROMPT HASH  —  the image cache key. Mirrored exactly by MM.ai.promptHash()
+ * in js/ai.js so the browser can look in its cache before spending a call.
+ *
+ * THE ALGORITHM, verbatim (any change here is a breaking change):
+ *
+ *   p = String(prompt).trim().toLowerCase()      // prompt is normalized
+ *   m = String(model)                            // model is NOT normalized
+ *   s = String(size || '512x512')                // size is NOT normalized
+ *   hex = sha256_hex(p + "\n" + m + "\n" + s)    // UTF-8 bytes, lowercase hex
+ *   return hex.slice(0, 32)                      // first 32 hex chars = 128 bits
+ *
+ * Deterministic across calls, processes and languages. Nothing else is folded
+ * in — no salt, no date, no uid — because two users asking for the same picture
+ * must land on the same cache entry.
+ */
+function promptHash(prompt, model, size) {
+  var p = String(prompt == null ? '' : prompt).trim().toLowerCase();
+  var m = String(model == null ? '' : model);
+  var s = String(size == null || size === '' ? DEFAULT_IMAGE_SIZE : size);
+  return crypto.createHash('sha256').update(p + '\n' + m + '\n' + s, 'utf8').digest('hex').slice(0, 32);
+}
+
+// "512x512" -> "512x512"; anything unusable -> the default. Bounded so a hostile
+// value cannot end up in a cache key or a log line unchecked.
+function normalizeImageSize(v) {
+  var s = String(v == null ? '' : v).trim().toLowerCase();
+  var m = /^(\d{2,4})\s*[x*]\s*(\d{2,4})$/.exec(s);
+  if (!m) return DEFAULT_IMAGE_SIZE;
+  var w = Math.max(64, Math.min(2048, parseInt(m[1], 10)));
+  var h = Math.max(64, Math.min(2048, parseInt(m[2], 10)));
+  return w + 'x' + h;
+}
+
+// A hint, never an allow-list: OpenRouter adds image models constantly, so the
+// real capability test is "did it actually return an image" (see below). This
+// only sharpens the error message when it did not.
+function looksLikeImageModel(slug) {
+  return String(slug == null ? '' : slug).toLowerCase().indexOf('image') !== -1;
+}
+
+// 'data:image/png;base64,AAAA...' -> { mime, b64 }. Also accepts a bare base64
+// blob (some providers omit the data: prefix entirely). Returns null otherwise.
+function parseImageData(v) {
+  if (typeof v !== 'string') return null;
+  var s = v.trim();
+  if (!s) return null;
+  var m = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(s);
+  if (m) {
+    var b64 = m[2].replace(/\s+/g, '');
+    if (!b64) return null;
+    return { mime: m[1].toLowerCase(), b64: b64 };
+  }
+  if (s.indexOf('data:') === 0) return null;       // a data URL we cannot read
+  if (/^https?:\/\//i.test(s)) return null;         // a remote URL is not base64
+  var bare = s.replace(/\s+/g, '');
+  if (bare.length >= 64 && /^[A-Za-z0-9+/]+={0,2}$/.test(bare)) {
+    return { mime: 'image/png', b64: bare };
+  }
+  return null;
+}
+
+// One entry of a message.images array, or one structured content part. Providers
+// disagree wildly on the shape, so every plausible one is unwrapped here.
+function imageFromCandidate(c) {
+  if (!c) return null;
+  if (typeof c === 'string') return parseImageData(c);
+  if (typeof c !== 'object') return null;
+
+  var direct = parseImageData(c.b64_json) || parseImageData(c.b64) || parseImageData(c.data) ||
+               parseImageData(c.url) || parseImageData(c.image) || parseImageData(c.image_data);
+  if (direct) return direct;
+
+  if (c.image_url) {
+    if (typeof c.image_url === 'string') { var a = parseImageData(c.image_url); if (a) return a; }
+    else if (typeof c.image_url === 'object') {
+      var b = parseImageData(c.image_url.url) || parseImageData(c.image_url.b64_json) ||
+              parseImageData(c.image_url.data);
+      if (b) return b;
+    }
+  }
+  // Anthropic-ish { source: { data, media_type } }
+  if (c.source && typeof c.source === 'object') {
+    var s = parseImageData(c.source.data) || parseImageData(c.source.url);
+    if (s) {
+      if (typeof c.source.media_type === 'string' && c.source.media_type.indexOf('image/') === 0) {
+        s.mime = c.source.media_type;
+      }
+      return s;
+    }
+  }
+  if (c.inlineData && typeof c.inlineData === 'object') {
+    var g = parseImageData(c.inlineData.data);
+    if (g) {
+      if (typeof c.inlineData.mimeType === 'string' && c.inlineData.mimeType.indexOf('image/') === 0) {
+        g.mime = c.inlineData.mimeType;
+      }
+      return g;
+    }
+  }
+  return null;
+}
+
+/**
+ * Pull one image out of an OpenRouter chat-completions response.
+ *
+ * Two documented shapes, both handled, plus the OpenAI /images fallback:
+ *   choices[0].message.images   = [ 'data:image/png;base64,...' ]
+ *                              or [ { type:'image_url', image_url:{ url:'data:...' } } ]
+ *   choices[0].message.content  = [ { type:'image_url', image_url:{ url:'data:...' } }, ... ]
+ *   data.data                   = [ { b64_json:'...' } ]
+ *
+ * Returns { b64, mime } with NO data: prefix, or null when the model produced
+ * no image at all — which is how "this model cannot make images" is detected.
+ */
+function imageFromOpenRouter(data) {
+  if (!data || typeof data !== 'object') return null;
+  var i, hit;
+  var choices = Array.isArray(data.choices) ? data.choices : [];
+  var msg = (choices.length && choices[0]) ? choices[0].message : null;
+
+  if (msg && typeof msg === 'object') {
+    if (Array.isArray(msg.images)) {
+      for (i = 0; i < msg.images.length; i++) {
+        hit = imageFromCandidate(msg.images[i]);
+        if (hit) return hit;
+      }
+    }
+    if (Array.isArray(msg.content)) {
+      for (i = 0; i < msg.content.length; i++) {
+        var part = msg.content[i];
+        if (!part || typeof part !== 'object') continue;
+        if (part.type && String(part.type).indexOf('text') === 0) continue;
+        hit = imageFromCandidate(part);
+        if (hit) return hit;
+      }
+    }
+    hit = imageFromCandidate(msg.image) || imageFromCandidate(msg.image_url);
+    if (hit) return hit;
+  }
+
+  if (Array.isArray(data.data)) {
+    for (i = 0; i < data.data.length; i++) {
+      hit = imageFromCandidate(data.data[i]);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 // Trim one entry of https://openrouter.ai/api/v1/models down to what the admin
 // panel needs. Prices are per-token USD strings such as "0.0000004".
 function trimModel(m) {
@@ -593,13 +898,37 @@ function trimModel(m) {
   var ctx = 0;
   if (typeof m.context_length === 'number') ctx = m.context_length;
   else if (m.top_provider && typeof m.top_provider.context_length === 'number') ctx = m.top_provider.context_length;
+
+  // Image and video models are billed per output, not per token, so their real
+  // cost lives in pricing.image / pricing.video and both token rates read "0".
+  // Without these the admin UI would show an image model as FREE. Capability is
+  // taken from OpenRouter's own architecture block rather than guessed.
+  var imagePrice = priceString(pricing.image);
+  var videoPrice = priceString(pricing.video);
+  var arch = (m.architecture && typeof m.architecture === 'object') ? m.architecture : {};
+  var outMods = Array.isArray(arch.output_modalities) ? arch.output_modalities : [];
+  var inMods = Array.isArray(arch.input_modalities) ? arch.input_modalities : [];
+
+  // Only claim "free" when every price we know about is zero. A model billed
+  // per image with zero token rates is emphatically not free.
+  var tokensFree = isZeroPrice(prompt) && isZeroPrice(completion);
+  var perOutputFree = (imagePrice === '' || isZeroPrice(imagePrice)) &&
+                      (videoPrice === '' || isZeroPrice(videoPrice));
+
   return {
     id: m.id,
     name: (typeof m.name === 'string' && m.name) ? m.name : m.id,
     contextLength: ctx,
     promptPrice: prompt,
     completionPrice: completion,
-    isFree: isZeroPrice(prompt) && isZeroPrice(completion)
+    imagePrice: imagePrice,
+    videoPrice: videoPrice,
+    outputModalities: outMods,
+    inputModalities: inMods,
+    canOutputImage: outMods.indexOf('image') !== -1,
+    canOutputVideo: outMods.indexOf('video') !== -1,
+    canInputImage: inMods.indexOf('image') !== -1,
+    isFree: tokensFree && perOutputFree
   };
 }
 
@@ -618,12 +947,36 @@ function isZeroPrice(s) {
 // Module-scope cache: warm lambdas reuse it, cold starts refetch.
 var modelsCache = { list: null, fetchedAt: 0, expiresAt: 0 };
 
-function getOpenRouterModels(apiKey) {
-  var now = Date.now();
-  if (modelsCache.list && now < modelsCache.expiresAt) {
-    return Promise.resolve({ list: modelsCache.list, fetchedAt: modelsCache.fetchedAt, cached: true });
+/**
+ * Fetch the OpenRouter catalog for one output modality.
+ *
+ * OpenRouter exposes ?output_modalities=image|video, which is authoritative —
+ * far better than guessing capability from the slug. Each modality is cached
+ * separately because they are separate upstream calls.
+ *
+ * modality: 'text' (default, unfiltered) | 'image' | 'video'
+ */
+function modalityUrl(modality) {
+  if (modality === 'image' || modality === 'video') {
+    return OPENROUTER_MODELS + '?output_modalities=' + encodeURIComponent(modality);
   }
-  return fetchWithTimeout(OPENROUTER_MODELS, {
+  return OPENROUTER_MODELS;
+}
+
+function normalizeModality(v) {
+  var m = String(v == null ? '' : v).toLowerCase().trim();
+  return (m === 'image' || m === 'video') ? m : 'text';
+}
+
+function getOpenRouterModels(apiKey, modality) {
+  var mod = normalizeModality(modality);
+  var now = Date.now();
+  if (!modelsCache.byModality) modelsCache.byModality = {};
+  var hit = modelsCache.byModality[mod];
+  if (hit && hit.list && now < hit.expiresAt) {
+    return Promise.resolve({ list: hit.list, fetchedAt: hit.fetchedAt, cached: true, modality: mod });
+  }
+  return fetchWithTimeout(modalityUrl(mod), {
     method: 'GET',
     headers: openRouterHeaders(apiKey)
   }, MODELS_TIMEOUT_MS).then(function (res) {
@@ -646,8 +999,18 @@ function getOpenRouterModels(apiKey) {
         if (t) list.push(t);
       }
       list.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
-      modelsCache = { list: list, fetchedAt: Date.now(), expiresAt: Date.now() + MODELS_CACHE_MS };
-      return { list: list, fetchedAt: modelsCache.fetchedAt, cached: false };
+      if (!modelsCache.byModality) modelsCache.byModality = {};
+      modelsCache.byModality[mod] = {
+        list: list, fetchedAt: Date.now(), expiresAt: Date.now() + MODELS_CACHE_MS
+      };
+      // Keep the legacy flat fields pointing at the text catalog so any older
+      // caller that reads modelsCache.list directly still works.
+      if (mod === 'text') {
+        modelsCache.list = list;
+        modelsCache.fetchedAt = modelsCache.byModality[mod].fetchedAt;
+        modelsCache.expiresAt = modelsCache.byModality[mod].expiresAt;
+      }
+      return { list: list, fetchedAt: modelsCache.byModality[mod].fetchedAt, cached: false, modality: mod };
     });
   }, function (e) {
     logErr('openrouter models fetch', e);
@@ -722,7 +1085,8 @@ function readSSE(res) {
 
 // Owner-only. The key never leaves the server; the browser only ever sees the
 // trimmed catalog. Cached in module memory for MODELS_CACHE_MS.
-function handleListModels(idToken, projectId, apiKey, origin) {
+function handleListModels(idToken, projectId, apiKey, origin, modality) {
+  var mod = normalizeModality(modality);
   return verifyIdToken(idToken, projectId).catch(function (e) {
     logErr('token verify (listModels)', e);
     throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again.' };
@@ -730,11 +1094,12 @@ function handleListModels(idToken, projectId, apiKey, origin) {
     if (u.email !== OWNER_EMAIL) {
       throw { httpStatus: 403, code: 'tier-denied', message: 'The OpenRouter model catalog is owner only.' };
     }
-    return getOpenRouterModels(apiKey);
+    return getOpenRouterModels(apiKey, mod);
   }).then(function (r) {
     return json(200, {
       models: r.list,
       count: r.list.length,
+      modality: r.modality || mod,
       fetchedAt: r.fetchedAt,
       cached: r.cached,
       cacheMs: MODELS_CACHE_MS
@@ -743,6 +1108,257 @@ function handleListModels(idToken, projectId, apiKey, origin) {
     if (e && e.code && e.httpStatus) return fail(e.httpStatus, e.code, e.message, origin, e.extra);
     logErr('listModels unhandled', e);
     return fail(500, 'server', 'Could not load the OpenRouter model list.', origin);
+  });
+}
+
+/* ------------------------------------------- shared upstream error mapping */
+
+/**
+ * Turn a non-2xx OpenRouter response into the throwable this file uses. The
+ * real upstream body is logged server-side; the client only ever gets the safe
+ * summary plus a machine-readable `reason` (js/ai.js REASON_TEXT renders it).
+ * Shared by chat and generateImage so the two can never drift apart.
+ */
+function upstreamError(status, bodyText, model) {
+  logErr('openrouter ' + status + ' [' + model + ']', new Error(String(bodyText).slice(0, 2000)));
+  var msg = 'The AI service could not complete that request.';
+  var extra = null;
+
+  if (status === 401) {
+    msg = 'OpenRouter rejected the server key. The site owner needs to check OPENROUTER_API_KEY.';
+    extra = { reason: 'bad-key' };
+  } else if (status === 402) {
+    // NOT the student's daily quota — the owner's OpenRouter balance is empty.
+    msg = 'The site owner\'s OpenRouter account is out of credits, so AI is paused for everyone. ' +
+          'This is not your daily limit. Add credit at openrouter.ai/credits to turn it back on.';
+    extra = { reason: 'insufficient-credits' };
+  } else if (status === 404) {
+    // Almost always a model slug that does not exist on OpenRouter.
+    msg = 'The model "' + model + '" does not exist on OpenRouter. ' +
+          'Fix the model ID in Admin Panel -> AI -> Models.';
+    extra = { reason: 'unknown-model', model: model };
+  } else if (status === 429) {
+    msg = 'OpenRouter is rate limiting this model right now. Try again in a moment.';
+    extra = { reason: 'upstream-rate-limit' };
+  } else if (status === 502 || status === 503) {
+    msg = 'The model provider is overloaded or down. Try again in a moment, or pick another model.';
+    extra = { reason: 'provider-down' };
+  } else if (status === 400) {
+    msg = 'That request was not valid for the selected model.';
+    extra = { reason: 'bad-request', model: model };
+  }
+  return { httpStatus: 502, code: 'server', message: msg, extra: extra };
+}
+
+/* ------------------------------------------- action: generateImage (wire contract)
+ *
+ *   POST /api/ai
+ *   { action:'generateImage', idToken, feature:'mnemonic'|'avatar'|'image',
+ *     prompt:'...', size:'512x512'?, model:'<override>'? }
+ *
+ *   200 { ok:true, b64, mime, model, promptHash, cost }
+ *   err { error:<code>, message, ... }  with code one of
+ *        no-auth | tier-denied | quota-exceeded | ai-disabled | network | server
+ *        | image-unsupported   (the resolved model cannot produce images)
+ *
+ * Everything chat() enforces is enforced here — kill switch, dollar ceiling,
+ * model allow-list, spend recording — with ONE deliberate difference: the daily
+ * quota is the IMAGE cap (aiConfig.imageLimits[tier]), counted at
+ * /aiUsage/<uid>/<day>_img. Images cost multiples of a tutor message, so they
+ * get their own, stricter budget and never consume the text allowance.
+ * ------------------------------------------------------------------------- */
+function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
+  var user = null, cfg = null, tier = 'free', rules = null, model = DEFAULT_MODEL;
+  var isOwner = false, usedToday = 0, limit = 0, spent6 = 0;
+  var key = dayKey(new Date(), QUOTA_TZ);
+  var imgKey = key + IMAGE_USAGE_SUFFIX;
+  // Drives routing AND spend attribution, so the Spend tab breaks image cost out
+  // per feature. An unrecognised tag files as 'image' rather than 'other'.
+  var feature = normalizeFeature(body.feature, 'image');
+  var size = normalizeImageSize(body.size);
+  var prompt = (typeof body.prompt === 'string') ? body.prompt.trim() : '';
+  var hash = '';
+
+  if (!prompt) {
+    return Promise.resolve(fail(400, 'server', 'No image prompt supplied.', origin));
+  }
+  if (prompt.length > MAX_IMAGE_PROMPT_CHARS) prompt = prompt.slice(0, MAX_IMAGE_PROMPT_CHARS);
+
+  return verifyIdToken(idToken, projectId).catch(function (e) {
+    logErr('token verify (generateImage)', e);
+    throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again to keep using AI.' };
+  }).then(function (u) {
+    user = u;
+    isOwner = (u.email === OWNER_EMAIL);
+    return Promise.all([
+      dbGet('userTiers/' + encodeURIComponent(u.uid), idToken),
+      dbGet('appConfig/aiConfig', idToken),
+      readSpendToday(key, idToken)
+    ]);
+  }).then(function (trio) {
+    cfg = normalizeConfig(trio[1]);
+    tier = resolveTier(cfg, user.email, trio[0]);
+    rules = cfg.tiers[tier] || cfg.tiers.free || DEFAULT_AI_CONFIG.tiers.free;
+    spent6 = typeof trio[2] === 'number' ? trio[2] : 0;
+
+    // ---- global kill switch (owner bypasses) --------------------------------
+    if (cfg.enabled === false && !isOwner) {
+      throw { httpStatus: 503, code: 'ai-disabled', message: 'AI features are temporarily turned off. Check back soon.' };
+    }
+
+    // ---- daily DOLLAR ceiling -----------------------------------------------
+    var cap6 = Math.round((typeof cfg.softCapUsd === 'number' ? cfg.softCapUsd : DEFAULT_SOFT_CAP_USD) * 1e6);
+    if (!isOwner && cfg.capMode === 'block' && cap6 > 0 && spent6 >= cap6) {
+      throw {
+        httpStatus: 503,
+        code: 'ai-disabled',
+        message: 'AI is paused for the rest of today: the site hit its daily AI budget of $' +
+                 (cap6 / 1e6).toFixed(2) + '. This is not your personal limit and nothing you did. ' +
+                 'It resets at midnight Eastern, and everything else in MedMaster still works.',
+        extra: { reason: 'spend-cap', resetsAt: nextResetMs(QUOTA_TZ) }
+      };
+    }
+
+    // ---- model routing + allow-list (identical order to chat) ---------------
+    var picked = resolveModelWith(rules, feature, {
+      requested: body.model,
+      isOwner: isOwner,
+      allowModelChoice: cfg.allowModelChoice === true
+    });
+    model = picked.model;
+    if (picked.ignored) {
+      logWarn('featureModels', 'tier "' + tier + '" routes feature "' + feature + '" to "' +
+        picked.ignored + '", which is not in its allow-list — falling back to ' + model);
+    }
+    hash = promptHash(prompt, model, size);
+
+    if (!isOwner && (!Array.isArray(rules.models) || rules.models.length === 0)) {
+      throw {
+        httpStatus: 403,
+        code: 'tier-denied',
+        message: 'AI is not set up for the ' + tier + ' plan yet. No models have been assigned to it.',
+        extra: { allowedModels: [], tier: tier, reason: 'no-models-configured' }
+      };
+    }
+    if (!isOwner && !tierAllowsModel(rules, model)) {
+      throw {
+        httpStatus: 403,
+        code: 'tier-denied',
+        message: 'Your ' + tier + ' plan does not include ' + model + '.',
+        extra: { allowedModels: Array.isArray(rules.models) ? rules.models : [], tier: tier }
+      };
+    }
+
+    // ---- the IMAGE cap ------------------------------------------------------
+    limit = imageLimitFor(cfg, tier, isOwner);
+    if (limit === 0) {
+      throw {
+        httpStatus: 429, code: 'quota-exceeded',
+        message: 'AI image generation is not part of the ' + tier + ' plan (0 images a day). ' +
+                 'Everything else in MedMaster is unaffected.',
+        extra: { used: 0, limit: 0, kind: 'image', tier: tier, resetsAt: nextResetMs(QUOTA_TZ) }
+      };
+    }
+    if (limit < 0) return 0; // unlimited — skip the read
+    return dbGet('aiUsage/' + encodeURIComponent(user.uid) + '/' + imgKey, idToken);
+  }).then(function (count) {
+    usedToday = typeof count === 'number' ? count : 0;
+    if (limit >= 0 && usedToday >= limit) {
+      throw {
+        httpStatus: 429, code: 'quota-exceeded',
+        message: 'You have used all ' + limit + ' of your AI images for today (the daily image limit is ' +
+                 limit + ', separate from your AI messages). It resets at midnight Eastern.',
+        extra: { used: usedToday, limit: limit, kind: 'image', tier: tier, resetsAt: nextResetMs(QUOTA_TZ) }
+      };
+    }
+
+    // ---- upstream -----------------------------------------------------------
+    // OpenRouter serves image models through /chat/completions; `modalities`
+    // asks for an image back. There is no size parameter on this endpoint, so
+    // `size` is carried for the cache key and the response echo only — it is
+    // deliberately NOT appended to the prompt, because image models happily
+    // render stray instruction text into the picture.
+    var capTokens = (typeof rules.maxTokens === 'number' && rules.maxTokens > 0) ? rules.maxTokens : 1024;
+    var payload = {
+      model: model,
+      modalities: ['image', 'text'],
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: Math.max(256, Math.min(capTokens, 2048))
+    };
+    if (REQUEST_USAGE_ACCOUNTING) payload.usage = { include: true };
+
+    return fetchWithTimeout(OPENROUTER_URL, {
+      method: 'POST',
+      headers: openRouterHeaders(apiKey, { 'content-type': 'application/json' }),
+      body: JSON.stringify(payload)
+    }, IMAGE_TIMEOUT_MS).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (t) {
+          throw upstreamError(res.status, t, model);
+        }, function () {
+          throw { httpStatus: 502, code: 'server', message: 'The AI service could not complete that request.' };
+        });
+      }
+      return res.json().then(function (data) {
+        var u = normalizeUsage(data && data.usage);
+        var img = imageFromOpenRouter(data);
+
+        if (!img) {
+          // Capability is detected from the RESPONSE, never from an allow-list of
+          // slugs — OpenRouter adds image models constantly. The slug is only a
+          // hint used to word the message.
+          return recordSpend(user.uid, key, u.cost, model, feature, idToken).then(function () {
+            throw {
+              httpStatus: 502, code: 'image-unsupported',
+              message: looksLikeImageModel(model)
+                ? 'The model "' + model + '" is set up for images but returned none this time. Try again in a moment.'
+                : 'The model "' + model + '" cannot generate images. Point the ' + feature +
+                  ' feature at an image-capable model in Admin Panel -> AI -> Models.',
+              extra: { model: model, feature: feature, tier: tier, reason: 'no-image-returned' }
+            };
+          });
+        }
+
+        // Only a real image costs the student one of their images for the day.
+        return Promise.all([
+          recordUsage(user.uid, imgKey, usedToday, limit, idToken),
+          recordSpend(user.uid, key, u.cost, model, feature, idToken)
+        ]).then(function () {
+          return json(200, {
+            ok: true,
+            b64: img.b64,
+            mime: img.mime,
+            model: model,
+            promptHash: hash,
+            cost: (typeof u.cost === 'number' && isFinite(u.cost)) ? u.cost : 0,
+            // --- additive, beyond the wire contract ---
+            size: size,
+            feature: feature,
+            tier: tier,
+            used: limit < 0 ? -1 : usedToday + 1,
+            limit: limit,
+            resetsAt: nextResetMs(QUOTA_TZ),
+            upstreamModel: (data && typeof data.model === 'string') ? data.model : model,
+            promptTokens: u.promptTokens,
+            completionTokens: u.completionTokens
+          }, origin);
+        });
+      });
+    }, function (e) {
+      logErr('openrouter image fetch', e);
+      var aborted = e && (e.name === 'AbortError' || String(e).indexOf('abort') !== -1);
+      throw {
+        httpStatus: 504,
+        code: 'network',
+        message: aborted
+          ? 'The image took longer than ' + Math.round(IMAGE_TIMEOUT_MS / 1000) + ' seconds to generate. Try a simpler prompt.'
+          : 'Could not reach the AI service. Try again in a moment.'
+      };
+    });
+  }).catch(function (e) {
+    if (e && e.code && e.httpStatus) return fail(e.httpStatus, e.code, e.message, origin, e.extra);
+    logErr('generateImage unhandled', e);
+    return fail(500, 'server', 'Something went wrong on our end. Try again in a moment.', origin);
   });
 }
 
@@ -791,7 +1407,10 @@ exports.handler = function (event) {
   else if (typeof qs.action === 'string' && qs.action) action = qs.action;
 
   if (action === 'listModels') {
-    return handleListModels(idToken, projectId, apiKey, origin);
+    return handleListModels(idToken, projectId, apiKey, origin, body.modality);
+  }
+  if (action === 'generateImage') {
+    return handleGenerateImage(body, idToken, projectId, apiKey, origin);
   }
   if (action !== 'chat') {
     return Promise.resolve(fail(400, 'server', 'Unknown action "' + String(action).slice(0, 40) + '".', origin));
@@ -851,11 +1470,19 @@ exports.handler = function (event) {
       };
     }
 
-    // ---- 4b. model allowlist -----------------------------------------------
-    model = (typeof body.model === 'string' && body.model) ? body.model : null;
-    if (!model) {
-      model = (Array.isArray(rules.models) && rules.models.length && rules.models[0] !== '*')
-        ? rules.models[0] : DEFAULT_MODEL;
+    // ---- 4b. model routing + allowlist -------------------------------------
+    // Order: caller override (owner / allowModelChoice only) -> featureModels[feature]
+    //     -> tier models[0] -> DEFAULT_MODEL. Identical to MM.ai.resolveModelFor().
+    var picked = resolveModelWith(rules, feature, {
+      requested: body.model,
+      isOwner: isOwner,
+      allowModelChoice: cfg.allowModelChoice === true
+    });
+    model = picked.model;
+    if (picked.ignored) {
+      // A misconfiguration must degrade quietly, not 500 and not escalate.
+      logWarn('featureModels', 'tier "' + tier + '" routes feature "' + feature + '" to "' +
+        picked.ignored + '", which is not in its allow-list — falling back to ' + model);
     }
     // A tier with an empty model list is not "denied", it is "not set up yet".
     // The free tier ships that way on purpose until the owner picks real
@@ -930,34 +1557,7 @@ exports.handler = function (event) {
       if (!res.ok) {
         // Log the real upstream body server-side; give the client a safe summary.
         return res.text().then(function (t) {
-          logErr('openrouter ' + res.status + ' [' + model + ']', new Error(String(t).slice(0, 2000)));
-          var msg = 'The AI service could not complete that request.';
-          var extra = null;
-
-          if (res.status === 401) {
-            msg = 'OpenRouter rejected the server key. The site owner needs to check OPENROUTER_API_KEY.';
-            extra = { reason: 'bad-key' };
-          } else if (res.status === 402) {
-            // NOT the student's daily quota — the owner's OpenRouter balance is empty.
-            msg = 'The site owner\'s OpenRouter account is out of credits, so AI is paused for everyone. ' +
-                  'This is not your daily limit. Add credit at openrouter.ai/credits to turn it back on.';
-            extra = { reason: 'insufficient-credits' };
-          } else if (res.status === 404) {
-            // Almost always a model slug that does not exist on OpenRouter.
-            msg = 'The model "' + model + '" does not exist on OpenRouter. ' +
-                  'Fix the model ID in Admin Panel -> AI -> Models.';
-            extra = { reason: 'unknown-model', model: model };
-          } else if (res.status === 429) {
-            msg = 'OpenRouter is rate limiting this model right now. Try again in a moment.';
-            extra = { reason: 'upstream-rate-limit' };
-          } else if (res.status === 502 || res.status === 503) {
-            msg = 'The model provider is overloaded or down. Try again in a moment, or pick another model.';
-            extra = { reason: 'provider-down' };
-          } else if (res.status === 400) {
-            msg = 'That request was not valid for the selected model.';
-            extra = { reason: 'bad-request', model: model };
-          }
-          throw { httpStatus: 502, code: 'server', message: msg, extra: extra };
+          throw upstreamError(res.status, t, model);
         }, function () {
           throw { httpStatus: 502, code: 'server', message: 'The AI service could not complete that request.' };
         });
@@ -1064,10 +1664,11 @@ function safeKey(s) {
 // Bounded on purpose: the feature tag becomes an RTDB key, so an unrecognised
 // (or hostile) value is filed under 'other' rather than growing the ledger a new
 // child per request.
-function normalizeFeature(v) {
+function normalizeFeature(v, dflt) {
+  var fallback = (typeof dflt === 'string' && KNOWN_FEATURES.indexOf(dflt) !== -1) ? dflt : 'other';
   var f = String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
-  if (!f) return 'other';
-  return KNOWN_FEATURES.indexOf(f) === -1 ? 'other' : f;
+  if (!f) return fallback;
+  return KNOWN_FEATURES.indexOf(f) === -1 ? fallback : f;
 }
 
 /**
@@ -1103,3 +1704,27 @@ function readSpendToday(key, idToken) {
     return typeof v === 'number' && isFinite(v) && v > 0 ? v : 0;
   }).catch(function () { return 0; });
 }
+
+/* --------------------------------------------------------------- test surface
+ * Pure helpers, exported so the parity tests can prove the client and the server
+ * resolve the same model and compute the same promptHash for the same inputs.
+ * Netlify only ever calls exports.handler; nothing here is reachable over HTTP.
+ * ------------------------------------------------------------------------- */
+exports._internals = {
+  KNOWN_FEATURES: KNOWN_FEATURES,
+  DEFAULT_MODEL: DEFAULT_MODEL,
+  DEFAULT_AI_CONFIG: DEFAULT_AI_CONFIG,
+  DEFAULT_IMAGE_LIMITS: DEFAULT_IMAGE_LIMITS,
+  IMAGE_USAGE_SUFFIX: IMAGE_USAGE_SUFFIX,
+  IMAGE_TIMEOUT_MS: IMAGE_TIMEOUT_MS,
+  normalizeConfig: normalizeConfig,
+  normalizeFeature: normalizeFeature,
+  normalizeFeatureModels: normalizeFeatureModels,
+  normalizeImageLimits: normalizeImageLimits,
+  normalizeImageSize: normalizeImageSize,
+  imageLimitFor: imageLimitFor,
+  resolveModelWith: resolveModelWith,
+  promptHash: promptHash,
+  imageFromOpenRouter: imageFromOpenRouter,
+  looksLikeImageModel: looksLikeImageModel
+};
