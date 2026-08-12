@@ -1044,6 +1044,32 @@
     return true;
   }
 
+  /* ----------------------------------------------------------------------
+   * "CHECKING YOUR PLAN"
+   * MM.ai.isResolving() is true until Firebase has answered with this
+   * student's tier. Until then aiAvailable() is only a guess, so the debrief
+   * panel must not tell them AI coaching is unavailable. Feature-detected: an
+   * older cached ai.js has no isResolving and the panel behaves as before.
+   * -------------------------------------------------------------------- */
+  function aiResolving() {
+    var ai = obj(MMx().ai);
+    try { return !!(typeof ai.isResolving === 'function' && ai.isResolving()); }
+    catch (e) { return false; }
+  }
+
+  function useAiResolving() {
+    var st = useState(aiResolving);
+    var resolving = st[0], setResolving = st[1];
+    useEffect(function () {
+      if (!resolving) { return undefined; }
+      var ai = obj(MMx().ai);
+      if (typeof ai.onResolved !== 'function') { setResolving(false); return undefined; }
+      var off = ai.onResolved(function () { setResolving(false); });
+      return function () { if (typeof off === 'function') { off(); } };
+    }, [resolving]);
+    return resolving;
+  }
+
   function buildDebriefPrompt(scenario, result, logLines) {
     var sc = obj(scenario);
     var lines = [];
@@ -1662,6 +1688,8 @@
     var [busy, setBusy] = useState(false);
     var [listening, setListening] = useState(false);
     var stopRef = useRef(null);
+    var liveRef = useRef(true);
+    var offResolveRef = useRef(null);
     var voice = obj(MMx().voice);
     var isPeds = lower(sc.category) === 'peds';
     var ttsVoice = isPeds ? 'child' : 'patient';
@@ -1669,7 +1697,9 @@
 
     useEffect(function () {
       return function () {
+        liveRef.current = false;
         if (stopRef.current) { try { stopRef.current(); } catch (e) {} }
+        if (offResolveRef.current) { try { offResolveRef.current(); } catch (e) {} }
         if (typeof voice.stopSpeaking === 'function') { try { voice.stopSpeaking(); } catch (e) {} }
       };
     }, []);
@@ -1690,7 +1720,32 @@
         speak(str(hit.line));
         return;
       }
+      respond(qq);
+    }
+
+    /* Split out of ask() so a question asked before the tier has resolved can
+       simply be re-run once it has, without re-posting the student's line. */
+    function respond(qq) {
       var ai = obj(MMx().ai);
+
+      /* We do not know this account's plan yet. Answering with the "I am not
+         sure how to answer that" fallback here would be a verdict we cannot
+         support - a Pro student would get the no-AI patient for the first
+         second of the sim. Hold the turn (the patient is simply thinking) and
+         answer properly the moment the tier lands. */
+      if (!aiAvailable() && aiResolving() && typeof ai.onResolved === 'function') {
+        setBusy(true);
+        try {
+          offResolveRef.current = ai.onResolved(function () {
+            offResolveRef.current = null;
+            if (!liveRef.current) { return; }
+            setBusy(false);
+            respond(qq);
+          });
+        } catch (e) { setBusy(false); }
+        return;
+      }
+
       var canAi = aiAvailable();
       if (!canAi) {
         /* no AI: take the closest scripted line we can defend, otherwise stay in character */
@@ -2661,6 +2716,7 @@
     var [aiText, setAiText] = useState('');
     var [aiState, setAiState] = useState('idle');
     var [aiErr, setAiErr] = useState('');
+    var aiResolvingNow = useAiResolving();
     var mounted = useRef(true);
 
     useEffect(function () { return function () { mounted.current = false; }; }, []);
@@ -2763,7 +2819,14 @@
         aiText ? ce('div', { style: { fontSize: '13.5px', lineHeight: 1.65, whiteSpace: 'pre-wrap' } }, aiText) : null,
         aiState === 'error' ? ce('div', { className: 'sim-fb mid' },
           ce('span', { className: 'mark' }, '!'), ce('span', null, aiErr)) : null,
-        (aiState === 'idle' && !aiAvailable())
+        /* Still checking: say nothing about their plan, and hold the same
+           two-line footprint the real copy will take so the panel does not
+           jump when it lands. No lock, no error tone, no spinner left over. */
+        (aiState === 'idle' && aiResolvingNow && !aiAvailable())
+          ? ce('div', { style: { fontSize: '13px', color: 'var(--text3)' }, 'aria-live': 'polite' },
+              'Checking your plan...')
+          : null,
+        (aiState === 'idle' && !aiResolvingNow && !aiAvailable())
           ? ce('div', { style: { fontSize: '13px', color: 'var(--text2)' } },
               'AI coaching is not available on this device. Everything below is generated locally and is complete on its own.')
           : null,

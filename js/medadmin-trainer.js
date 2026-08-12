@@ -43,6 +43,34 @@
     if (M && typeof M.toast === 'function') { try { M.toast(msg, type || 'info'); } catch (e) {} }
   }
 
+  /* ----------------------------------------------------------------------
+   * "CHECKING YOUR PLAN"
+   * MM.ai.isResolving() is true until Firebase has answered with this
+   * student's tier. Before this existed, "Ask the instructor" simply vanished
+   * for everyone on first paint and - worse - never came back for a paying
+   * student, because nothing re-rendered when the tier finally landed.
+   * Feature-detected: without isResolving this returns false and the old
+   * behaviour stands.
+   * -------------------------------------------------------------------- */
+  function aiResolving() {
+    var A = mm().ai;
+    try { return !!(A && typeof A.isResolving === 'function' && A.isResolving()); }
+    catch (e) { return false; }
+  }
+
+  function useAiResolving() {
+    var st = useState(aiResolving);
+    var resolving = st[0], setResolving = st[1];
+    useEffect(function () {
+      if (!resolving) return undefined;
+      var A = mm().ai;
+      if (!A || typeof A.onResolved !== 'function') { setResolving(false); return undefined; }
+      var off = A.onResolved(function () { setResolving(false); });
+      return function () { if (typeof off === 'function') off(); };
+    }, [resolving]);
+    return resolving;
+  }
+
   var RUBRIC_ITEMS_CACHE = null;
   function allRubricItems() {
     if (RUBRIC_ITEMS_CACHE) return RUBRIC_ITEMS_CACHE;
@@ -600,6 +628,20 @@
     var a = useState(''), answer = a[0], setAnswer = a[1];
     var b = useState(false), busy = b[0], setBusy = b[1];
     var er = useState(''), err = er[0], setErr = er[1];
+    var resolving = useAiResolving();
+
+    /* Plan not known yet: hold the same small ghost-button footprint the real
+       control uses, disabled and quiet. No lock, no explanation, nothing that
+       reads as a refusal - and it swaps for the live button (or disappears)
+       the instant the tier lands, because resolving flips and we re-render. */
+    if (!available && resolving) {
+      return ce('div', { style: { marginTop: 12 } },
+        ce('button', {
+          className: 'ma-btn ma-btn-ghost ma-btn-sm',
+          disabled: true, 'aria-busy': 'true',
+          style: { opacity: 0.5, cursor: 'default' }
+        }, 'Ask the instructor'));
+    }
 
     if (!available) return null;
 

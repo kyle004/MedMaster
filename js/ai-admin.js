@@ -503,8 +503,45 @@
         if (mounted.current) setUserTiers(snap.val() || {});
       }, function () { /* rules may block; leave empty */ });
 
-      d.ref('userMeta').once('value').then(function (snap) {
-        if (mounted.current) setUserMeta(snap.val() || {});
+      /* Merge three sources so a person can be granted a tier even if they
+         have no /userMeta record.
+           userMeta  - the real profile (email, username, status)
+           userStats - written on every progress sync; has username, no email
+           presence  - whoever is connected right now
+         Historically a rules bug rejected the self-seeded userMeta write for
+         everyone except the owner, so accounts that predate the fix exist only
+         in userStats/presence. Merging means they are grantable immediately
+         instead of only after each person signs in again. userMeta always wins
+         on conflict; the others only fill gaps. */
+      var merged = {};
+      function absorb(snapVal, source) {
+        if (!snapVal) return;
+        for (var uid in snapVal) {
+          if (!Object.prototype.hasOwnProperty.call(snapVal, uid)) continue;
+          var rec = snapVal[uid] || {};
+          var cur = merged[uid] || {};
+          merged[uid] = {
+            username: cur.username || rec.username || rec.name || '',
+            email: cur.email || rec.email || '',
+            status: cur.status || rec.status || '',
+            signupAt: cur.signupAt || rec.signupAt || rec.lastSync || rec.lastSeen || null,
+            // Track where we learned about this person so the UI can say
+            // "no profile yet" rather than pretending the record is complete.
+            sources: (cur.sources || []).concat([source])
+          };
+        }
+      }
+
+      Promise.all([
+        d.ref('userMeta').once('value').then(function (s) { return s.val(); }).catch(function () { return null; }),
+        d.ref('userStats').once('value').then(function (s) { return s.val(); }).catch(function () { return null; }),
+        d.ref('presence').once('value').then(function (s) { return s.val(); }).catch(function () { return null; })
+      ]).then(function (res) {
+        if (!mounted.current) return;
+        absorb(res[0], 'userMeta');
+        absorb(res[1], 'userStats');
+        absorb(res[2], 'presence');
+        setUserMeta(merged);
       }).catch(function () { /* noop */ });
 
       return function () { try { tRef.off('value', tCb); } catch (e) { /* noop */ } };

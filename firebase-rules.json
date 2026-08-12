@@ -1,8 +1,10 @@
 {
   "rules": {
     "presence": {
+      ".read": "auth != null",
+      ".indexOn": ["lastSeen"],
       "$uid": {
-        ".read": true,
+        ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
@@ -37,7 +39,7 @@
         ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
         ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
         "status": {
-          ".validate": "auth.token.email === 'codingky@gmail.com' || newData.val() === 'pending' || newData.val() === 'rejected'"
+          ".validate": "auth.token.email === 'codingky@gmail.com' || newData.val() === 'pending' || newData.val() === 'rejected' || (newData.val() === 'approved' && root.child('appConfig/siteConfig/auth/manualApprovalEnabled').val() !== true)"
         },
         "approvedBy": {
           ".validate": "auth.token.email === 'codingky@gmail.com'"

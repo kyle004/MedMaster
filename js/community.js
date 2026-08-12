@@ -831,6 +831,63 @@
     catch (e) { return false; }
   }
 
+  /* ----------------------------------------------------------------------
+   * "CHECKING YOUR PLAN"
+   * MM.ai.isResolving() is true until Firebase has answered with this
+   * member's tier. Until then aiAvailable() is a guess, and the builder must
+   * not tell anyone AI assist is off for their account off the back of it.
+   * Feature-detected: without isResolving nothing changes.
+   * -------------------------------------------------------------------- */
+  function aiResolving() {
+    var m = MMx();
+    try { return !!(m.ai && typeof m.ai.isResolving === 'function' && m.ai.isResolving()); }
+    catch (e) { return false; }
+  }
+
+  function useAiResolving() {
+    var st = useState(aiResolving);
+    var resolving = st[0], setResolving = st[1];
+    useEffect(function () {
+      if (!resolving) return undefined;
+      var m = MMx();
+      if (!m.ai || typeof m.ai.onResolved !== 'function') { setResolving(false); return undefined; }
+      var off = m.ai.onResolved(function () { setResolving(false); });
+      return function () { if (typeof off === 'function') off(); };
+    }, [resolving]);
+    return resolving;
+  }
+
+  var CHK_STYLE_ID = 'mm-checking-styles';
+  function ensureCheckingStyles() {
+    if (typeof document === 'undefined' || !document.head) return;
+    if (document.getElementById(CHK_STYLE_ID)) return;
+    var s = document.createElement('style');
+    s.id = CHK_STYLE_ID;
+    s.textContent = [
+      '.mm-chk{opacity:.9}',
+      '.mm-chk-line{height:12px;border-radius:var(--r-full,999px);background:var(--surface3,#334155);',
+      'animation:mmChkPulse 1.7s ease-in-out infinite;margin-bottom:10px}',
+      '.mm-chk-line:last-child{margin-bottom:0}',
+      '.mm-chk-note{color:var(--text3);font-size:var(--fs-sm,13px);line-height:var(--lh-normal,1.5);margin:0}',
+      '.mm-chk-box{border:1px solid var(--border,#334155);border-radius:var(--r-lg,14px);',
+      'background:var(--surface);padding:var(--sp-4,16px)}',
+      '@keyframes mmChkPulse{0%,100%{opacity:.30}50%{opacity:.62}}',
+      '@media(prefers-reduced-motion:reduce){.mm-chk-line{animation:none;opacity:.4}}'
+    ].join('');
+    document.head.appendChild(s);
+  }
+
+  /** A disabled twin of the button that is about to appear. Same footprint. */
+  function CheckingButton(props) {
+    ensureCheckingStyles();
+    var p = props || {};
+    return ce('button', {
+      type: 'button', className: p.className || 'btn btn-outline',
+      disabled: true, 'aria-busy': 'true',
+      style: { opacity: 0.5, cursor: 'default' }
+    }, p.label || 'Checking your plan...');
+  }
+
   function aiChat(cfg) {
     var m = MMx();
     if (!m.ai || typeof m.ai.chat !== 'function') {
@@ -1665,6 +1722,7 @@
     var s4 = useState(false);   var aiBusy = s4[0], setAiBusy = s4[1];
     var s5 = useState('');      var aiErr = s5[0], setAiErr = s5[1];
     var s6 = useState('');      var formErr = s6[0], setFormErr = s6[1];
+    var aiResolvingNow = useAiResolving();
 
     function set(field, value) {
       setQ(function (cur) { var n = merge(cur, {}); n[field] = value; return n; });
@@ -1924,7 +1982,14 @@
           review: review,
           onUseRationale: function (t) { set('rationale', t); toast('Rationale replaced. Edit it into your own words.', 'info'); }
         })
-      ) : null,
+      ) : (aiResolvingNow ? ce('div', { className: 'cm-field' },
+        ce('div', { className: 'cm-actions' },
+          /* Plan not known yet - hold the button's footprint, disabled and
+             quiet, rather than deciding this member does not get AI assist. */
+          ce(CheckingButton, { label: 'Check my question with AI' }),
+          ce('span', { className: 'cm-mini' }, 'Checking your plan...')
+        )
+      ) : null),
 
       formErr ? ce('div', { className: 'cm-banner bad', role: 'alert' },
         ce('span', { className: 'cm-banner-ico', 'aria-hidden': 'true' }, '!'),
@@ -3436,6 +3501,7 @@
     var s5 = useState(!!props.aiDrafted); var aiDrafted = s5[0], setAiDrafted = s5[1];
     var s6 = useState(false);  var reviewed = s6[0], setReviewed = s6[1];
     var s7 = useState(false);  var showAi = s7[0], setShowAi = s7[1];
+    var aiResolvingNow = useAiResolving();
 
     function set(field, value) { setD(function (c) { var n = merge(c, {}); n[field] = value; return n; }); }
     function setPatient(field, value) {
@@ -3542,9 +3608,15 @@
           ? ce('div', { style: { marginBottom: 14 } },
               ce('button', { className: 'btn btn-outline', onClick: function () { setShowAi(true); } },
                 '✦ Help me build this with AI'))
-          : ce('div', { className: 'cm-banner' },
-              ce('span', { className: 'cm-banner-ico', 'aria-hidden': 'true' }, 'i'),
-              ce('div', null, 'AI assist is not available on your account right now - the builder works fine without it.'))),
+          /* Plan not known yet: the same button, disabled and quiet. Saying
+             "not available on your account" here before we have read the
+             account is exactly the false verdict this change removes. */
+          : (aiResolvingNow
+              ? ce('div', { style: { marginBottom: 14 } },
+                  ce(CheckingButton, { label: '✦ Help me build this with AI' }))
+              : ce('div', { className: 'cm-banner' },
+                  ce('span', { className: 'cm-banner-ico', 'aria-hidden': 'true' }, 'i'),
+                  ce('div', null, 'AI assist is not available on your account right now - the builder works fine without it.')))),
         showAi && !aiDrafted ? ce('div', { style: { marginBottom: 14 } },
           ce(AiDraftPanel, {
             onDraft: function (draft) {

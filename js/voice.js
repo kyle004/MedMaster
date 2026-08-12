@@ -1673,8 +1673,51 @@
     return true;
   }
 
+  /* ----------------------------------------------------------------------
+   * "CHECKING YOUR PLAN"
+   * MM.ai.isResolving() is true until Firebase has answered with this
+   * student's tier. Grading against the keyword fallback during that window
+   * would stamp "AI grading was unavailable" onto a paying student's report
+   * for no reason other than timing, so we wait for the answer first.
+   * Feature-detected, and time-boxed so a broken resolution can never hang a
+   * grade: ai.js already self-resolves at 6s, this is only a belt-and-braces
+   * ceiling on top of it.
+   * -------------------------------------------------------------------- */
+  var AI_RESOLVE_WAIT_MS = 7000;
+
+  function aiResolving() {
+    var ai = window.MM ? window.MM.ai : null;
+    try { return !!(ai && isFn(ai.isResolving) && ai.isResolving()); }
+    catch (e) { return false; }
+  }
+
+  function whenAiResolved() {
+    var ai = window.MM ? window.MM.ai : null;
+    if (!aiResolving() || !ai || !isFn(ai.onResolved)) return Promise.resolve();
+    return new Promise(function (done) {
+      var settled = false;
+      var off = null;
+      function finish() {
+        if (settled) return;
+        settled = true;
+        if (isFn(off)) { try { off(); } catch (e) { /* noop */ } }
+        done();
+      }
+      try { off = ai.onResolved(finish); } catch (e) { finish(); return; }
+      setTimeout(finish, AI_RESOLVE_WAIT_MS);
+    });
+  }
+
   /** Grade an SBAR report: AI when we can, keyword coverage when we cannot. */
   function gradeSbar(scenario, transcript) {
+    // Never decide "no AI for you" off a tier we have not read yet.
+    if (aiResolving()) {
+      return whenAiResolved().then(function () { return gradeSbarNow(scenario, transcript); });
+    }
+    return gradeSbarNow(scenario, transcript);
+  }
+
+  function gradeSbarNow(scenario, transcript) {
     var local = gradeSbarLocally(scenario, transcript);
     if (!aiAvailable()) return Promise.resolve(local);
     var p;

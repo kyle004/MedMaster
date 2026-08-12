@@ -144,6 +144,68 @@
   function ai() { return (window.MM && window.MM.ai) ? window.MM.ai : null; }
   function voice() { return (window.MM && window.MM.voice) ? window.MM.voice : null; }
 
+  /* ======================================================================
+   * "CHECKING YOUR PLAN" STATE
+   * ----------------------------------------------------------------------
+   * MM.ai.isResolving() is true from page load until Firebase has actually
+   * answered with this student's tier. Until then we know nothing, so we may
+   * not render a verdict of any kind - not a paywall, not a setup notice, not
+   * an error. We render a quiet placeholder shaped like the thing that is
+   * about to appear instead.
+   *
+   * Feature-detected: an older cached ai.js has no isResolving, and with it
+   * absent this returns false and every gate behaves exactly as it did before.
+   * ==================================================================== */
+  function aiResolving() {
+    var A = ai();
+    try { return !!(A && typeof A.isResolving === 'function' && A.isResolving()); }
+    catch (e) { return false; }
+  }
+
+  function useAiResolving() {
+    var st = useState(aiResolving);
+    var resolving = st[0], setResolving = st[1];
+    useEffect(function () {
+      if (!resolving) return undefined;
+      var A = ai();
+      // No resolution API to wait on - do not hold the UI hostage to it.
+      if (!A || typeof A.onResolved !== 'function') { setResolving(false); return undefined; }
+      var off = A.onResolved(function () { setResolving(false); });
+      return function () { if (typeof off === 'function') off(); };
+    }, [resolving]);
+    return resolving;
+  }
+
+  var CHK_STYLE_ID = 'mm-checking-styles';
+  function ensureCheckingStyles() {
+    if (typeof document === 'undefined' || !document.head) return;
+    if (document.getElementById(CHK_STYLE_ID)) return;
+    var s = document.createElement('style');
+    s.id = CHK_STYLE_ID;
+    s.textContent = [
+      '.mm-chk{opacity:.9}',
+      '.mm-chk-line{height:12px;border-radius:var(--r-full,999px);background:var(--surface3,#334155);',
+      'animation:mmChkPulse 1.7s ease-in-out infinite;margin-bottom:10px}',
+      '.mm-chk-line:last-child{margin-bottom:0}',
+      '.mm-chk-note{color:var(--text3);font-size:var(--fs-sm,13px);line-height:var(--lh-normal,1.5);margin:0}',
+      '.mm-chk-box{border:1px solid var(--border,#334155);border-radius:var(--r-lg,14px);',
+      'background:var(--surface);padding:var(--sp-4,16px)}',
+      '@keyframes mmChkPulse{0%,100%{opacity:.30}50%{opacity:.62}}',
+      '@media(prefers-reduced-motion:reduce){.mm-chk-line{animation:none;opacity:.4}}'
+    ].join('');
+    document.head.appendChild(s);
+  }
+
+  /** Grey lines that occupy roughly the shape of whatever is loading. */
+  function CheckingLines(props) {
+    ensureCheckingStyles();
+    var widths = (props && props.widths) || ['92%', '78%', '60%'];
+    return ce('div', { className: 'mm-chk', 'aria-hidden': 'true' },
+      widths.map(function (w, i) {
+        return ce('div', { key: i, className: 'mm-chk-line', style: { width: w } });
+      }));
+  }
+
   function esc(s) { return String(s == null ? '' : s); }
 
   function navTo(page) {
@@ -371,6 +433,8 @@
     var _mo = useState(''); var model = _mo[0], setModel = _mo[1];
     var _an = useState(''); var announce = _an[0], setAnnounce = _an[1];
 
+    var resolving = useAiResolving();
+
     var scrollRef = useRef(null);
     var inputRef = useRef(null);
     var abortRef = useRef(false);
@@ -548,6 +612,23 @@
             'The AI tutor module failed to download. Reload the page to try again. ' +
             'If this keeps happening, your network may be blocking our scripts.'),
           ce('button', { className: 'btn btn-primary', onClick: function () { window.location.reload(); } }, 'Reload')
+        )
+      );
+    }
+
+    /* --------------------------------------------------- still checking
+       Shaped like the chat that is about to replace it: same header, same
+       card, same message-sized lines. No lock, no upgrade copy, no error
+       styling, and it disappears the instant the tier lands. */
+    if (!available && resolving) {
+      return ce('div', null,
+        ce('h2', { style: { marginBottom: 6 } }, '🎓 AI Tutor'),
+        ce('div', { className: 'mm-chk-box', style: { padding: 20 } },
+          ce('div', { role: 'status', 'aria-live': 'polite', className: 'tutor-sr' }, 'Checking your plan'),
+          ce(CheckingLines, { widths: ['46%', '88%', '72%'] }),
+          ce('div', { style: { height: 14 } }),
+          ce(CheckingLines, { widths: ['64%', '80%'] }),
+          ce('p', { className: 'mm-chk-note', style: { marginTop: 18 } }, 'Checking your plan...')
         )
       );
     }

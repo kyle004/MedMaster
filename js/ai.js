@@ -95,6 +95,54 @@
   var PLAN_QUIET_MS = 30 * 24 * 60 * 60 * 1000; // a dismissed upgrade prompt stays dismissed for 30 days
 
   /* ==========================================================================
+   * OPTIMISTIC TIER CACHE  --  READ THIS BEFORE YOU TOUCH IT
+   * --------------------------------------------------------------------------
+   * WHY THIS IS SAFE, PRECISELY:
+   *
+   *   netlify/functions/ai.js re-reads /userTiers/<uid> from Firebase, SERVER
+   *   SIDE, on EVERY SINGLE AI CALL, keyed off the verified Firebase ID token.
+   *   That read is the only thing that decides whether a request is allowed,
+   *   which model it may use, and what the daily limit is. This cache is not an
+   *   input to it and cannot be. Nothing here is ever sent to the server, and
+   *   the server would ignore it if it were.
+   *
+   *   Therefore the worst case of a wrong cache entry is: for a few hundred
+   *   milliseconds the student sees a UI that is more open than their real
+   *   plan; then the live value lands and the UI corrects itself. If they press
+   *   the button in that window the server returns 403 tier-denied and the
+   *   normal error path runs. No content, no model access, and no quota is
+   *   granted by anything in this file.
+   *
+   *   THIS CACHE IS A RENDERING HINT. IT IS NEVER AN AUTHORIZATION DECISION.
+   *   Do not "optimize" by trusting it server-side, do not forward it in the
+   *   /api/ai payload, and do not let it short-circuit the server's tier read.
+   *   If you ever need the tier for a security decision, read Firebase.
+   *
+   * ASYMMETRIC TRUST (the rule that makes the UX right):
+   *   The cache may only ever be used to AVOID SHOWING A LOCK to someone who
+   *   was paid last time (an optimistic unlock). It is never used to SHOW a
+   *   lock. With no usable cache we render the neutral "checking" state, never
+   *   a paywall. That is what removes the false-paywall flash completely.
+   *
+   * The other three safety rules, all enforced in readTierCache():
+   *   - keyed by uid; a different uid ignores AND deletes the entry (shared
+   *     devices, and sign-out clears it outright)
+   *   - expiresAt is honoured client-side on every read: a lapsed membership
+   *     reads as Free immediately, cache or no cache
+   *   - cachedAt older than 24h is ignored entirely; we show "checking" instead
+   * And downgrades never wait out a TTL: the moment the live record lands it
+   * wins outright and the cache is rewritten from it.
+   * ======================================================================== */
+  var LS_TIER_CACHE   = 'mm.ai.tierCache';
+  var TIER_CACHE_V    = 1;
+  var TIER_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+  // Hard ceiling on "we are still checking". A read that never answers (offline
+  // behind a captive portal, a listener that silently never fires) must not
+  // leave a student staring at a spinner forever.
+  var RESOLVE_TIMEOUT_MS = 6000;
+
+  /* ==========================================================================
    * TIER FEATURE MATRIX
    * --------------------------------------------------------------------------
    * Driven by marginal cost, not by what is easiest to withhold.
@@ -354,10 +402,23 @@
     refs: [],
     selectedModel: null,
     lastError: null,
-    inFlight: 0
+    inFlight: 0,
+
+    /* --- resolution tracking -------------------------------------------
+     * `tierLoaded` / `configLoaded` mean "a real value arrived".
+     * `tierResolved` / `configResolved` mean "Firebase has ANSWERED - with a
+     * value, with an error, or by running out of time". Only the second pair
+     * may end the checking state, because an errored read is an answer and a
+     * pending read is not. Conflating the two is the original bug: a pending
+     * read looked exactly like "this person is on Free".
+     * ------------------------------------------------------------------- */
+    tierResolved: false,
+    configResolved: false,
+    resolveTimer: null
   };
 
   var subscribers = [];
+  var resolveWaiters = [];
 
   function cloneConfig(c) {
     var out = {
@@ -428,6 +489,148 @@
   }
 
   function isOwner() { return currentEmail() === OWNER_EMAIL; }
+
+  /* ==========================================================================
+   * OPTIMISTIC TIER CACHE  (see the long comment at the top of this file for
+   * why this can never grant real access)
+   * ======================================================================== */
+
+  function lsGetRaw(k) {
+    try { return window.localStorage.getItem(k); } catch (e) { return null; }
+  }
+  function lsSetRaw(k, v) {
+    try { window.localStorage.setItem(k, v); } catch (e) { /* private mode */ }
+  }
+  function lsDel(k) {
+    try { window.localStorage.removeItem(k); } catch (e) { /* noop */ }
+  }
+
+  function clearTierCache() { lsDel(LS_TIER_CACHE); }
+
+  /**
+   * Read the cache for `uid`, applying every safety rule. Returns null unless
+   * the entry is (a) this exact uid, (b) the current schema version, (c) less
+   * than 24h old, and (d) not past its own expiresAt.
+   *
+   * A uid mismatch DELETES the entry: on a shared device the next person must
+   * not inherit the last person's plan, not even for one frame.
+   */
+  function readTierCache(uid) {
+    var raw = lsGetRaw(LS_TIER_CACHE);
+    if (!raw) return null;
+    var rec = null;
+    try { rec = JSON.parse(raw); } catch (e) { rec = null; }
+    if (!rec || typeof rec !== 'object') { clearTierCache(); return null; }
+    if (rec.v !== TIER_CACHE_V) { clearTierCache(); return null; }
+    if (!rec.uid || !uid || rec.uid !== uid) { clearTierCache(); return null; }
+    if (typeof rec.cachedAt !== 'number' || !isFinite(rec.cachedAt)) { clearTierCache(); return null; }
+    // Staleness cap. Older than a day and we would rather say "checking" than
+    // guess from something we last saw yesterday.
+    if (Date.now() - rec.cachedAt > TIER_CACHE_MAX_AGE_MS) return null;
+    // A lapsed membership is Free the instant it lapses, cache or no cache.
+    if (typeof rec.expiresAt === 'number' && rec.expiresAt > 0 && Date.now() > rec.expiresAt) return null;
+    if (typeof rec.tier !== 'string' || TIER_ORDER.indexOf(rec.tier) === -1) { clearTierCache(); return null; }
+    return rec;
+  }
+
+  /**
+   * The ONLY consumer of the cache. Returns a tier string that may be used to
+   * optimistically UNLOCK, or '' when there is nothing usable.
+   *
+   * Note the last guard: only tiers above Free are ever returned. Cached 'free'
+   * is discarded on purpose - using the cache to render a lock is exactly the
+   * behaviour this whole change exists to delete.
+   */
+  function optimisticTier() {
+    var uid = currentUid();
+    if (!uid) return '';
+    var rec = readTierCache(uid);
+    if (!rec) return '';
+    if (TIER_ORDER.indexOf(rec.tier) <= TIER_ORDER.indexOf('free')) return '';
+    return rec.tier;
+  }
+
+  /** Written every time a live tier record resolves - including down to Free. */
+  function writeTierCache(uid, tier, expiresAt) {
+    if (!uid) return;
+    lsSetRaw(LS_TIER_CACHE, JSON.stringify({
+      v: TIER_CACHE_V,
+      uid: uid,
+      tier: (typeof tier === 'string' && TIER_ORDER.indexOf(tier) !== -1) ? tier : 'free',
+      expiresAt: (typeof expiresAt === 'number' && isFinite(expiresAt)) ? expiresAt : 0,
+      cachedAt: Date.now()
+    }));
+  }
+
+  /* ==========================================================================
+   * RESOLUTION STATE
+   * --------------------------------------------------------------------------
+   * "Resolving" is a real third answer, distinct from Free and from Pro. While
+   * it is true, no consumer may render a verdict of any kind.
+   * ======================================================================== */
+
+  function isResolving() {
+    // Nothing to resolve: no account means signed-out, which is already a
+    // complete and honest answer.
+    if (!currentUid()) return false;
+    // The owner is always instructor and never waits on a record.
+    if (isOwner()) return false;
+    return !(state.tierResolved && state.configResolved);
+  }
+
+  function fireResolved() {
+    var list = resolveWaiters;
+    resolveWaiters = [];
+    for (var i = 0; i < list.length; i++) {
+      try { list[i](api); } catch (e) { /* a bad waiter must not break the rest */ }
+    }
+  }
+
+  function clearResolveTimer() {
+    if (state.resolveTimer) {
+      try { clearTimeout(state.resolveTimer); } catch (e) { /* noop */ }
+      state.resolveTimer = null;
+    }
+  }
+
+  function settleIfDone() {
+    if (isResolving()) return;
+    clearResolveTimer();
+    fireResolved();
+  }
+
+  function markTierResolved() {
+    if (state.tierResolved) return;
+    state.tierResolved = true;
+    settleIfDone();
+  }
+
+  function markConfigResolved() {
+    if (state.configResolved) return;
+    state.configResolved = true;
+    settleIfDone();
+  }
+
+  /**
+   * MM.ai.onResolved(cb) -> unsubscribe.
+   * Fires exactly once, on the next tick if resolution has already happened.
+   */
+  function onResolved(cb) {
+    if (typeof cb !== 'function') return function () {};
+    if (!isResolving()) {
+      var cancelled = false;
+      setTimeout(function () {
+        if (cancelled) return;
+        try { cb(api); } catch (e) { /* noop */ }
+      }, 0);
+      return function () { cancelled = true; };
+    }
+    resolveWaiters.push(cb);
+    return function () {
+      var i = resolveWaiters.indexOf(cb);
+      if (i !== -1) resolveWaiters.splice(i, 1);
+    };
+  }
 
   /* ------------------------------------------------------------- date helpers */
 
@@ -507,13 +710,25 @@
       if (rec.expiresAt && typeof rec.expiresAt === 'number' && Date.now() > rec.expiresAt) t = 'free';
     } else if (typeof rec === 'string') {
       t = rec;
-    } else if (!state.tierLoaded && mm().userTier) {
-      // Only trust the shell's hint BEFORE Firebase has answered. This module
-      // writes window.MM.userTier itself, so reading it back after a load turned
-      // it into a feedback loop: sign in as a lower-tier account and the old
-      // account's tier stuck, because the fresh (empty) record fell back to the
-      // stale value this very function had written a moment earlier.
-      t = mm().userTier;
+    } else if (!state.tierLoaded) {
+      // Firebase has not given us a value yet.
+      //
+      // Optimistic unlock ONLY. optimisticTier() returns '' unless there is a
+      // same-uid, unexpired, under-24h cached PAID tier, so this branch can
+      // widen what we render but never narrow it. A downgrade needs no special
+      // handling here: the moment the live record lands, state.tierLoaded flips
+      // and the branches above win outright, TTL or no TTL.
+      var opt = optimisticTier();
+      if (opt) {
+        t = opt;
+      } else if (mm().userTier) {
+        // Only trust the shell's hint BEFORE Firebase has answered. This module
+        // writes window.MM.userTier itself, so reading it back after a load turned
+        // it into a feedback loop: sign in as a lower-tier account and the old
+        // account's tier stuck, because the fresh (empty) record fell back to the
+        // stale value this very function had written a moment earlier.
+        t = mm().userTier;
+      }
     }
     if (!state.config.tiers[t]) t = 'free';
     return t;
@@ -542,16 +757,27 @@
     state.refs = [];
   }
 
-  function bind(path, cb) {
+  /**
+   * `onErr` is not optional book-keeping: a read that is refused (rules denied)
+   * or that throws is an ANSWER, and it has to end the checking state. Before
+   * this, the error callback did nothing and a denied read left the UI in a
+   * state that could never complete.
+   */
+  function bind(path, cb, onErr) {
     var db = mm().db;
-    if (!db) return;
+    if (!db) { if (onErr) { try { onErr(); } catch (e2) { /* noop */ } } return; }
     try {
       var ref = db.ref(path);
       var handler = ref.on('value', function (snap) {
         try { cb(snap.val()); } catch (e) { /* noop */ }
-      }, function () { /* permission denied etc. - keep defaults */ });
+      }, function (err) {
+        // permission denied, offline, rules changed - keep defaults, but ANSWER.
+        if (onErr) { try { onErr(err); } catch (e2) { /* noop */ } }
+      });
       state.refs.push({ ref: ref, cb: handler });
-    } catch (e) { /* noop */ }
+    } catch (e) {
+      if (onErr) { try { onErr(e); } catch (e2) { /* noop */ } }
+    }
   }
 
   function syncBindings() {
@@ -561,23 +787,57 @@
     if (want === state.boundUid) return;
 
     detach();
+    clearResolveTimer();
     state.boundUid = want;
     state.tierRecord = null;
     state.tierLoaded = false;
+    state.tierResolved = false;
+    state.configResolved = false;
+
+    // Sign-out, or any change of account, drops the cached tier immediately.
+    // Shared devices are the whole reason the cache is keyed by uid at all.
+    if (!uid) clearTierCache();
+    else readTierCache(uid); // side effect: deletes a cache belonging to someone else
     // Drop the shell's cached tier when the account changes, or the previous
     // user's plan leaks into the next one's first render.
     // ('free' rather than null: the shell declares this as a string and reads it
     // for a plan label, so the type has to survive the reset.)
     try { if (window.MM) window.MM.userTier = 'free'; } catch (e) { /* noop */ }
+    // Optimistic unlock for the shell too, so the plan label does not flash
+    // "Free" at a paying student either. Corrected the moment the record lands.
+    try { if (window.MM) window.MM.userTier = resolveTier(); } catch (e) { /* noop */ }
     state.usedToday = 0;
     state.usageLoaded = false;
     state.selectedModel = null;
 
-    if (!db) { notify(); return; }
+    if (!db) {
+      // No database at all - there is nothing to wait for, so do not pretend to
+      // be checking. If MM.db shows up later this whole function re-runs.
+      markConfigResolved();
+      markTierResolved();
+      notify();
+      return;
+    }
+
+    // Safety net. If either read simply never answers, stop checking after
+    // RESOLVE_TIMEOUT_MS and render with whatever we have. Note this does NOT
+    // set tierLoaded: a timeout is not an answer, so an optimistic unlock is
+    // kept rather than being yanked into a surprise paywall on a slow phone.
+    state.resolveTimer = setTimeout(function () {
+      state.resolveTimer = null;
+      markConfigResolved();
+      markTierResolved();
+      notify();
+    }, RESOLVE_TIMEOUT_MS);
 
     bind('appConfig/aiConfig', function (val) {
       state.config = normalizeConfig(val);
       state.configLoaded = true;
+      markConfigResolved();
+      notify();
+    }, function () {
+      // Config unreadable: DEFAULT_AI_CONFIG stands. That is a complete answer.
+      markConfigResolved();
       notify();
     });
 
@@ -585,14 +845,36 @@
       bind('userTiers/' + uid, function (val) {
         state.tierRecord = val;
         state.tierLoaded = true;
+        var t = resolveTier();
+        try { window.MM.userTier = t; } catch (e) { /* noop */ }
+        // Write the cache from the live value on every resolve, upgrades and
+        // downgrades alike, so the next cold start starts from the truth.
+        writeTierCache(uid, t,
+          (val && typeof val === 'object' && typeof val.expiresAt === 'number') ? val.expiresAt : 0);
+        markTierResolved();
+        notify();
+      }, function () {
+        // Rules denied / offline / read threw. Degrade to the honest Free
+        // experience rather than spinning forever: treat it as "answered, and
+        // the answer is that we have no record for you".
+        state.tierRecord = null;
+        state.tierLoaded = true;
         try { window.MM.userTier = resolveTier(); } catch (e) { /* noop */ }
+        markTierResolved();
         notify();
       });
       bind('aiUsage/' + uid + '/' + dayKey(), function (val) {
         state.usedToday = typeof val === 'number' ? val : 0;
         state.usageLoaded = true;
         notify();
+      }, function () {
+        // Usage is not part of resolution - a missing counter just reads as 0.
+        state.usageLoaded = true;
+        notify();
       });
+    } else {
+      // Signed out: nothing user-specific to read.
+      markTierResolved();
     }
     notify();
   }
@@ -1151,6 +1433,28 @@
         message: 'You need to be signed in for this - it is how your daily allowance is counted. ' +
                  'Your work here is saved; signing in will not lose it.',
         actions: [{ id: 'signin', label: 'Sign in', primary: true }]
+      };
+    }
+
+    /* ----------------------------------------------------------------------
+     * WE DO NOT KNOW YET.
+     *
+     * This must come before every other verdict below, because every verdict
+     * below is a claim about this person's account and we cannot make one.
+     * Returning 'free' by default and then confidently rendering a paywall off
+     * it is the bug this branch exists to kill: a Pro student saw "you need a
+     * paid plan" on every page load until Firebase answered.
+     *
+     * paywall:false, no actions, nothing to dismiss, nothing to buy.
+     * -------------------------------------------------------------------- */
+    if (isResolving()) {
+      return {
+        code: 'resolving', legacyCode: 'resolving', paywall: false,
+        resolving: true,
+        plan: tier, planLabel: label,
+        title: 'Checking your plan',
+        message: 'One moment - we are looking up what your account includes.',
+        actions: []
       };
     }
 
@@ -1918,6 +2222,20 @@
     setSelectedModel: setSelectedModel,
     getUsage: getUsage,
     PERSONAS: PERSONAS,
+
+    /* --- resolution surface (additive) ---------------------------------
+     * isResolving() is true until BOTH the tier record and the AI config have
+     * been answered by Firebase - answered including "errored" and "timed out".
+     * False for a signed-out visitor and for the owner, who have nothing to
+     * wait on. While it is true, no gate anywhere in the app may render a
+     * verdict; render the neutral checking state instead.
+     * ------------------------------------------------------------------- */
+    isResolving: isResolving,
+    onResolved: onResolved,
+    isTierResolved: function () { return state.tierResolved; },
+    // Diagnostics only. Never an input to an access decision.
+    getCachedTier: function () { return optimisticTier(); },
+    clearTierCache: clearTierCache,
 
     // --- helper builders for other modules ---
     buildScenarioContext: buildScenarioContext,

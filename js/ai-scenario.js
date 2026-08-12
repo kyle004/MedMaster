@@ -51,6 +51,62 @@
   function aiApi() { return obj(MMx().ai); }
   function voiceApi() { return obj(MMx().voice); }
 
+  /* ======================================================================
+   * "CHECKING YOUR PLAN" STATE
+   * MM.ai.isResolving() is true until Firebase has actually answered with this
+   * student's tier. Until it goes false we know nothing about their plan, so
+   * the setup screen may not claim this mode is unavailable to them. Feature
+   * detected - an older cached ai.js has no isResolving and everything then
+   * behaves exactly as before.
+   * ==================================================================== */
+  function aiResolving() {
+    var a = aiApi();
+    try { return !!(isFn(a.isResolving) && a.isResolving()); }
+    catch (e) { return false; }
+  }
+
+  function useAiResolving() {
+    var st = useState(aiResolving);
+    var resolving = st[0], setResolving = st[1];
+    useEffect(function () {
+      if (!resolving) return undefined;
+      var a = aiApi();
+      if (!isFn(a.onResolved)) { setResolving(false); return undefined; }
+      var off = a.onResolved(function () { setResolving(false); });
+      return function () { if (isFn(off)) off(); };
+    }, [resolving]);
+    return resolving;
+  }
+
+  var CHK_STYLE_ID = 'mm-checking-styles';
+  function ensureCheckingStyles() {
+    if (typeof document === 'undefined' || !document.head) return;
+    if (document.getElementById(CHK_STYLE_ID)) return;
+    var s = document.createElement('style');
+    s.id = CHK_STYLE_ID;
+    s.textContent = [
+      '.mm-chk{opacity:.9}',
+      '.mm-chk-line{height:12px;border-radius:var(--r-full,999px);background:var(--surface3,#334155);',
+      'animation:mmChkPulse 1.7s ease-in-out infinite;margin-bottom:10px}',
+      '.mm-chk-line:last-child{margin-bottom:0}',
+      '.mm-chk-note{color:var(--text3);font-size:var(--fs-sm,13px);line-height:var(--lh-normal,1.5);margin:0}',
+      '.mm-chk-box{border:1px solid var(--border,#334155);border-radius:var(--r-lg,14px);',
+      'background:var(--surface);padding:var(--sp-4,16px)}',
+      '@keyframes mmChkPulse{0%,100%{opacity:.30}50%{opacity:.62}}',
+      '@media(prefers-reduced-motion:reduce){.mm-chk-line{animation:none;opacity:.4}}'
+    ].join('');
+    document.head.appendChild(s);
+  }
+
+  function CheckingLines(props) {
+    ensureCheckingStyles();
+    var widths = obj(props).widths || ['92%', '78%', '60%'];
+    return ce('div', { className: 'mm-chk', 'aria-hidden': 'true' },
+      widths.map(function (w, i) {
+        return ce('div', { key: i, className: 'mm-chk-line', style: { width: w } });
+      }));
+  }
+
   function toast(msg, kind) {
     var f = MMx().toast;
     if (isFn(f)) { try { f(msg, kind || 'info'); } catch (e) { /* noop */ } }
@@ -1822,6 +1878,7 @@
     var p = obj(props);
     var cats = useMemo(categoryList, []);
     var available = aiIsAvailable();
+    var resolving = useAiResolving();
 
     var catHook = useState(cats.length ? cats[0] : 'any');
     var category = catHook[0], setCategory = catHook[1];
@@ -1878,6 +1935,24 @@
         ce('span', { className: 'tag tag-orange', key: 't4' }, 'Uses your AI messages')
       ])
     ]);
+
+    /* ------------------------------------------------------- still checking
+       We do not yet know what this account includes, so we say nothing about
+       it. This is shaped like the first setup card that replaces it, uses no
+       error styling and offers no upgrade path, and it clears the moment the
+       tier lands. */
+    if (!available && resolving) {
+      return ce('div', { className: 'ais-wrap' }, [
+        header,
+        ce('div', { className: 'card ais-col', key: 'chk' }, [
+          ce('div', { className: 'ais-sr', key: 'sr', role: 'status', 'aria-live': 'polite' }, 'Checking your plan'),
+          ce(CheckingLines, { key: 'l1', widths: ['38%', '86%', '70%'] }),
+          ce('div', { key: 'gap', style: { height: '14px' } }),
+          ce(CheckingLines, { key: 'l2', widths: ['54%', '64%'] }),
+          ce('p', { className: 'mm-chk-note', key: 'n', style: { marginTop: '16px' } }, 'Checking your plan...')
+        ])
+      ]);
+    }
 
     if (!available) {
       var info = aiUnavailableInfo();
