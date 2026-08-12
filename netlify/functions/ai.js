@@ -1150,6 +1150,24 @@ function upstreamError(status, bodyText, model) {
   return { httpStatus: 502, code: 'server', message: msg, extra: extra };
 }
 
+/**
+ * Did this 4xx come from the model refusing `response_format`?
+ *
+ * OpenRouter lists response_format in `supported_parameters` for most models,
+ * but a handful of providers still 400 on it, and they all say so in the body
+ * one of three ways: they name the parameter, they use OpenAI's
+ * "unsupported_parameter" code, or they complain about json_object /
+ * json_schema specifically. Anything that matches is worth one silent retry
+ * WITHOUT the parameter - a structured-output nicety must never be the reason
+ * a student's turn fails.
+ */
+var RE_RESPONSE_FORMAT_REJECT = /response_?format|unsupported_?parameter|json_object|json_schema/i;
+
+function rejectsResponseFormat(status, bodyText) {
+  if (!(status >= 400 && status < 500)) return false;
+  return RE_RESPONSE_FORMAT_REJECT.test(String(bodyText == null ? '' : bodyText));
+}
+
 /* ------------------------------------------- action: generateImage (wire contract)
  *
  *   POST /api/ai
@@ -1394,17 +1412,27 @@ exports.handler = function (event) {
     return Promise.resolve(fail(400, 'server', 'Malformed request body.', origin));
   }
 
-  var idToken = body.idToken;
-  if (!idToken) {
-    return Promise.resolve(fail(401, 'no-auth', 'You need to be signed in to use AI features.', origin));
-  }
-
   // ---- 1b. which action? ----------------------------------------------------
   var qs = (event.queryStringParameters && typeof event.queryStringParameters === 'object')
     ? event.queryStringParameters : {};
   var action = 'chat';
   if (typeof body.action === 'string' && body.action) action = body.action;
   else if (typeof qs.action === 'string' && qs.action) action = qs.action;
+
+  /* ---- warmup: the only unauthenticated action ------------------------------
+   * Does nothing at all. Its entire job is to make Netlify boot the container
+   * so the FIRST real call of a session is not paying for a cold start on top
+   * of a slow model. It reads no body fields, touches no Firebase, calls no
+   * upstream, spends nothing, and returns before any auth work - so there is
+   * nothing here to abuse beyond an empty 204 that CORS already allows. */
+  if (action === 'warmup') {
+    return Promise.resolve({ statusCode: 204, headers: corsHeaders(origin), body: '' });
+  }
+
+  var idToken = body.idToken;
+  if (!idToken) {
+    return Promise.resolve(fail(401, 'no-auth', 'You need to be signed in to use AI features.', origin));
+  }
 
   if (action === 'listModels') {
     return handleListModels(idToken, projectId, apiKey, origin, body.modality);
@@ -1539,30 +1567,61 @@ exports.handler = function (event) {
 
     var wantStream = body.stream === true;
 
-    // OpenRouter / OpenAI shape: no top-level `system`, it is the first message.
-    var payload = {
-      model: model,
-      messages: buildChatMessages(body.system, messages),
-      max_tokens: maxTokens,
-      temperature: temperature,
-      stream: wantStream
-    };
-    if (REQUEST_USAGE_ACCOUNTING) payload.usage = { include: true };
+    /* Structured output, opt-in per call (js/ai.js chat({json:true})). The
+       scenario engine needs ONE raw JSON object per turn, and asking for it
+       through response_format removes almost every "the model wrapped it in
+       prose" parse failure. Not every model accepts the parameter, so it is
+       always retried once without it - see rejectsResponseFormat(). */
+    var wantJson = body.json === true;
 
-    return fetchWithTimeout(OPENROUTER_URL, {
-      method: 'POST',
-      headers: openRouterHeaders(apiKey, { 'content-type': 'application/json' }),
-      body: JSON.stringify(payload)
-    }, UPSTREAM_TIMEOUT_MS).then(function (res) {
-      if (!res.ok) {
+    // OpenRouter / OpenAI shape: no top-level `system`, it is the first message.
+    function buildPayload(withJson) {
+      var payload = {
+        model: model,
+        messages: buildChatMessages(body.system, messages),
+        max_tokens: maxTokens,
+        temperature: temperature,
+        stream: wantStream
+      };
+      if (REQUEST_USAGE_ACCOUNTING) payload.usage = { include: true };
+      if (withJson) payload.response_format = { type: 'json_object' };
+      return payload;
+    }
+
+    // Resolves with an OK upstream response, or rejects with this file's
+    // {httpStatus, code, message} throwable. One automatic retry, and only
+    // ever to drop response_format.
+    function sendUpstream(withJson) {
+      return fetchWithTimeout(OPENROUTER_URL, {
+        method: 'POST',
+        headers: openRouterHeaders(apiKey, { 'content-type': 'application/json' }),
+        body: JSON.stringify(buildPayload(withJson))
+      }, UPSTREAM_TIMEOUT_MS).then(function (res) {
+        if (res.ok) return res;
         // Log the real upstream body server-side; give the client a safe summary.
         return res.text().then(function (t) {
+          if (withJson && rejectsResponseFormat(res.status, t)) {
+            logWarn('response_format', 'model "' + model + '" rejected response_format (' +
+              res.status + ') - retrying once without it');
+            return sendUpstream(false);
+          }
           throw upstreamError(res.status, t, model);
         }, function () {
           throw { httpStatus: 502, code: 'server', message: 'The AI service could not complete that request.' };
         });
-      }
+      }, function (e) {
+        logErr('openrouter fetch', e);
+        var aborted = e && (e.name === 'AbortError' || String(e).indexOf('abort') !== -1);
+        throw {
+          httpStatus: 504,
+          code: 'server',
+          message: aborted ? 'The AI took too long to respond. Try a shorter request.'
+                           : 'Could not reach the AI service. Try again in a moment.'
+        };
+      });
+    }
 
+    return sendUpstream(wantJson).then(function (res) {
       // Count the call now that upstream accepted it.
       var bump = recordUsage(user.uid, key, usedToday, limit, idToken);
 
@@ -1616,15 +1675,6 @@ exports.handler = function (event) {
           }, origin);
         });
       });
-    }, function (e) {
-      logErr('openrouter fetch', e);
-      var aborted = e && (e.name === 'AbortError' || String(e).indexOf('abort') !== -1);
-      throw {
-        httpStatus: 504,
-        code: 'server',
-        message: aborted ? 'The AI took too long to respond. Try a shorter request.'
-                         : 'Could not reach the AI service. Try again in a moment.'
-      };
     });
   }).catch(function (e) {
     if (e && e.code && e.httpStatus) {
@@ -1724,6 +1774,7 @@ exports._internals = {
   normalizeImageSize: normalizeImageSize,
   imageLimitFor: imageLimitFor,
   resolveModelWith: resolveModelWith,
+  rejectsResponseFormat: rejectsResponseFormat,
   promptHash: promptHash,
   imageFromOpenRouter: imageFromOpenRouter,
   looksLikeImageModel: looksLikeImageModel

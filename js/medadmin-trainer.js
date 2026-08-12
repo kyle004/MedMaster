@@ -71,6 +71,93 @@
     return resolving;
   }
 
+  /* ======================================================================
+   * AI WAIT STATE  (file-local; the only pending-UI mechanism in this file)
+   * ----------------------------------------------------------------------
+   * The Netlify function buffers SSE, so a reply can arrive as one lump at
+   * the very end. "Asking..." on a disabled button therefore told the student
+   * nothing for however long the model took, and looked identical to a hang.
+   *
+   * This clock is keyed on wall time only: it is set synchronously with the
+   * busy flag (so there is an acknowledgment on the next paint), it ticks on
+   * its own interval (so it advances with zero output), and it escalates.
+   * ==================================================================== */
+  var WAIT_TICK_MS = 1000;
+  var WAIT_SOON_MS = 5000;    // start showing the elapsed counter
+  var WAIT_SLOW_MS = 20000;   // say out loud that this is slow
+  var WAIT_LONG_MS = 45000;   // offer a retry
+
+  function waitTier(ms) {
+    if (ms >= WAIT_LONG_MS) return 3;
+    if (ms >= WAIT_SLOW_MS) return 2;
+    if (ms >= WAIT_SOON_MS) return 1;
+    return 0;
+  }
+
+  var WAIT_TEXT = [
+    'Sending your question to the instructor.',
+    'The instructor is writing an answer.',
+    'Still working - this model is being slow. Nothing is stuck.',
+    'This is taking much longer than usual. Keep waiting, or try again.'
+  ];
+
+  function useAiWait() {
+    var s = useState(null);
+    var wait = s[0], setWait = s[1];
+    var timerRef = useRef(null);
+    var startRef = useRef(0);
+
+    function clearTick() {
+      if (timerRef.current) {
+        try { clearInterval(timerRef.current); } catch (e) {}
+        timerRef.current = null;
+      }
+    }
+    useEffect(function () { return clearTick; }, []);
+
+    function begin() {
+      clearTick();
+      startRef.current = Date.now();
+      setWait({ ms: 0, tier: 0 });
+      timerRef.current = setInterval(function () {
+        var ms = Date.now() - startRef.current;
+        setWait({ ms: ms, tier: waitTier(ms) });
+      }, WAIT_TICK_MS);
+    }
+    function end() { clearTick(); setWait(null); }
+
+    return { wait: wait, begin: begin, end: end };
+  }
+
+  /**
+   * The one status node. `data-elapsed` advances off wall time whether or not
+   * a single character has arrived. The dots are decoration: under
+   * prefers-reduced-motion the CSS stops them and the text status is unchanged.
+   */
+  function WaitNote(props) {
+    var w = props.wait;
+    if (!w) return null;
+    var secs = Math.floor(w.ms / 1000);
+    var texts = props.texts || WAIT_TEXT;
+    return ce('div', {
+      className: 'ma-wait' + (w.tier >= 2 ? ' slow' : ''),
+      'data-elapsed': String(secs), 'data-tier': String(w.tier)
+    },
+      ce('span', { className: 'ma-wait-dots', 'aria-hidden': 'true' },
+        ce('i', null), ce('i', null), ce('i', null)),
+      /* Only the phrase is announced, and it changes at most three times.
+         The seconds are aria-hidden so nobody is read a clock. */
+      ce('span', { role: 'status', 'aria-live': 'polite' }, texts[w.tier]),
+      w.tier >= 1 ? ce('span', { className: 'ma-wait-secs', 'aria-hidden': 'true' }, secs + 's') : null,
+      (w.tier >= 3 && props.onRetry)
+        ? ce('button', { type: 'button', className: 'ma-btn ma-btn-ghost ma-btn-sm', onClick: props.onRetry }, 'Try again')
+        : null,
+      (w.tier >= 3 && props.onCancel)
+        ? ce('button', { type: 'button', className: 'ma-btn ma-btn-ghost ma-btn-sm', onClick: props.onCancel }, 'Stop waiting')
+        : null
+    );
+  }
+
   var RUBRIC_ITEMS_CACHE = null;
   function allRubricItems() {
     if (RUBRIC_ITEMS_CACHE) return RUBRIC_ITEMS_CACHE;
@@ -564,6 +651,16 @@
       /* ---- AI ---- */
       '.ma-ai{border:1px dashed ' + TK.ac2 + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ';margin-top:' + TK.sp3 + ';background:' + TK.tintP + ';}',
       '.ma-ai-out{margin-top:' + TK.sp3 + ';font-size:' + TK.fsBase + ';line-height:' + TK.lhBody + ';white-space:pre-wrap;overflow-wrap:anywhere;color:' + TK.tx + ';background:' + TK.bg + ';border-radius:' + TK.rMd + ';padding:' + TK.sp3 + ';max-height:340px;overflow:auto;}',
+      /* wall-clock wait status — see the AI WAIT STATE block at the top */
+      '.ma-wait{display:flex;align-items:center;gap:' + TK.sp2 + ';flex-wrap:wrap;font-size:' + TK.fsSm + ';color:' + TK.tx2 + ';line-height:' + TK.lhNorm + ';margin-top:' + TK.sp3 + ';}',
+      '.ma-wait.slow{color:' + TK.orangeFg + ';}',
+      '.ma-wait-secs{font-variant-numeric:tabular-nums;color:' + TK.tx3 + ';font-size:' + TK.fsXs + ';}',
+      '.ma-wait-dots{display:inline-flex;gap:3px;align-items:center;flex:0 0 auto;}',
+      '.ma-wait-dots i{width:6px;height:6px;border-radius:' + TK.rFull + ';background:' + TK.tx3 + ';animation:maWaitBounce 1.2s infinite;}',
+      '.ma-wait-dots i:nth-child(2){animation-delay:.15s;}',
+      '.ma-wait-dots i:nth-child(3){animation-delay:.3s;}',
+      '@keyframes maWaitBounce{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}',
+      '.ma-fb-act{display:flex;gap:' + TK.sp2 + ';flex-wrap:wrap;margin-top:' + TK.sp2 + ';}',
       /* ---- misc ---- */
       '.ma-bars{display:flex;flex-direction:column;gap:' + TK.sp2 + ';}',
       '.ma-bar{display:grid;grid-template-columns:minmax(110px,1.4fr) 1fr auto;gap:' + TK.sp2 + ';align-items:center;font-size:' + TK.fsSm + ';}',
@@ -576,6 +673,8 @@
       '.ma-btn:active:not([disabled]),.ma-opt:active:not([disabled]),.ma-modecard:active,.ma-tab:active,.ma-drugrow:active,.ma-lvl:active{transform:scale(.975);}',
       /* ---- motion ---- */
       '@media (prefers-reduced-motion: reduce){',
+      /* the animation goes; the text status and the elapsed counter stay */
+      '.ma-wait-dots i{animation:none;opacity:.55;}',
       '.ma-modecard,.ma-opt,.ma-timerfill,.ma-btn,.ma-tab,.ma-drugrow,.ma-lvl,.ma-hot .ma-hot-sh{transition:none !important;}',
       '.ma-modecard:hover{transform:none;}',
       '.ma-btn:active:not([disabled]),.ma-opt:active:not([disabled]),.ma-modecard:active,.ma-tab:active,.ma-drugrow:active,.ma-lvl:active{transform:none;}',
@@ -627,8 +726,20 @@
     var q = useState(''), question = q[0], setQuestion = q[1];
     var a = useState(''), answer = a[0], setAnswer = a[1];
     var b = useState(false), busy = b[0], setBusy = b[1];
-    var er = useState(''), err = er[0], setErr = er[1];
+    var er = useState(null), err = er[0], setErr = er[1];
     var resolving = useAiResolving();
+    var waiter = useAiWait();
+
+    /* Ref twins of `busy`, because state is not synchronous: two taps on Ask
+       (or a suggestion chip while one is already in flight) used to be able to
+       start two calls and spend two messages. `runRef` also orphans a call the
+       student has walked away from, so a late answer cannot overwrite a newer
+       one or resurrect the pending UI. */
+    var busyRef = useRef(false);
+    var runRef = useRef(0);
+    var mountedRef = useRef(true);
+    var lastAskedRef = useRef('');
+    useEffect(function () { return function () { mountedRef.current = false; }; }, []);
 
     /* Plan not known yet: hold the same small ghost-button footprint the real
        control uses, disabled and quiet. No lock, no explanation, nothing that
@@ -645,33 +756,114 @@
 
     if (!available) return null;
 
+    /* One line per code MM.ai.chat rejects with. Three of them are not the
+       student's fault and cannot be retried; two of them can. Saying so is the
+       difference between "try again" and "stop tapping the button". */
+    function askErr(e) {
+      var code = (e && e.code) ? String(e.code) : 'server';
+      if (e && e.timedOut) {
+        return { code: code, retry: true,
+                 text: 'The instructor ran out of time answering that. Your question is still in the box.' };
+      }
+      if (code === 'quota-exceeded') {
+        return { code: code, retry: false,
+                 text: 'That is all your AI questions for today. They reset at midnight Eastern - everything else in the trainer still works.' };
+      }
+      if (code === 'no-auth') {
+        return { code: code, retry: false, text: 'Sign in to ask the instructor. Nothing you have done here is lost.' };
+      }
+      if (code === 'tier-denied') {
+        return { code: code, retry: false, text: 'Ask the instructor is not included in your plan. The rubric, the MAR and the drug guide are.' };
+      }
+      if (code === 'ai-disabled') {
+        return { code: code, retry: false, text: 'The instructor is switched off site-wide right now. This is not something on your account.' };
+      }
+      if (code === 'network') {
+        return { code: code, retry: true,
+                 text: 'Could not reach the instructor - check your connection. Your question is still in the box.' };
+      }
+      return { code: 'server', retry: true,
+               text: (e && e.message) ? String(e.message) : 'The instructor did not answer that one. Try again in a moment.' };
+    }
+
+    /** Every exit from an ask goes through here. Nothing is left pending. */
+    function settle(runId) {
+      if (runId !== runRef.current) return false;
+      busyRef.current = false;
+      if (!mountedRef.current) return false;
+      setBusy(false);
+      waiter.end();
+      return true;
+    }
+
     function ask(text) {
       var body = String(text || question || '').trim();
-      if (!body) return;
-      setBusy(true); setErr(''); setAnswer('');
+      if (!body || busyRef.current) return;
+      lastAskedRef.current = body;
+
+      busyRef.current = true;
+      var runId = ++runRef.current;
+      setBusy(true); setErr(null); setAnswer('');
+      // Acknowledgment first, network second: this is committed in the same
+      // render as `busy`, so it is on screen before anything is awaited.
+      waiter.begin();
+
       var sys = 'You are a nursing clinical instructor supervising a medication administration skill checkoff. ' +
         'Answer briefly (under 180 words), in plain clinical language, always prioritising PATIENT SAFETY. ' +
         'Name the rubric item or the "right" involved when relevant. Never invent drug doses; if the student needs a ' +
         'number, tell them to verify it in a drug guide. If the situation calls for holding the drug or clarifying the ' +
         'order, say so plainly. Do not use emojis.';
       var ctx = props.context ? ('CONTEXT THE STUDENT IS LOOKING AT:\n' + props.context + '\n\n') : '';
-      M.ai.chat({
-        system: sys,
-        messages: [{ role: 'user', content: ctx + 'STUDENT QUESTION: ' + body }],
-        maxTokens: 600,
-        temperature: 1
-      }).then(function (txt) {
-        setAnswer(String(txt || '').trim() || 'No response.');
-        setBusy(false);
-      })['catch'](function (e) {
-        var code = e && e.code;
-        var msg = code === 'quota-exceeded' ? 'You have used your AI questions for today.'
-          : code === 'no-auth' ? 'Sign in to ask the instructor.'
-          : code === 'tier-denied' ? 'Ask the instructor is not available on your plan.'
-          : code === 'ai-disabled' ? 'The instructor is switched off right now.'
-          : 'Could not reach the instructor. Try again.';
-        setErr(msg); setBusy(false);
+
+      var p;
+      try {
+        p = M.ai.chat({
+          system: sys,
+          messages: [{ role: 'user', content: ctx + 'STUDENT QUESTION: ' + body }],
+          maxTokens: 600,
+          temperature: 1,
+          feature: 'medadmin'
+        });
+      } catch (e) {
+        // A synchronous throw used to leave `busy` true forever, which left the
+        // Ask button disabled with no way back short of leaving the mode.
+        p = Promise.reject(e);
+      }
+
+      Promise.resolve(p).then(function (txt) {
+        if (!settle(runId)) return;
+        setAnswer(String(txt || '').trim() || 'No answer came back. Ask it again, or reword it.');
+      }, function (e) {
+        if (!settle(runId)) return;
+        setErr(askErr(e));
       });
+    }
+
+    /**
+     * "Try again" from inside the wait status: the call is still notionally
+     * running and the student has run out of patience. Orphan it first, then
+     * re-ask. Bumping runRef before ask() means the abandoned call can never
+     * land, and busyRef is set again synchronously inside ask(), so this
+     * cannot double-submit however fast it is tapped.
+     */
+    function retryInFlight() {
+      var body = lastAskedRef.current;
+      if (!body) return;
+      runRef.current++;
+      busyRef.current = false;
+      waiter.end();
+      ask(body);
+    }
+
+    /** Give up on an answer that is never coming, without spending another. */
+    function cancelAsk() {
+      if (!busyRef.current) return;
+      runRef.current++;
+      busyRef.current = false;
+      setBusy(false);
+      waiter.end();
+      setErr({ code: 'cancelled', retry: true,
+               text: 'Stopped waiting. Your question is still in the box - ask it again whenever you want.' });
     }
 
     if (!open) {
@@ -691,8 +883,11 @@
         onChange: function (e) { setQuestion(e.target.value); }
       }),
       ce('div', { className: 'ma-row', style: { marginTop: 8 } },
-        ce('button', { className: 'ma-btn ma-btn-primary ma-btn-sm', disabled: busy || !question.trim(), onClick: function () { ask(); } },
-          busy ? 'Asking...' : 'Ask'),
+        ce('button', {
+          className: 'ma-btn ma-btn-primary ma-btn-sm', disabled: busy || !question.trim(),
+          'aria-busy': busy ? 'true' : 'false',
+          onClick: function () { ask(); }
+        }, busy ? 'Asking...' : 'Ask'),
         (props.suggestions || []).map(function (s, i) {
           return ce('button', {
             key: i, className: 'ma-btn ma-btn-ghost ma-btn-sm', disabled: busy,
@@ -700,7 +895,19 @@
           }, s);
         })
       ),
-      err ? ce('div', { className: 'ma-fb bad', role: 'alert' }, err) : null,
+      /* The honest wait: it starts on the click, it counts in wall time, and
+         it escalates. It replaces "Asking..." as the only signal. */
+      ce(WaitNote, { wait: waiter.wait, onRetry: retryInFlight, onCancel: cancelAsk }),
+      err ? ce('div', { className: 'ma-fb bad', role: 'alert', 'data-code': err.code },
+        ce('div', null, err.text),
+        err.retry ? ce('div', { className: 'ma-fb-act' },
+          ce('button', {
+            className: 'ma-btn ma-btn-sm', disabled: busy,
+            onClick: function () { ask(lastAskedRef.current || question); }
+          }, 'Try again'),
+          ce('button', { className: 'ma-btn ma-btn-ghost ma-btn-sm', onClick: function () { setErr(null); } }, 'Dismiss')
+        ) : null
+      ) : null,
       answer ? ce('div', { className: 'ma-ai-out' }, answer) : null
     );
   }

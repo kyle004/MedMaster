@@ -819,6 +819,29 @@
     }
     if (raw.capMode === 'block' || raw.capMode === 'warn') cfg.capMode = raw.capMode;
     cfg.imageLimits = normalizeImageLimits(raw.imageLimits);
+
+    /* Owner-maintained per-model metadata (healthcare rank, parameter count,
+       notes). Keys are model slugs with '/' and '.' encoded as '_' because
+       Firebase forbids those characters in keys. Values are small objects;
+       anything non-object is dropped. The admin panel writes this; nothing
+       here grants or denies access, so passthrough is safe. */
+    cfg.modelMeta = {};
+    if (raw.modelMeta && typeof raw.modelMeta === 'object' && !Array.isArray(raw.modelMeta)) {
+      var mk;
+      for (mk in raw.modelMeta) {
+        if (!Object.prototype.hasOwnProperty.call(raw.modelMeta, mk)) continue;
+        var mv = raw.modelMeta[mk];
+        if (mv && typeof mv === 'object' && !Array.isArray(mv)) {
+          cfg.modelMeta[mk] = {
+            healthRank: (typeof mv.healthRank === 'number' && isFinite(mv.healthRank) && mv.healthRank > 0)
+              ? Math.round(mv.healthRank) : null,
+            params: (typeof mv.params === 'number' && isFinite(mv.params) && mv.params > 0)
+              ? mv.params : null,
+            note: typeof mv.note === 'string' ? mv.note.slice(0, 200) : ''
+          };
+        }
+      }
+    }
     var srcTiers = (raw.tiers && typeof raw.tiers === 'object') ? raw.tiers : {};
     var name;
     for (name in srcTiers) {
@@ -1475,8 +1498,56 @@
   }
 
   /**
+   * MM.ai.warmup() -> Promise<boolean>
+   *
+   * Fire-and-forget lambda wake-up. Netlify cold starts are the single biggest
+   * chunk of "why is this taking so long" on the FIRST call of a session: the
+   * container has to boot before a single upstream token is requested. This
+   * posts {action:'warmup'}, which the function answers with 204 before it does
+   * any auth, Firebase or OpenRouter work - so it costs nothing, needs no ID
+   * token, and warms the container while the student is still choosing a topic.
+   *
+   * NEVER rejects. A failed warmup is not an error the caller should ever see;
+   * the real call that follows reports its own problems.
+   */
+  var WARMUP_TIMEOUT_MS = 8000;
+
+  function warmup() {
+    var ctl = null, timer = null;
+    var opts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'warmup' })
+    };
+    try {
+      if (typeof AbortController === 'function') {
+        ctl = new AbortController();
+        opts.signal = ctl.signal;
+        timer = setTimeout(function () { try { ctl.abort(); } catch (e) { /* noop */ } }, WARMUP_TIMEOUT_MS);
+      }
+    } catch (e) { ctl = null; }
+
+    function settle(v) {
+      if (timer) clearTimeout(timer);
+      return v;
+    }
+    try {
+      return fetch(endpoint(), opts).then(function () { return settle(true); },
+        function () { return settle(false); });
+    } catch (e) {
+      if (timer) clearTimeout(timer);
+      return Promise.resolve(false);
+    }
+  }
+
+  /**
    * MM.ai.chat(opts) -> Promise<string>
-   * opts: {system, messages, model, maxTokens, temperature, onToken, feature}
+   * opts: {system, messages, model, maxTokens, temperature, onToken, feature, json}
+   *
+   * `json: true` asks the model for a single JSON object via OpenRouter's
+   * response_format. It is opt-in because not every model supports it; the
+   * server silently retries without the parameter when a model rejects it, so
+   * a caller that sets it can never be worse off than one that does not.
    *
    * `feature` now does two jobs: spend attribution (as before) and model routing
    * (new). The model is resolved through MM.ai.resolveModelFor(feature) and sent
@@ -1504,6 +1575,7 @@
     var cap = (typeof rules.maxTokens === 'number' && rules.maxTokens > 0) ? rules.maxTokens : 1024;
     var maxTokens = (typeof o.maxTokens === 'number' && o.maxTokens > 0) ? Math.min(o.maxTokens, cap) : cap;
     var wantStream = typeof o.onToken === 'function';
+    var wantJson = o.json === true;
 
     state.inFlight++;
     notify();
@@ -1526,6 +1598,10 @@
         // never widen what the caller may do - the allow-list is checked after.
         feature: feature
       };
+      // Only present when asked for, so an ordinary call's payload is byte-for-byte
+      // what it always was. The server turns this into OpenRouter's
+      // response_format:{type:'json_object'} and drops it if the model refuses it.
+      if (wantJson) payload.json = true;
 
       function send(streaming) {
         payload.stream = streaming;
@@ -2531,6 +2607,9 @@
   var api = {
     // --- contract surface ---
     chat: chat,
+    // Additive: wakes the Netlify container early. Never rejects, never counts
+    // against a quota, and safe to call from anywhere as fire-and-forget.
+    warmup: warmup,
     isAvailable: isAvailable,
     unavailableReason: unavailableReason,
     getTier: getTier,

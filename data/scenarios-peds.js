@@ -1272,7 +1272,8 @@ window.SCENARIOS_PEDS = [
         note: 'Documented sim vitals. RR 34 in an 8-year-old (normal 18-25) is Kussmaul breathing - the lungs blowing off CO2 to compensate for a pH of 7.18. HR 132 reflects severe osmotic-diuresis dehydration, not fever.'
       },
       {
-        atMin: 8,
+        // atMin rescaled 0/8/16/22 -> 0/6/12/18: the Cushing-triad stage sat past durationMin 20 and never fired. Relative pacing preserved.
+        atMin: 6,
         label: 'After 600 mL NS bolus - expected improvement',
         bp: '100/62', hr: 118, rr: 30, temp: '99.4 F', spo2: 97,
         pain: 'Abdominal pain 3/10',
@@ -1282,7 +1283,7 @@ window.SCENARIOS_PEDS = [
         note: 'This is what a CORRECT response looks like. Volume expansion alone lowers glucose by dilution and improved renal clearance and reduces the counter-regulatory hormone surge. Fluids before insulin is why perfusion improved without a glucose crash.'
       },
       {
-        atMin: 16,
+        atMin: 12,
         label: 'Early cerebral edema - glucose dropped too fast',
         bp: '112/58', hr: 108, rr: 26, temp: '99.6 F', spo2: 96,
         pain: 'New headache, rated 7/10',
@@ -1292,7 +1293,7 @@ window.SCENARIOS_PEDS = [
         note: 'Headache plus behavior change plus new vomiting plus a widening pulse pressure equals early cerebral edema, the most feared complication of pediatric DKA. Caused by correcting glucose or osmolality too rapidly. Notify the provider NOW - do not wait for bradycardia.'
       },
       {
-        atMin: 22,
+        atMin: 18,
         label: 'Late cerebral edema - Cushing triad',
         bp: '132/54', hr: 62, rr: 12, temp: '99.6 F', spo2: 92,
         pain: 'Unable to report',
@@ -1405,7 +1406,7 @@ window.SCENARIOS_PEDS = [
       { id: 'dka-7', order: 7,
         action: 'Maintain continuous cardiac monitoring',
         rationale: 'Electrolyte shifts during DKA treatment can cause dangerous dysrhythmias. Peaked T waves indicate hyperkalemia; flattened T waves, ST depression, and U waves indicate the hypokalemia that develops once insulin starts.',
-        category: 'monitoring', critical: true, preventsDeterioration: false,
+        category: 'intervention', critical: true, preventsDeterioration: false,  // was 'monitoring', not a schema category (sim-engine CAT_GROUP has no such key)
         atiPearl: 'The ECG shows a potassium change before the lab result comes back' },
       { id: 'dka-8', order: 8,
         action: 'Perform neurological assessments every hour for signs of cerebral edema',

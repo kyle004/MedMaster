@@ -49,6 +49,9 @@
   };
   var SPEND_PATH = 'aiSpend';
   var DEFAULT_SOFT_CAP_USD = 2;
+  // Owner-typed per-model note. Bounded on the way in AND on the way out, so a
+  // 10,000-character paste into Firebase cannot turn one row into a page.
+  var META_NOTE_MAX = 200;
 
   // Pasted verbatim into the Firebase rules editor when the ledger is unreadable.
   var SPEND_RULES_SNIPPET = [
@@ -204,6 +207,44 @@
       '.aia-check{display:flex;align-items:center;gap:6px;font-size:var(--fs-base,14px);color:var(--text2);',
       'cursor:pointer;white-space:nowrap;min-height:44px}',
       '.aia-check input{accent-color:var(--accent);width:18px;height:18px}',
+      // --- ranking metadata: sort control, badges, inline editor, paste import ---
+      '.aia-chip.health{background:var(--tint-accent,rgba(59,130,246,.16));color:var(--accent-fg,var(--accent));font-weight:700}',
+      '.aia-chip.fit{background:var(--surface3,var(--surface2));color:var(--text2)}',
+      '.aia-chip.guess{background:transparent;color:var(--text3);border:1px dashed var(--border-str,#475569)}',
+      '.aia-sort{display:flex;gap:var(--sp-2,8px);align-items:center;flex-wrap:wrap;margin-top:10px}',
+      '.aia-sort .lbl{font-size:var(--fs-xs,12px);color:var(--text3);font-weight:600}',
+      '.aia-sortpills{display:flex;gap:var(--sp-1,4px);flex-wrap:wrap}',
+      '.aia-sortpills .aia-pill{min-height:36px;padding:0 10px;font-size:var(--fs-xs,12px)}',
+      '.aia-sortsel{display:none}',
+      '.aia-medit{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;align-items:flex-end;margin-top:8px}',
+      '.aia-medit label{display:block;font-size:var(--fs-xs,12px);color:var(--text3);font-weight:600;margin-bottom:4px}',
+      '.aia-medit .aia-input{width:118px;padding:8px 10px}',
+      '.aia-medit .hint{font-size:var(--fs-xs,12px);color:var(--text3);padding-bottom:12px}',
+      '.aia-ta{width:100%;box-sizing:border-box;min-height:150px;resize:vertical;',
+      'background:var(--bg);border:1px solid var(--border,var(--surface2));color:var(--text);',
+      'border-radius:var(--r-sm,8px);padding:10px 12px;font-size:var(--fs-base,14px);',
+      'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5}',
+      '.aia-ta:focus{outline:none;border-color:var(--accent);box-shadow:var(--ring,0 0 0 2px rgba(59,130,246,.25))}',
+      '.aia-prow{display:grid;grid-template-columns:46px minmax(0,1fr) minmax(0,1.2fr);gap:8px;',
+      'padding:7px 4px;border-bottom:1px solid var(--border,var(--surface2));',
+      'font-size:var(--fs-sm,13px);align-items:baseline}',
+      '.aia-prow:last-child{border-bottom:none}',
+      '.aia-prow.head{color:var(--text3);font-weight:700;font-size:var(--fs-xs,12px)}',
+      '.aia-prow .rk{font-weight:700;color:var(--text)}',
+      '.aia-prow .nm{overflow-wrap:anywhere}',
+      '.aia-prow .slug{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;',
+      'font-size:var(--fs-xs,12px);color:var(--text2);word-break:break-all}',
+      '.aia-prow .slug.miss{color:var(--orange-fg,var(--orange));font-family:inherit}',
+      '@media (max-width:640px){',
+      '.aia-sortpills{display:none}',
+      '.aia-sortsel{display:block;flex:1 1 100%}',
+      '.aia-prow{grid-template-columns:38px minmax(0,1fr)}',
+      '.aia-prow .slug{grid-column:1 / -1;padding-left:38px}',
+      '.aia-prow.head .slug{display:none}',
+      '.aia-ta{font-size:16px}',
+      '.aia-medit .aia-input{width:100%}',
+      '.aia-medit .aia-field{flex:1 1 130px}',
+      '}',
       // --- spend ---
       '.aia-money{font-size:var(--fs-3xl,40px);font-weight:800;line-height:var(--lh-tight,1.2);color:var(--text)}',
       '.aia-money.over{color:var(--red-fg,var(--red))}',
@@ -236,7 +277,8 @@
       '.aia-cellwarn.bad{color:var(--red-fg,var(--red))}',
       '.aia-cellwarn.soft{color:var(--orange-fg,var(--orange))}',
       '.aia-featname{font-weight:700;font-size:var(--fs-base,14px);color:var(--text)}',
-      '.aia-featid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs,12px);color:var(--text3)}',
+      '.aia-featid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs,12px);',
+      'color:var(--text3);overflow-wrap:anywhere}',
       '.aia-run{display:flex;gap:var(--sp-2,8px);flex-wrap:wrap;align-items:center;margin-top:10px}',
       '.aia-errlist{max-height:180px;overflow-y:auto;margin-top:8px}',
       '.aia-errlist div{font-size:var(--fs-xs,12px);color:var(--red-fg,var(--red));',
@@ -248,11 +290,11 @@
       '.aia-featrow{border-top:1px solid var(--border,var(--surface2));padding-top:14px;margin-top:14px}',
       '.aia-featrow.first{border-top:none;padding-top:0;margin-top:0}',
       '@media (max-width:860px){.aia-mx{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+      /* One narrow block, after the 860px one so the single-column matrix wins
+       * the cascade at 360px. Everything phone-sized lives here. */
       '@media (max-width:640px){',
       '.aia-mx{grid-template-columns:1fr}',
       '.aia-select{font-size:16px}',
-      '}',
-      '@media (max-width:640px){',
       '.aia-card{padding:13px}',
       '.aia-models{grid-template-columns:1fr}',
       '.aia-tab{min-width:0;flex:1 1 44%;font-size:var(--fs-sm,13px);padding:8px 6px;min-height:44px}',
@@ -289,6 +331,25 @@
 
   function images() { return (window.MM && window.MM.images) ? window.MM.images : window.MM_IMAGES; }
 
+  /* The two fixed image sets, defensively. js/images.js builds this list out of
+   * window.MEDADMIN_DRUGS and window.ALL_SCENARIOS, either of which may be
+   * absent or half-loaded on the page the admin panel happens to be open on, so
+   * it can throw, and it can hand back holes. -> [] when it cannot answer. */
+  function fixedItems() {
+    var im = images();
+    if (!im || typeof im.fixedList !== 'function') return [];
+    var list;
+    try { list = im.fixedList(); } catch (e) { return []; }
+    if (!Array.isArray(list)) return [];
+    var out = [], i;
+    for (i = 0; i < list.length; i++) {
+      if (list[i] && typeof list[i] === 'object' && typeof list[i].prompt === 'string' && list[i].prompt) {
+        out.push(list[i]);
+      }
+    }
+    return out;
+  }
+
   function imageCacheRules() {
     var im = images();
     if (im && typeof im.RULES_SNIPPET === 'string' && im.RULES_SNIPPET) return im.RULES_SNIPPET;
@@ -305,11 +366,12 @@
     return (a && a.MODEL_CATALOG) ? a.MODEL_CATALOG : [];
   }
 
-  function defaults() {
-    var a = ai();
-    if (a && a.DEFAULT_AI_CONFIG) return a.DEFAULT_AI_CONFIG;
+  // The floor under every other default. Kept as a function so a caller can
+  // never mutate the shared object it just read.
+  function builtinDefaults() {
     return {
       enabled: true, allowModelChoice: false,
+      imageLimits: { free: 0, plus: 5, pro: 40, instructor: -1 },
       tiers: {
         free: { models: [], dailyLimit: 25, maxTokens: 1024 },
         plus: { models: [], dailyLimit: 200, maxTokens: 2048 },
@@ -317,6 +379,27 @@
         instructor: { models: ['*'], dailyLimit: -1, maxTokens: 8192 }
       }
     };
+  }
+
+  /* MM.ai owns the real defaults, but it is another file and it can be an older
+   * build, a stub, or half-loaded. A DEFAULT_AI_CONFIG with no `tiers` used to
+   * take the whole panel down inside mergeWithDefaults, which meant one bad
+   * deploy of js/ai.js blanked the only screen that could fix it. Anything
+   * missing falls back to the built-in floor instead. */
+  function defaults() {
+    var a = ai();
+    var d = (a && a.DEFAULT_AI_CONFIG && typeof a.DEFAULT_AI_CONFIG === 'object' &&
+             !Array.isArray(a.DEFAULT_AI_CONFIG)) ? a.DEFAULT_AI_CONFIG : null;
+    var base = builtinDefaults();
+    if (!d) return base;
+    var out = {}, k;
+    for (k in d) { if (Object.prototype.hasOwnProperty.call(d, k)) out[k] = d[k]; }
+    if (!out.tiers || typeof out.tiers !== 'object' || Array.isArray(out.tiers)) out.tiers = base.tiers;
+    if (!out.imageLimits || typeof out.imageLimits !== 'object' || Array.isArray(out.imageLimits)) {
+      out.imageLimits = base.imageLimits;
+    }
+    if (typeof out.enabled !== 'boolean') out.enabled = base.enabled;
+    return out;
   }
 
   function verifiedIds() {
@@ -488,6 +571,20 @@
     return out;
   }
 
+  /* How /appConfig/aiConfig/imageLimits/<tier> actually behaves, in words.
+   * ONLY -1 means unlimited: js/ai.js hands the raw number to the image quota
+   * check, which blocks as soon as `used >= limit`, so -7 is not "seven fewer
+   * than nothing" - it is zero pictures, forever. The panel used to print
+   * "-7 pictures a day", which reads like an allowance and is the opposite of
+   * what the server does with it. */
+  function imageLimitPhrase(v) {
+    if (typeof v !== 'number' || !isFinite(v)) return 'no pictures on this plan';
+    if (v === -1) return 'unlimited pictures';
+    if (v === 0) return 'no pictures on this plan';
+    if (v < 0) return 'no pictures on this plan - ' + v + ' is not an allowance, only -1 means unlimited';
+    return v + ' picture' + (v === 1 ? '' : 's') + ' a day';
+  }
+
   function fmtBytes(n) {
     var v = typeof n === 'number' && isFinite(n) ? n : 0;
     if (v <= 0) return '0 B';
@@ -503,10 +600,33 @@
    * that order, so it is preferred whenever js/ai.js is loaded.
    * ------------------------------------------------------------------------ */
 
+  /* js/ai.js is a separate file and can be an older build, a stub, or a
+   * half-loaded one. Everything it hands over is treated as untrusted input:
+   * a null in KNOWN_FEATURES used to reach id.charAt() and take the whole
+   * Routing tab down, and an AI_FEATURES label that was an object reached
+   * React as a child and did the same. */
   function knownFeatures() {
     var a = ai();
-    if (a && Array.isArray(a.KNOWN_FEATURES) && a.KNOWN_FEATURES.length) return a.KNOWN_FEATURES;
-    return FEATURES_FALLBACK;
+    var raw = (a && Array.isArray(a.KNOWN_FEATURES)) ? a.KNOWN_FEATURES : null;
+    if (!raw) return FEATURES_FALLBACK;
+    var seen = {}, out = [], i, v;
+    for (i = 0; i < raw.length; i++) {
+      v = raw[i];
+      if (typeof v !== 'string') continue;
+      v = v.trim();
+      if (!v || seen[v]) continue;
+      seen[v] = true;
+      out.push(v);
+    }
+    return out.length ? out : FEATURES_FALLBACK;
+  }
+
+  // Anything that is going to be rendered has to be a string by the time it
+  // leaves this file, not "probably a string".
+  function asText(v, fallback) {
+    if (typeof v === 'string' && v) return v;
+    if (typeof v === 'number' && isFinite(v)) return String(v);
+    return fallback === undefined ? '' : fallback;
   }
 
   /** [{id, label, desc}] in KNOWN_FEATURES order, with the student-facing labels. */
@@ -515,14 +635,16 @@
     var byId = {};
     var list = (a && Array.isArray(a.AI_FEATURES)) ? a.AI_FEATURES : [];
     for (var i = 0; i < list.length; i++) {
-      if (list[i] && list[i].id) byId[list[i].id] = list[i];
+      if (list[i] && typeof list[i] === 'object' && typeof list[i].id === 'string' && list[i].id) {
+        byId[list[i].id] = list[i];
+      }
     }
     return knownFeatures().map(function (id) {
       var f = byId[id];
       return {
         id: id,
-        label: (f && f.label) ? f.label : (FEATURE_LABEL_EXTRA[id] || (id.charAt(0).toUpperCase() + id.slice(1))),
-        desc: (f && f.desc) ? f.desc : ''
+        label: asText(f && f.label, FEATURE_LABEL_EXTRA[id] || (id.charAt(0).toUpperCase() + id.slice(1))),
+        desc: asText(f && f.desc, '')
       };
     });
   }
@@ -540,13 +662,25 @@
    *   ignored a configured slug the tier does not allow, which the SERVER DROPS
    *           silently. Surfacing it is the whole reason this preview exists.
    */
+  var ROUTE_SOURCES = ['featureModels', 'tierDefault', 'default'];
+
   function previewRoute(config, tier, feature) {
     var t = config.tiers[tier] || {};
     var rules = { models: modelsOf(t), featureModels: featureModelsOf(t) };
     var a = ai();
     if (a && typeof a.resolveModelWith === 'function') {
       try {
-        return a.resolveModelWith(rules, feature, { isOwner: false, allowModelChoice: false });
+        // Shape-checked, not trusted. This is another file's return value and
+        // it is about to be dereferenced in a render; a null from an older
+        // build of js/ai.js used to blank the whole Routing tab.
+        var r = a.resolveModelWith(rules, feature, { isOwner: false, allowModelChoice: false });
+        if (r && typeof r === 'object' && typeof r.model === 'string') {
+          return {
+            model: r.model,
+            source: ROUTE_SOURCES.indexOf(r.source) !== -1 ? r.source : '',
+            ignored: typeof r.ignored === 'string' ? r.ignored : ''
+          };
+        }
       } catch (e) { /* fall through to the local copy */ }
     }
     // Local mirror of the same order, for the case where js/ai.js is missing.
@@ -776,8 +910,12 @@
     // "load the text catalog" button they already had.
     var loadModels = useCallback(function () { loadCatalog('text'); }, [loadCatalog]);
 
-    /* ---- live config ---- */
+    /* ---- live config ----
+     * Owner-gated like everything else. A non-owner renders the "owner only"
+     * card and nothing below it, so subscribing here would be a read nobody
+     * ever looks at - and the panel should make ZERO calls it cannot use. */
     useEffect(function () {
+      if (!isOwner) { setLoading(false); return; }
       var d = db();
       if (!d) { setLoading(false); setLoadError('Firebase is not connected, so AI settings cannot be loaded.'); return; }
       var ref = d.ref(CFG_PATH);
@@ -793,7 +931,7 @@
         setLoadError('Could not read /appConfig/aiConfig: ' + (e && e.message ? e.message : 'permission denied'));
       });
       return function () { try { ref.off('value', cb); } catch (e) { /* noop */ } };
-    }, []);
+    }, [isOwner]);
 
     /* ---- users + tiers (owner only, one-time reads with live tier updates) ---- */
     useEffect(function () {
@@ -942,11 +1080,14 @@
 
     /* ---- writers ---- */
 
-    function writeCfg(path, value) {
+    // `quiet` suppresses the per-write toast. A ranking import writes one path
+    // per model, and ten "Saved." toasts in a row is noise, not feedback - the
+    // caller reports the whole batch once instead. Failures are never quiet.
+    function writeCfg(path, value, quiet) {
       var d = db();
       if (!d) { toast('Firebase not connected.', 'error'); return; }
       d.ref(CFG_PATH + (path ? '/' + path : '')).set(value).then(function () {
-        toast('Saved.', 'success');
+        if (!quiet) toast('Saved.', 'success');
       }).catch(function (e) {
         toast('Save failed: ' + (e && e.message ? e.message : 'permission denied'), 'error');
       });
@@ -1027,6 +1168,23 @@
     );
   }
 
+  function normalizeModelMeta(raw) {
+    var out = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    for (var k in raw) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+      var v = raw[k];
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      out[k] = {
+        healthRank: (typeof v.healthRank === 'number' && isFinite(v.healthRank) && v.healthRank > 0)
+          ? Math.round(v.healthRank) : null,
+        params: (typeof v.params === 'number' && isFinite(v.params) && v.params > 0) ? v.params : null,
+        note: typeof v.note === 'string' ? v.note.slice(0, META_NOTE_MAX) : ''
+      };
+    }
+    return out;
+  }
+
   function mergeWithDefaults(raw) {
     var d = defaults();
     var out = {
@@ -1039,18 +1197,31 @@
       // Per-day IMAGE cap, deliberately separate from dailyLimit: one picture
       // costs several messages, so the two allowances are never one number.
       imageLimits: {},
+      /* Owner-maintained per-model metadata (healthcare rank, parameters, note),
+         keyed by slugKey(). js/ai.js normalizes the same node for the rest of the
+         app; this copy exists so the Models tab updates the instant a write lands
+         rather than on MM.ai's next config push. Same shape, same rules: a value
+         that is not a positive finite number is null, never zero. */
+      modelMeta: normalizeModelMeta(raw ? raw.modelMeta : null),
+      modelMetaImportedAt: (raw && typeof raw.modelMetaImportedAt === 'number' &&
+        isFinite(raw.modelMetaImportedAt) && raw.modelMetaImportedAt > 0) ? raw.modelMetaImportedAt : 0,
       tiers: {}
     };
-    var defLimits = (d && d.imageLimits && typeof d.imageLimits === 'object')
-      ? d.imageLimits : { free: 0, plus: 5, pro: 40, instructor: -1 };
+    var defLimits = (d && d.imageLimits && typeof d.imageLimits === 'object' && !Array.isArray(d.imageLimits))
+      ? d.imageLimits : builtinDefaults().imageLimits;
+    var defTiers = (d && d.tiers && typeof d.tiers === 'object' && !Array.isArray(d.tiers))
+      ? d.tiers : builtinDefaults().tiers;
     var rawLimits = (raw && raw.imageLimits && typeof raw.imageLimits === 'object' && !Array.isArray(raw.imageLimits))
       ? raw.imageLimits : null;
 
     var i, name;
     for (i = 0; i < TIER_ORDER.length; i++) {
       name = TIER_ORDER[i];
-      var dt = d.tiers[name] || { models: [], dailyLimit: 0, maxTokens: 1024 };
-      var rt = (raw && raw.tiers && raw.tiers[name]) ? raw.tiers[name] : null;
+      var dt = defTiers[name] || { models: [], dailyLimit: 0, maxTokens: 1024 };
+      // A tier written as a string / number / array in Firebase is not a tier.
+      var rtRaw = (raw && raw.tiers && typeof raw.tiers === 'object' && !Array.isArray(raw.tiers))
+        ? raw.tiers[name] : null;
+      var rt = (rtRaw && typeof rtRaw === 'object' && !Array.isArray(rtRaw)) ? rtRaw : null;
 
       // featureModels is admin-written free-form data out of Firebase, so it is
       // normalized through MM.ai when that is available (same filter the server
@@ -1204,6 +1375,567 @@
   }
 
   /* ==========================================================================
+   * MODEL RANKING METADATA
+   * --------------------------------------------------------------------------
+   * OpenRouter publishes a healthcare leaderboard, but ONLY on openrouter.ai/
+   * rankings: that page hydrates client-side, the served HTML contains no health
+   * data at all, and the endpoints behind it are private. /api/v1/models - the
+   * one public API - carries neither a ranking nor a parameter count. A scraper
+   * for any of that would be worse than nothing, because it would keep
+   * "succeeding" while quietly returning an empty list.
+   *
+   * So the ranking here is OWNER-MAINTAINED data, kept at
+   *   aiConfig.modelMeta.<slugKey> = {healthRank, params, note}
+   * filled either by pasting the leaderboard text (parsed below) or by typing a
+   * number on a model row. Parameter counts fall back to what can be read out of
+   * the model's own name ("Qwen3 235B"), and that fallback is always labelled as
+   * a guess.
+   *
+   * The rule everywhere below: unknown stays unknown. No badge, sorted last,
+   * and excluded from the score component it is missing. Nothing is invented.
+   * ======================================================================== */
+
+  // Firebase forbids . $ # [ ] / in a key, so a slug becomes its key form.
+  function slugKey(id) {
+    return String(id == null ? '' : id).replace(/[/.#$\[\]]/g, '_');
+  }
+
+  /** The owner-maintained map, live config first, MM.ai's copy as the fallback. */
+  function modelMetaMap(config) {
+    if (config && config.modelMeta && typeof config.modelMeta === 'object' && !Array.isArray(config.modelMeta)) {
+      return config.modelMeta;
+    }
+    var a = ai();
+    if (a && typeof a.getConfig === 'function') {
+      try {
+        var c = a.getConfig();
+        if (c && c.modelMeta && typeof c.modelMeta === 'object') return c.modelMeta;
+      } catch (e) { /* noop */ }
+    }
+    return {};
+  }
+
+  function metaFor(meta, id) {
+    var rec = meta ? meta[slugKey(id)] : null;
+    if (!rec || typeof rec !== 'object' || Array.isArray(rec)) {
+      return { healthRank: null, params: null, note: '' };
+    }
+    return {
+      healthRank: (typeof rec.healthRank === 'number' && isFinite(rec.healthRank) && rec.healthRank > 0)
+        ? Math.round(rec.healthRank) : null,
+      params: (typeof rec.params === 'number' && isFinite(rec.params) && rec.params > 0) ? rec.params : null,
+      // Bounded HERE as well as in normalizeModelMeta: this map can also come
+      // from MM.ai's copy of the config, which this file did not normalize.
+      note: typeof rec.note === 'string' ? rec.note.slice(0, META_NOTE_MAX) : ''
+    };
+  }
+
+  function countHealthRanks(meta) {
+    var n = 0, k;
+    for (k in meta) {
+      if (!Object.prototype.hasOwnProperty.call(meta, k)) continue;
+      if (meta[k] && typeof meta[k].healthRank === 'number' && meta[k].healthRank > 0) n++;
+    }
+    return n;
+  }
+
+  /* Ranks that more than one model claims. Nothing enforces uniqueness - a
+   * paste can match two slugs of the same family, and the inline editor will
+   * happily accept "3" twice - and two models on rank 3 score identically for
+   * the health half of the fit score, so the list silently sorts on a tie the
+   * owner never intended. -> [{rank, n}] ascending, or []. */
+  function duplicateHealthRanks(meta) {
+    var byRank = {}, k, r, out = [], key;
+    for (k in meta) {
+      if (!Object.prototype.hasOwnProperty.call(meta, k)) continue;
+      r = meta[k] && meta[k].healthRank;
+      if (typeof r !== 'number' || !isFinite(r) || r <= 0) continue;
+      r = Math.round(r);
+      byRank[r] = (byRank[r] || 0) + 1;
+    }
+    for (key in byRank) {
+      if (!Object.prototype.hasOwnProperty.call(byRank, key)) continue;
+      if (byRank[key] > 1) out.push({ rank: parseInt(key, 10), n: byRank[key] });
+    }
+    out.sort(function (a, b) { return a.rank - b.rank; });
+    return out;
+  }
+
+  function metaIsEmpty(meta) {
+    var k;
+    for (k in meta) {
+      if (!Object.prototype.hasOwnProperty.call(meta, k)) continue;
+      var r = meta[k];
+      if (r && ((typeof r.healthRank === 'number' && r.healthRank > 0) ||
+                (typeof r.params === 'number' && r.params > 0) ||
+                (typeof r.note === 'string' && r.note))) return false;
+    }
+    return true;
+  }
+
+  /* ------------------------------------------------------------ parseParams --
+   * Parameter counts are not in the API, but they are usually written on the tin:
+   * "Qwen3 235B A22B", "llama-3.3-70b-instruct", "Mixtral 8x7B". This reads that
+   * and nothing else. A quantisation width ("4-bit", "fp8") is not a parameter
+   * count, a version number ("GPT-5.4") is not a parameter count, and where there
+   * is no count in the text the answer is null rather than a plausible number.
+   * The largest match wins, so "235B A22B" (total / active) reports the total.
+   * ------------------------------------------------------------------------ */
+
+  // 8x7B and friends: a mixture-of-experts count, multiplied out.
+  var PARAM_MOE_RE = /(?:^|[^a-z0-9])(\d{1,3})\s*x\s*(\d+(?:\.\d+)?)\s*b(?![a-z0-9])/gi;
+  // 235B / 70b / 1.5B / (4B). The digits must not be preceded by a letter (so the
+  // "22B" in "A22B" is skipped) and the B must end the token (so "4bit" is not a
+  // 4-billion-parameter model).
+  var PARAM_RE = /(?:^|[^a-z0-9])(\d+(?:\.\d+)?)\s*b(?![a-z0-9])/gi;
+  var PARAM_MAX_B = 100000;
+
+  function scanParams(s) {
+    if (s === null || s === undefined || s === '') return null;
+    var str = String(s);
+    var best = null, m, v;
+    PARAM_MOE_RE.lastIndex = 0;
+    while ((m = PARAM_MOE_RE.exec(str)) !== null) {
+      v = parseFloat(m[1]) * parseFloat(m[2]);
+      if (isFinite(v) && v > 0 && v <= PARAM_MAX_B && (best === null || v > best)) best = v;
+    }
+    PARAM_RE.lastIndex = 0;
+    while ((m = PARAM_RE.exec(str)) !== null) {
+      v = parseFloat(m[1]);
+      if (isFinite(v) && v > 0 && v <= PARAM_MAX_B && (best === null || v > best)) best = v;
+    }
+    return best;
+  }
+
+  /** Billions of parameters read out of the display name, else the slug, else null. */
+  function parseParams(name, slug) {
+    var v = scanParams(name);
+    if (v === null) v = scanParams(slug);
+    return v;
+  }
+
+  function fmtParams(b) {
+    if (typeof b !== 'number' || !isFinite(b) || b <= 0) return '';
+    if (b >= 1000) return (b / 1000).toFixed(b % 1000 === 0 ? 0 : 1) + 'T';
+    if (b >= 10) return String(Math.round(b)) + 'B';
+    return String(Math.round(b * 10) / 10) + 'B';
+  }
+
+  /* ------------------------------------------------------------- fit score ---
+   * A rough guide, and it says so on the screen. Three components, all of them
+   * visible in the tooltip, none of them a benchmark:
+   *   healthcare rank  up to 50   rank 1 = 50, each place down keeps 90%
+   *   price            up to 30   cheapest in the loaded catalog = 30, log scale
+   *   context          up to 20   4K = 0 up to 128K = 20, log scale, capped
+   * An unranked model scores 0 for health rather than an average or a guess, so
+   * the score of an unranked model is never inflated by data that does not exist.
+   * ------------------------------------------------------------------------ */
+
+  var FIT_RANK_DECAY = 0.9;
+  var FIT_CTX_LO = 4000;
+  var FIT_CTX_HI = 128000;
+
+  var FIT_EXPLAIN = [
+    'Healthcare rank - up to 50 points. Rank 1 scores 50 and each place further down keeps 90% of the one above ' +
+      '(rank 2 = 45, rank 5 = 33, rank 10 = 19). A model you have not ranked scores 0 here; it is never averaged ' +
+      'or guessed.',
+    'Price - up to 30 points. The cheapest model in the loaded catalog scores 30 and the most expensive scores 0, ' +
+      'on a log scale, using the price for the modality you are looking at. A model with no listed price scores 0.',
+    'Context length - up to 20 points, log scale from 4K (0 points) to 128K (20 points). Anything above 128K is ' +
+      'capped, because past that point it stops mattering for a tutor message.'
+  ];
+
+  /** The price used for sorting and scoring: per token for text, per unit otherwise. */
+  function effPrice(m, modality) {
+    if (!m) return null;
+    if (normModality(modality) === 'text') {
+      var p = parseFloat(m.promptPrice);
+      var c = parseFloat(m.completionPrice);
+      if (!isFinite(p) && !isFinite(c)) return null;
+      return (isFinite(p) ? p : 0) + (isFinite(c) ? c : 0);
+    }
+    return unitPriceOf(m);
+  }
+
+  /** {lo, hi} over the positive prices in a list - free models are not a bound. */
+  function priceBoundsOf(models, modality) {
+    var lo = null, hi = null, i, v;
+    for (i = 0; i < models.length; i++) {
+      v = effPrice(models[i], modality);
+      if (typeof v !== 'number' || !isFinite(v) || v <= 0) continue;
+      if (lo === null || v < lo) lo = v;
+      if (hi === null || v > hi) hi = v;
+    }
+    return { lo: lo, hi: hi };
+  }
+
+  function fitParts(rank, price, ctx, bounds) {
+    var health = 0;
+    if (typeof rank === 'number' && isFinite(rank) && rank >= 1) {
+      health = 50 * Math.pow(FIT_RANK_DECAY, rank - 1);
+    }
+
+    var money = 0;
+    if (typeof price === 'number' && isFinite(price) && price >= 0) {
+      if (price === 0) {
+        money = 30;
+      } else {
+        var lo = (bounds && typeof bounds.lo === 'number' && bounds.lo > 0) ? bounds.lo : price;
+        var hi = (bounds && typeof bounds.hi === 'number' && bounds.hi > lo) ? bounds.hi : lo;
+        if (hi <= lo) {
+          money = 30;
+        } else {
+          var p = Math.min(Math.max(price, lo), hi);
+          var t = (Math.log(p) - Math.log(lo)) / (Math.log(hi) - Math.log(lo));
+          if (!isFinite(t)) t = 0;
+          money = 30 * (1 - t);
+        }
+      }
+    }
+
+    var context = 0;
+    if (typeof ctx === 'number' && isFinite(ctx) && ctx > FIT_CTX_LO) {
+      var c = Math.min(ctx, FIT_CTX_HI);
+      context = 20 * ((Math.log(c) - Math.log(FIT_CTX_LO)) / (Math.log(FIT_CTX_HI) - Math.log(FIT_CTX_LO)));
+    }
+
+    var total = Math.round(health + money + context);
+    if (total < 0) total = 0;
+    if (total > 100) total = 100;
+    return { health: health, price: money, context: context, total: total };
+  }
+
+  /* ---------------------------------------------------------------- sorting */
+
+  var SORT_KEYS = [
+    { id: 'fit', label: 'MedMaster fit', dir: -1 },
+    { id: 'health', label: 'Healthcare rank', dir: 1 },
+    { id: 'params', label: 'Parameters', dir: -1 },
+    { id: 'price', label: 'Price', dir: 1 },
+    { id: 'context', label: 'Context', dir: -1 },
+    { id: 'name', label: 'Name', dir: 1 }
+  ];
+
+  function sortDefaultDir(key) {
+    for (var i = 0; i < SORT_KEYS.length; i++) {
+      if (SORT_KEYS[i].id === key) return SORT_KEYS[i].dir;
+    }
+    return -1;
+  }
+
+  function sortLabel(key) {
+    for (var i = 0; i < SORT_KEYS.length; i++) {
+      if (SORT_KEYS[i].id === key) return SORT_KEYS[i].label;
+    }
+    return key;
+  }
+
+  function cmpName(a, b) {
+    var an = String(a.name || a.id || '').toLowerCase();
+    var bn = String(b.name || b.id || '').toLowerCase();
+    if (an < bn) return -1;
+    if (an > bn) return 1;
+    return 0;
+  }
+
+  function sortValue(row, key) {
+    if (key === 'health') return (typeof row.rank === 'number') ? row.rank : null;
+    if (key === 'params') return (typeof row.params === 'number') ? row.params : null;
+    if (key === 'price') return (typeof row.price === 'number') ? row.price : null;
+    if (key === 'context') return (typeof row.ctx === 'number' && row.ctx > 0) ? row.ctx : null;
+    if (key === 'fit') return (typeof row.fit === 'number') ? row.fit : null;
+    return null;
+  }
+
+  /**
+   * Rows: {id, name, rank, params, price, ctx, fit}. Anything unknown is null and
+   * lands at the BOTTOM in both directions - an unranked model is never
+   * interleaved with the ranked ones just because the sort was reversed.
+   */
+  function sortRows(rows, key, dir) {
+    var d = dir === -1 ? -1 : 1;
+    var out = rows.slice();
+    out.sort(function (a, b) {
+      if (key === 'name') return cmpName(a, b) * d;
+      var av = sortValue(a, key), bv = sortValue(b, key);
+      var au = (av === null), bu = (bv === null);
+      if (au && bu) return cmpName(a, b);
+      if (au) return 1;
+      if (bu) return -1;
+      if (av === bv) return cmpName(a, b);
+      return (av < bv ? -1 : 1) * d;
+    });
+    return out;
+  }
+
+  var SORT_LS_KEY = 'mm.aiadmin.modelSort';
+
+  function readSortPref() {
+    try {
+      var raw = window.localStorage.getItem(SORT_LS_KEY);
+      if (raw) {
+        var v = JSON.parse(raw);
+        if (v && typeof v.key === 'string') {
+          for (var i = 0; i < SORT_KEYS.length; i++) {
+            if (SORT_KEYS[i].id === v.key) {
+              return { key: v.key, dir: v.dir === 1 ? 1 : v.dir === -1 ? -1 : SORT_KEYS[i].dir };
+            }
+          }
+        }
+      }
+    } catch (e) { /* private mode, quota, whatever - a sort order is not worth an error */ }
+    return { key: 'fit', dir: -1 };
+  }
+
+  function writeSortPref(s) {
+    try { window.localStorage.setItem(SORT_LS_KEY, JSON.stringify({ key: s.key, dir: s.dir })); }
+    catch (e) { /* noop */ }
+  }
+
+  /* ---------------------------------------------------- paste-import parser --
+   * What openrouter.ai/rankings puts on the clipboard, one field per line:
+   *     1.
+   *     DeepSeek V4 Flash 0731
+   *     by
+   *     deepseek
+   *     10T tokens
+   *     191%
+   * and the single-line shape some browsers produce instead:
+   *     1. DeepSeek V4 Flash 0731 by deepseek
+   * Token counts and percentages are statistics, not names, so they are dropped.
+   * ------------------------------------------------------------------------ */
+
+  var RANK_DOT_RE = /^#?\s*(\d{1,3})\s*[.)]\s*(.*)$/;
+  var RANK_BARE_RE = /^#?\s*(\d{1,3})\s*$/;
+  var BY_RE = /^by$/i;
+  var PCT_RE = /^[+-]?[\d.,]+\s*%$/;
+  var STAT_RE = /^[\d.,]+\s*[kmbt]?\s*(tokens?|prompts?|apps?|users?|requests?|completions?)\b/i;
+
+  function stripStats(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/[\d.,]+\s*[KMBT]?\s*tokens?\b/gi, ' ')
+      .replace(/[+-]?[\d.,]+\s*%/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /** Fills name (and author when the text carries "... by <author>"). */
+  function applyEntryText(entry, text) {
+    var t = String(text || '').trim();
+    if (!t) return false;
+    if (/\sby$/i.test(t)) {          // "Name by" with the author on the next line
+      entry.name = t.replace(/\sby$/i, '').trim();
+      return true;
+    }
+    var low = t.toLowerCase();
+    var idx = low.lastIndexOf(' by ');
+    if (idx > 0) {
+      entry.name = t.slice(0, idx).trim();
+      entry.author = stripStats(t.slice(idx + 4));
+      return false;
+    }
+    entry.name = t;
+    return false;
+  }
+
+  /* A leaderboard is a leaderboard, not a document. Someone pasting the whole
+   * rankings page (or a whole browser tab) must not be able to queue up an
+   * unbounded number of Firebase writes behind one button, and a preview nobody
+   * can read to the bottom is not a preview. Everything past this is dropped,
+   * and the card says so rather than truncating quietly. */
+  var MAX_RANK_ENTRIES = 200;
+
+  /** -> [{rank, name, author}] in paste order, first entry per rank wins. */
+  function parseRankingPaste(text) {
+    var lines = String(text === null || text === undefined ? '' : text)
+      .replace(/\u00a0/g, ' ').replace(/\r\n?/g, '\n').split('\n');
+    var out = [], cur = null, expectAuthor = false, lastRank = 0;
+
+    function flush() {
+      if (cur && cur.name) { out.push(cur); lastRank = cur.rank; }
+      cur = null;
+      expectAuthor = false;
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) continue;
+
+      var rk = RANK_DOT_RE.exec(line);
+      var bare = rk ? null : RANK_BARE_RE.exec(line);
+      // A bare number is only a rank when it continues the sequence. Otherwise
+      // "191" under a leaderboard row is a statistic, not a new entry.
+      if (bare && !(!expectAuthor && parseInt(bare[1], 10) === lastRank + 1)) bare = null;
+
+      if (rk || bare) {
+        flush();
+        cur = { rank: parseInt((rk || bare)[1], 10), name: '', author: '' };
+        var rest = rk ? stripStats(rk[2]) : '';
+        if (rest) expectAuthor = applyEntryText(cur, rest);
+        continue;
+      }
+      if (!cur) continue;                       // header junk before the first rank
+      if (BY_RE.test(line)) { expectAuthor = true; continue; }
+      if (expectAuthor) { cur.author = stripStats(line); expectAuthor = false; continue; }
+      if (PCT_RE.test(line) || STAT_RE.test(line)) continue;
+      if (!cur.name) { expectAuthor = applyEntryText(cur, stripStats(line)); }
+    }
+    flush();
+
+    var seen = {}, uniq = [];
+    for (var j = 0; j < out.length && uniq.length < MAX_RANK_ENTRIES; j++) {
+      if (seen[out[j].rank]) continue;
+      seen[out[j].rank] = true;
+      uniq.push(out[j]);
+    }
+    return uniq;
+  }
+
+  /* -------------------------------------------------------------- matching --
+   * Pasted "DeepSeek V4 Flash 0731 / deepseek" has to become the slug
+   * deepseek/deepseek-v4-flash-0731. Both sides are flattened to letters and
+   * digits, the author (when the paste gave one) must agree with the part of the
+   * slug before the slash, and the name is compared against the display name,
+   * the display name after "Vendor:", and the slug tail. Exact beats prefix beats
+   * contains; a variant slug (":free", ":thinking") loses to the plain one. No
+   * match is reported as no match - never as the nearest thing.
+   * ------------------------------------------------------------------------ */
+
+  function normKey(s) {
+    return String(s === null || s === undefined ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
+
+  function authorOfSlug(id) {
+    var s = String(id || '');
+    var i = s.indexOf('/');
+    return i === -1 ? '' : s.slice(0, i);
+  }
+
+  function modelNameKeys(m) {
+    var out = [];
+    var n = String((m && m.name) || '');
+    if (n) {
+      out.push(normKey(n));
+      var ci = n.indexOf(':');
+      if (ci !== -1) out.push(normKey(n.slice(ci + 1)));
+    }
+    var id = String((m && m.id) || '');
+    var si = id.indexOf('/');
+    var tail = si === -1 ? id : id.slice(si + 1);
+    out.push(normKey(tail));
+    var vi = tail.indexOf(':');
+    if (vi !== -1) out.push(normKey(tail.slice(0, vi)));
+    return out;
+  }
+
+  function matchRankEntry(entry, models) {
+    var want = normKey(entry && entry.name);
+    if (!want || !models || !models.length) return null;
+    var wantAuthor = normKey(entry.author);
+    var best = null, bestScore = 0, i, j;
+
+    for (i = 0; i < models.length; i++) {
+      var m = models[i];
+      if (!m || !m.id) continue;
+      var author = normKey(authorOfSlug(m.id));
+      if (wantAuthor && author) {
+        if (author !== wantAuthor &&
+            author.indexOf(wantAuthor) !== 0 &&
+            wantAuthor.indexOf(author) !== 0) continue;
+      }
+      var keys = modelNameKeys(m);
+      var score = 0;
+      for (j = 0; j < keys.length; j++) {
+        var k = keys[j];
+        if (!k) continue;
+        if (k === want) { score = Math.max(score, 100); continue; }
+        // Too short to be evidence of anything. "v4" contains-matching half the
+        // catalog is how a wrong rank gets written.
+        if (k.length < 4 || want.length < 4) continue;
+        if (k.indexOf(want) === 0 || want.indexOf(k) === 0) score = Math.max(score, 80);
+        else if (k.indexOf(want) !== -1 || want.indexOf(k) !== -1) score = Math.max(score, 60);
+      }
+      if (!score) continue;
+      // Prefer the tightest name and the plain slug over a ":free"/":thinking" variant.
+      score -= Math.min(9, Math.abs(normKey(m.id).length - want.length) / 4);
+      if (String(m.id).indexOf(':') !== -1) score -= 5;
+      if (score > bestScore) { bestScore = score; best = m; }
+    }
+    return best ? { slug: best.id, name: best.name, score: bestScore } : null;
+  }
+
+  /**
+   * Preview rows for the import: [{rank, pasted, author, slug, matchedName, why}].
+   * `slug` null means nothing will be written for that line. A slug already
+   * claimed by a better rank is reported as a duplicate rather than overwritten.
+   */
+  function buildImportPreview(entries, models) {
+    var claimed = {}, rows = [], i;
+    for (i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var hit = matchRankEntry(e, models);
+      var row = {
+        rank: e.rank, pasted: e.name, author: e.author,
+        slug: null, matchedName: '', why: 'no match in the loaded catalog'
+      };
+      if (hit) {
+        if (claimed[hit.slug]) {
+          row.why = 'already matched by #' + claimed[hit.slug];
+        } else {
+          claimed[hit.slug] = e.rank;
+          row.slug = hit.slug;
+          row.matchedName = hit.name || '';
+          row.why = '';
+        }
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /** Writes healthRank for every matched row. Returns how many were written. */
+  function applyRankImport(rows, write, now) {
+    var n = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!r || !r.slug || typeof r.rank !== 'number' || !isFinite(r.rank) || r.rank < 1) continue;
+      write('modelMeta/' + slugKey(r.slug) + '/healthRank', Math.round(r.rank), true);
+      n++;
+    }
+    if (n) write('modelMetaImportedAt', typeof now === 'number' ? now : Date.now(), true);
+    return n;
+  }
+
+  function clearHealthRanks(meta, write) {
+    var n = 0, k;
+    for (k in meta) {
+      if (!Object.prototype.hasOwnProperty.call(meta, k)) continue;
+      // These keys come out of Firebase, and this one is being pasted straight
+      // into a write path. A key carrying a '/' would clear a node nobody
+      // asked about; Firebase cannot store one, so it can only be junk.
+      if (!k || /[/.#$\[\]]/.test(k)) continue;
+      if (meta[k] && typeof meta[k].healthRank === 'number' && meta[k].healthRank > 0) {
+        write('modelMeta/' + k + '/healthRank', null, true);
+        n++;
+      }
+    }
+    if (n) write('modelMetaImportedAt', null, true);
+    return n;
+  }
+
+  /* A DATED SNAPSHOT, not a live feed. It is what openrouter.ai/rankings showed
+   * for healthcare in August 2026 and it will go stale; the paste-import above is
+   * the way to refresh it, and the button says so. */
+  var SEED_SNAPSHOT_LABEL = 'August 2026';
+  var SEED_HEALTH_RANKS = [
+    { slug: 'deepseek/deepseek-v4-flash-0731', rank: 1 },
+    { slug: 'google/gemini-3.1-flash-lite', rank: 2 },
+    { slug: 'deepseek/deepseek-v4-flash', rank: 3 },
+    { slug: 'z-ai/glm-5.2', rank: 4 },
+    { slug: 'google/gemini-3-flash-preview', rank: 5 }
+  ];
+
+  /* ==========================================================================
    * TAB: MODELS  (live OpenRouter catalog)
    * ------------------------------------------------------------------------
    * The key never leaves the server, so the browser asks the Netlify function
@@ -1234,6 +1966,40 @@
     var freeOnly = freeState[0], setFreeOnly = freeState[1];
     var assignedState = useState(false);
     var assignedOnly = assignedState[0], setAssignedOnly = assignedState[1];
+
+    // Sort order survives a reload: this is a per-device viewing preference, not
+    // shared state, so localStorage is the right home for it and a failed read
+    // just means the default.
+    var sortState = useState(readSortPref);
+    var sort = sortState[0], setSort = sortState[1];
+
+    var editState = useState(false);
+    var editMeta = editState[0], setEditMeta = editState[1];
+
+    var fitOpenState = useState(false);
+    var fitOpen = fitOpenState[0], setFitOpen = fitOpenState[1];
+
+    function chooseSort(key) {
+      setSort(function (prev) {
+        var next = { key: key, dir: prev.key === key ? prev.dir : sortDefaultDir(key) };
+        writeSortPref(next);
+        return next;
+      });
+    }
+
+    function flipSort() {
+      setSort(function (prev) {
+        var next = { key: prev.key, dir: prev.dir === 1 ? -1 : 1 };
+        writeSortPref(next);
+        return next;
+      });
+    }
+
+    // Clicking the header you are already sorted by reverses it, the way a table
+    // header does everywhere else.
+    function pickSort(key) {
+      if (sort.key === key) flipSort(); else chooseSort(key);
+    }
 
     // Load a modality the first time it is looked at, never twice.
     useEffect(function () {
@@ -1277,6 +2043,67 @@
       }
       return out;
     }, [live.models, q, freeOnly, assignedOnly, assigned]);
+
+    /* ---- ranking metadata, parameters, fit score, sort ----
+     * meta is what YOU have recorded; everything else on the row is either from
+     * OpenRouter or explicitly marked as read off the model's name. */
+    var meta = useMemo(function () { return modelMetaMap(config); }, [config]);
+
+    // Price bounds come from the WHOLE loaded catalog, not the filtered view, so
+    // the price component of a score does not change as you type in the search box.
+    var bounds = useMemo(function () {
+      return priceBoundsOf(live.models, modality);
+    }, [live.models, modality]);
+
+    var rows = useMemo(function () {
+      var out = [], i;
+      for (i = 0; i < filtered.length; i++) {
+        var m = filtered[i];
+        var mt = metaFor(meta, m.id);
+        var parsed = mt.params === null ? parseParams(m.name, m.id) : null;
+        var price = effPrice(m, modality);
+        var ctx = (typeof m.contextLength === 'number' && isFinite(m.contextLength) && m.contextLength > 0)
+          ? m.contextLength : 0;
+        var parts = fitParts(mt.healthRank, price, ctx, bounds);
+        out.push({
+          id: m.id, name: m.name || m.id, m: m,
+          rank: mt.healthRank,
+          params: mt.params !== null ? mt.params : parsed,
+          paramsFrom: mt.params !== null ? 'meta' : (parsed !== null ? 'name' : ''),
+          note: mt.note,
+          price: price, ctx: ctx, fit: parts.total, parts: parts
+        });
+      }
+      return out;
+    }, [filtered, meta, modality, bounds]);
+
+    var sorted = useMemo(function () {
+      return sortRows(rows, sort.key, sort.dir);
+    }, [rows, sort.key, sort.dir]);
+
+    var rankedShown = useMemo(function () {
+      var n = 0;
+      for (var i = 0; i < rows.length; i++) { if (rows[i].rank !== null) n++; }
+      return n;
+    }, [rows]);
+
+    /* The manual fallback for whatever the paste-import could not match. Blank
+     * means "I do not know", which is written as an absent value, not a zero. */
+    function setMetaNum(id, field, raw) {
+      var path = 'modelMeta/' + slugKey(id) + '/' + field;
+      var s = String(raw === null || raw === undefined ? '' : raw).trim();
+      if (!s) { writeCfg(path, null); return; }
+      var n = field === 'healthRank' ? parseInt(s, 10) : parseFloat(s);
+      if (!isFinite(n) || n <= 0) { writeCfg(path, null); return; }
+      writeCfg(path, field === 'healthRank' ? Math.round(n) : n);
+    }
+
+    function fitTitle(r) {
+      return 'MedMaster fit ' + r.fit + ' out of 100 = ' +
+        Math.round(r.parts.health) + ' healthcare rank + ' +
+        Math.round(r.parts.price) + ' price + ' +
+        Math.round(r.parts.context) + ' context. A rough guide, not a benchmark.';
+    }
 
     function toggle(tier, id) {
       var cur = modelsOf(config.tiers[tier]).slice();
@@ -1328,7 +2155,9 @@
       return chips;
     }
 
-    function modelRow(m, extra) {
+    function modelRow(r, extra) {
+      var m = r.m;
+      var key = slugKey(m.id);
       // `isFree` is computed server-side from the TOKEN prices only. On an image
       // model that is not the same claim as "this picture is free", so it is
       // never rendered as one.
@@ -1343,10 +2172,55 @@
         ce('div', { className: 'aia-mtop' },
           ce('b', null, m.name),
           freeChip,
+          /* Badges only exist where the data does. An unranked model shows no
+             rank badge at all rather than "#-" or "unranked". */
+          r.rank !== null ? ce('span', {
+            className: 'aia-chip health',
+            title: 'Number ' + r.rank + ' on the healthcare leaderboard you imported. This is your own metadata - ' +
+              'OpenRouter does not serve it through the API.'
+          }, '#' + r.rank + ' health') : null,
+          r.params !== null ? ce('span', {
+            className: 'aia-chip' + (r.paramsFrom === 'name' ? ' guess' : ''),
+            title: r.paramsFrom === 'name'
+              ? 'Read out of the model name, because OpenRouter does not publish parameter counts. It is a guess ' +
+                'from the text - type the real number below if it is wrong.'
+              : 'Parameter count you entered by hand.'
+          }, fmtParams(r.params)) : null,
+          ce('span', { className: 'aia-chip fit', title: fitTitle(r) }, 'fit ' + r.fit),
           extra || null
         ),
         ce('div', { className: 'aia-mid' }, m.id),
         ce('div', { className: 'aia-meta' }, priceChips(m)),
+        r.note ? ce('div', { className: 'aia-desc', style: { marginTop: 4 } }, r.note) : null,
+
+        editMeta ? ce('div', { className: 'aia-medit' },
+          ce('div', { className: 'aia-field' },
+            ce('label', { htmlFor: 'aia-hr-' + key }, 'Healthcare rank'),
+            ce('input', {
+              id: 'aia-hr-' + key, className: 'aia-input', type: 'number', min: 1, step: 1,
+              placeholder: 'unranked',
+              defaultValue: r.rank === null ? '' : String(r.rank),
+              key: 'hr-' + (r.rank === null ? '' : r.rank),
+              'aria-label': 'Healthcare rank for ' + m.id,
+              onBlur: function (e) { setMetaNum(m.id, 'healthRank', e.target.value); },
+              onKeyDown: function (e) { if (e.key === 'Enter') e.target.blur(); }
+            })
+          ),
+          ce('div', { className: 'aia-field' },
+            ce('label', { htmlFor: 'aia-pb-' + key }, 'Parameters (B)'),
+            ce('input', {
+              id: 'aia-pb-' + key, className: 'aia-input', type: 'number', min: 0, step: 'any',
+              placeholder: r.paramsFrom === 'name' ? String(r.params) + ' (from name)' : 'unknown',
+              defaultValue: r.paramsFrom === 'meta' ? String(r.params) : '',
+              key: 'pb-' + (r.paramsFrom === 'meta' ? r.params : ''),
+              'aria-label': 'Parameter count in billions for ' + m.id,
+              onBlur: function (e) { setMetaNum(m.id, 'params', e.target.value); },
+              onKeyDown: function (e) { if (e.key === 'Enter') e.target.blur(); }
+            })
+          ),
+          ce('span', { className: 'hint' }, 'Saved when you click away. Empty clears it back to unknown.')
+        ) : null,
+
         tierPills(m.id)
       );
     }
@@ -1445,6 +2319,12 @@
         }, 'Show free models only')
       ),
 
+      /* ---- healthcare rankings: paste-import, seed, clear ---- */
+      ce(RankImportCard, {
+        config: config, writeCfg: writeCfg, meta: meta,
+        models: textCat.models, catalogStatus: textCat.status
+      }),
+
       /* ---- the searchable list ---- */
       ce('div', { className: 'aia-card' },
         ce('p', { className: 'aia-h' }, 'Assign models to tiers'),
@@ -1467,7 +2347,70 @@
               type: 'checkbox', checked: assignedOnly,
               disabled: live.status !== 'loaded',
               onChange: function (e) { setAssignedOnly(e.target.checked); }
-            }), 'Assigned only')
+            }), 'Assigned only'),
+          ce('label', { className: 'aia-check' },
+            ce('input', {
+              type: 'checkbox', checked: editMeta,
+              disabled: live.status !== 'loaded',
+              onChange: function (e) { setEditMeta(e.target.checked); }
+            }), 'Edit rank / parameters')
+        ),
+
+        /* ---- sort: pills on a wide screen, one dropdown at 360px ----
+         * Same state, same handler, no duplicated logic - CSS decides which
+         * control is on screen. Unknown values sort to the bottom in BOTH
+         * directions, so reversing the order never interleaves the models you
+         * have no data for with the ones you do. */
+        ce('div', { className: 'aia-sort' },
+          ce('span', { className: 'lbl' }, 'Sort by'),
+          ce('div', { className: 'aia-sortpills', role: 'group', 'aria-label': 'Sort models by' },
+            SORT_KEYS.map(function (k) {
+              var on = sort.key === k.id;
+              return ce('button', {
+                key: k.id, type: 'button',
+                className: 'aia-pill' + (on ? ' on' : ''),
+                'aria-pressed': on ? 'true' : 'false',
+                disabled: live.status !== 'loaded',
+                title: on ? 'Click again to reverse the order' : 'Sort by ' + k.label,
+                onClick: function () { pickSort(k.id); }
+              }, k.label + (on ? (sort.dir === 1 ? ' ↑' : ' ↓') : ''));
+            })
+          ),
+          ce('select', {
+            className: 'aia-select aia-sortsel', value: sort.key,
+            disabled: live.status !== 'loaded',
+            'aria-label': 'Sort models by',
+            onChange: function (e) { chooseSort(e.target.value); }
+          }, SORT_KEYS.map(function (k) {
+            return ce('option', { key: k.id, value: k.id }, k.label);
+          })),
+          ce('button', {
+            type: 'button', className: 'aia-pill',
+            disabled: live.status !== 'loaded',
+            'aria-label': 'Reverse the sort order',
+            onClick: flipSort
+          }, sort.dir === 1 ? 'Lowest first ↑' : 'Highest first ↓')
+        ),
+
+        /* ---- what the fit score is, spelled out ---- */
+        ce('div', { style: { marginTop: 8 } },
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            'aria-expanded': fitOpen ? 'true' : 'false',
+            onClick: function () { setFitOpen(!fitOpen); }
+          }, fitOpen ? 'Hide how "MedMaster fit" is calculated' : 'How is "MedMaster fit" calculated?'),
+          ce('p', { className: 'aia-desc' },
+            'MedMaster fit is a rough guide combining healthcare ranking, price, and context. Not a benchmark.'),
+          fitOpen ? ce('div', { className: 'aia-note info' },
+            FIT_EXPLAIN.map(function (line, i) {
+              return ce('p', { key: i, style: { margin: i ? '8px 0 0' : 0 } }, line);
+            }).concat([
+              ce('p', { key: 'why', style: { margin: '8px 0 0' } },
+                'Nothing in it measures clinical accuracy, and nothing in it is supplied by OpenRouter. The rank ' +
+                'half is whatever you imported or typed; if you have imported nothing, every score here is just ' +
+                'price and context.')
+            ])
+          ) : null
         ),
 
         live.status !== 'loaded' && ce('div', { className: 'aia-empty' },
@@ -1480,7 +2423,11 @@
 
         live.status === 'loaded' && filtered.length > 0 && ce('div', null,
           ce('p', { className: 'aia-desc' },
-            'Showing ' + Math.min(filtered.length, MAX_MODEL_ROWS) + ' of ' + filtered.length + ' matches. ' +
+            'Showing ' + Math.min(filtered.length, MAX_MODEL_ROWS) + ' of ' + filtered.length + ' matches, ' +
+            'sorted by ' + sortLabel(sort.key).toLowerCase() + '. ' +
+            (rankedShown
+              ? rankedShown + ' of them have a healthcare rank. '
+              : 'None of them have a healthcare rank yet - import or type one and they sort to the top. ') +
             (modality === 'text'
               ? 'Prices are US dollars per million tokens: "in" is your prompt, "out" is the reply.'
               : 'These are billed per ' + unit + ', not per token. Where OpenRouter reports a per-' + unit +
@@ -1488,13 +2435,242 @@
                 'rather than being relabelled as something they are not.')),
           ce('div', { className: 'aia-list', style: { maxHeight: 520, marginTop: 6 },
             tabIndex: 0, role: 'region', 'aria-label': 'Matching OpenRouter models' },
-            filtered.slice(0, MAX_MODEL_ROWS).map(function (m) {
-              var isAssigned = assigned.indexOf(m.id) !== -1;
-              return modelRow(m, isAssigned ? ce('span', { className: 'aia-chip' }, 'assigned') : null);
+            sorted.slice(0, MAX_MODEL_ROWS).map(function (r) {
+              var isAssigned = assigned.indexOf(r.id) !== -1;
+              return modelRow(r, isAssigned ? ce('span', { className: 'aia-chip' }, 'assigned') : null);
             })
           )
         )
       )
+    );
+  }
+
+  /* ==========================================================================
+   * CARD: IMPORT HEALTHCARE RANKINGS  (Models tab)
+   * --------------------------------------------------------------------------
+   * The leaderboard only exists on openrouter.ai/rankings as rendered HTML, so
+   * the honest way to get it in here is the owner's clipboard. Paste, parse,
+   * LOOK AT THE PREVIEW, then write. Nothing is written before the preview has
+   * been shown, and anything that did not match a real slug is left alone rather
+   * than guessed at.
+   * ======================================================================== */
+
+  function RankImportCard(props) {
+    var config = props.config, writeCfg = props.writeCfg;
+    var models = props.models || [];
+    var meta = props.meta || {};
+    var catalogStatus = props.catalogStatus || 'idle';
+
+    var openState = useState(false);
+    var open = openState[0], setOpen = openState[1];
+
+    var textState = useState('');
+    var text = textState[0], setText = textState[1];
+
+    // null until Parse has run. { rows: [...] } afterwards - an empty rows array
+    // is a real answer ("nothing in that paste looked like a leaderboard").
+    var prevState = useState(null);
+    var preview = prevState[0], setPreview = prevState[1];
+
+    var armState = useState(false);
+    var armed = armState[0], setArmed = armState[1];
+
+    /* One write per commit, and no more. Every button on this card writes a
+     * BATCH of paths, and every one of them decides what to write from a value
+     * captured at render time. Two clicks dispatched inside a single task (a
+     * fast double-click, a stuck mouse, a synthetic replay) therefore both see
+     * the same pre-write state and both fire the whole batch - the ranks land
+     * twice and modelMetaImportedAt is stamped twice. This latch is cleared by
+     * an effect with no dependency list, so it re-opens once React has
+     * committed the render that the first click caused - by which point the
+     * preview is gone / the seed button is gone and the guard is moot anyway. */
+    var burstRef = useRef(false);
+    useEffect(function () { burstRef.current = false; });
+    function once() {
+      if (burstRef.current) return false;
+      burstRef.current = true;
+      return true;
+    }
+
+    var ranked = countHealthRanks(meta);
+    var dups = duplicateHealthRanks(meta);
+    var isEmpty = metaIsEmpty(meta);
+    var importedAt = (config && typeof config.modelMetaImportedAt === 'number') ? config.modelMetaImportedAt : 0;
+    var canMatch = catalogStatus === 'loaded' && models.length > 0;
+
+    var matches = 0;
+    if (preview) {
+      for (var pi = 0; pi < preview.rows.length; pi++) { if (preview.rows[pi].slug) matches++; }
+    }
+
+    function doParse() {
+      var entries = parseRankingPaste(text);
+      setPreview({ rows: buildImportPreview(entries, models), capped: entries.length >= MAX_RANK_ENTRIES });
+    }
+
+    function doConfirm() {
+      if (!preview || !once()) return;
+      var n = applyRankImport(preview.rows, writeCfg, Date.now());
+      if (n) {
+        toast('Imported ' + n + ' healthcare rank' + (n === 1 ? '' : 's') + '.', 'success');
+        setPreview(null);
+        setText('');
+      } else {
+        toast('Nothing matched a real model, so nothing was written.', 'error');
+      }
+    }
+
+    function doSeed() {
+      if (!once()) return;
+      var n = applyRankImport(SEED_HEALTH_RANKS, writeCfg, Date.now());
+      toast('Seeded ' + n + ' healthcare ranks from the ' + SEED_SNAPSHOT_LABEL + ' snapshot.', 'success');
+    }
+
+    function doClear() {
+      if (!once()) return;
+      var n = clearHealthRanks(meta, writeCfg);
+      setArmed(false);
+      toast(n ? ('Cleared ' + n + ' healthcare rank' + (n === 1 ? '' : 's') + '.') : 'There were none to clear.',
+        n ? 'success' : 'info');
+    }
+
+    return ce('div', { className: 'aia-card' },
+      ce('div', { className: 'aia-row' },
+        ce('p', { className: 'aia-h' }, 'Healthcare rankings'),
+        ce('button', {
+          type: 'button', className: 'btn btn-outline btn-sm',
+          'aria-expanded': open ? 'true' : 'false',
+          onClick: function () { setOpen(!open); }
+        }, open ? 'Close' : 'Import healthcare rankings')
+      ),
+      ce('p', { className: 'aia-desc' },
+        ranked
+          ? (ranked + ' model' + (ranked === 1 ? ' has' : 's have') + ' a healthcare rank' +
+             (importedAt ? ', last imported ' + fmtDate(importedAt) + '.' : '.'))
+          : ('No model has a healthcare rank yet, so the rank half of every fit score is currently zero.' +
+             (isEmpty && !open ? ' Open this card to paste a leaderboard, or to seed the ' +
+               SEED_SNAPSHOT_LABEL + ' snapshot.' : ''))),
+      dups.length ? ce('div', { className: 'aia-note warn' },
+        (dups.length === 1
+          ? ('Two or more models share rank ' + dups[0].rank + ' (' + dups[0].n + ' of them).')
+          : ('Several ranks are claimed by more than one model: ' +
+             dups.map(function (d) { return 'rank ' + d.rank + ' x' + d.n; }).join(', ') + '.')) +
+        ' They score the same for the healthcare half of the fit score, so the order between them is decided ' +
+        'by name, not by you. Re-import the leaderboard or edit the ranks to break the tie.') : null,
+
+      ce('p', { className: 'aia-desc' },
+        'OpenRouter only publishes its healthcare leaderboard on the ',
+        ce('span', { className: 'aia-code' }, 'openrouter.ai/rankings'),
+        ' page - it is drawn in the browser, it is not in the page source, and the public ',
+        ce('span', { className: 'aia-code' }, '/api/v1/models'),
+        ' carries no ranking at all. So this is copy-and-paste on purpose: a scraper for that page would break ' +
+        'silently and you would never know the numbers had stopped updating.'),
+
+      open ? ce('div', { style: { marginTop: 10 } },
+        ce('p', { className: 'aia-desc' },
+          'Open openrouter.ai/rankings, choose Healthcare, select the leaderboard and copy it. Paste the whole ' +
+          'thing below - the ranks, the "by <author>" lines and the token counts are all expected.'),
+
+        ce('textarea', {
+          className: 'aia-ta', value: text, spellCheck: false,
+          placeholder: '1.\nDeepSeek V4 Flash 0731\nby\ndeepseek\n10T tokens\n191%\n2.\n...',
+          'aria-label': 'Pasted healthcare leaderboard',
+          onChange: function (e) { setText(e.target.value); }
+        }),
+
+        ce('div', { className: 'aia-run' },
+          ce('button', {
+            type: 'button', className: 'btn btn-primary btn-sm',
+            disabled: !text.trim() || !canMatch,
+            onClick: doParse
+          }, 'Parse'),
+          text ? ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            onClick: function () { setText(''); setPreview(null); }
+          }, 'Clear the box') : null
+        ),
+
+        !canMatch ? ce('div', { className: 'aia-note warn' },
+          'The text catalog is not loaded, so a pasted name cannot be matched to a real slug. Load the models at ' +
+          'the top of this tab first.') : null,
+
+        preview && preview.rows.length === 0 ? ce('div', { className: 'aia-note warn' },
+          'Nothing in that paste looked like a numbered leaderboard. Make sure the rank numbers came across - ' +
+          'they are what the parser locks onto.') : null,
+
+        preview && preview.capped ? ce('div', { className: 'aia-note warn' },
+          'That paste had more than ' + MAX_RANK_ENTRIES + ' ranked lines. Only the first ' + MAX_RANK_ENTRIES +
+          ' are read, and only those are listed below - a healthcare leaderboard is never longer than that, so ' +
+          'the rest is almost certainly the rest of the page.') : null,
+
+        preview && preview.rows.length > 0 ? ce('div', null,
+          ce('p', { className: 'aia-desc', style: { marginTop: 12 } },
+            matches + ' of ' + preview.rows.length + ' lines matched a model in the catalog. ' +
+            'Nothing has been saved yet - check the matches first. Lines with no match are left exactly as they ' +
+            'are; they are never guessed at.'),
+          ce('div', { className: 'aia-list', style: { maxHeight: 300, marginTop: 6 },
+            tabIndex: 0, role: 'region', 'aria-label': 'Import preview' },
+            [ce('div', { className: 'aia-prow head', key: 'h' },
+              ce('span', null, 'Rank'), ce('span', null, 'Pasted name'), ce('span', { className: 'slug' }, 'Matched model'))
+            ].concat(preview.rows.map(function (r, i) {
+              return ce('div', { className: 'aia-prow', key: i },
+                ce('span', { className: 'rk' }, '#' + r.rank),
+                ce('span', { className: 'nm' }, r.pasted + (r.author ? ' · ' + r.author : '')),
+                ce('span', { className: 'slug' + (r.slug ? '' : ' miss') }, r.slug ? r.slug : r.why)
+              );
+            }))
+          ),
+          ce('div', { className: 'aia-run' },
+            ce('button', {
+              type: 'button', className: 'btn btn-primary btn-sm',
+              disabled: matches === 0,
+              onClick: doConfirm
+            }, matches ? ('Write ' + matches + ' rank' + (matches === 1 ? '' : 's')) : 'Nothing to write'),
+            ce('button', {
+              type: 'button', className: 'btn btn-outline btn-sm',
+              onClick: function () { setPreview(null); }
+            }, 'Cancel')
+          )
+        ) : null,
+
+        isEmpty ? ce('div', { style: { marginTop: 14 } },
+          ce('p', { className: 'aia-desc' },
+            'Nothing recorded at all yet. This seeds the five models that led OpenRouter\'s healthcare leaderboard ' +
+            'in ' + SEED_SNAPSHOT_LABEL + '. It is a DATED SNAPSHOT, not a live feed - it was true once and it ' +
+            'will drift, so refresh it with a paste when you care about the order.'),
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm', onClick: doSeed
+          }, 'Seed with known healthcare rankings (' + SEED_SNAPSHOT_LABEL + ' snapshot)')
+        ) : null,
+
+        ranked ? ce('div', { style: { marginTop: 14 } },
+          armed
+            ? ce('div', null,
+                ce('div', { className: 'aia-note warn' },
+                  'This removes the healthcare rank from all ' + ranked + ' model' + (ranked === 1 ? '' : 's') +
+                  '. Parameter counts and notes are kept. There is no undo, but a fresh paste puts them back.'),
+                ce('div', { className: 'aia-run' },
+                  ce('button', { type: 'button', className: 'btn btn-primary btn-sm', onClick: doClear },
+                    'Yes, clear all ' + ranked + ' ranks'),
+                  ce('button', {
+                    type: 'button', className: 'btn btn-outline btn-sm',
+                    onClick: function () { setArmed(false); }
+                  }, 'Keep them')
+                )
+              )
+            : ce('button', {
+                type: 'button', className: 'btn btn-outline btn-sm',
+                onClick: function () { setArmed(true); }
+              }, 'Clear all health ranks')
+        ) : null,
+
+        ce('p', { className: 'aia-desc', style: { marginTop: 12 } },
+          'Writes to ', ce('span', { className: 'aia-code' }, 'aiConfig.modelMeta.<slug>.healthRank'),
+          ' and stamps ', ce('span', { className: 'aia-code' }, 'aiConfig.modelMetaImportedAt'),
+          '. The slug keys have ', ce('span', { className: 'aia-code' }, '/'), ' and ',
+          ce('span', { className: 'aia-code' }, '.'), ' written as ',
+          ce('span', { className: 'aia-code' }, '_'), ', because Firebase will not accept them in a key.')
+      ) : null
     );
   }
 
@@ -1546,6 +2722,7 @@
   }
 
   var CLEAR_CACHE_PHRASE = 'DELETE THE IMAGES';
+  var MAX_ROUTE_OPTIONS = 60;
 
   function RoutingTab(props) {
     var config = props.config, writeCfg = props.writeCfg;
@@ -1564,28 +2741,41 @@
       writeCfg('tiers/' + tier + '/featureModels/' + featureId, slug ? slug : null);
     }
 
+    /* -> {ids, hidden}. `hidden` is how many real image models were left out.
+     * A wildcard tier is allowed EVERYTHING, and OpenRouter's image list alone
+     * is in the hundreds; a 300-option select is not a control on a phone, it
+     * is a scroll. The models that are actually in play are always listed in
+     * full (everything configured anywhere, plus whatever this cell is set to);
+     * the long tail of the image catalog is capped and the count is shown, so
+     * the cell never pretends the list is complete. */
     function optionsFor(tier, isImg, current) {
       var tcfg = config.tiers[tier] || {};
       var allowed = modelsOf(tcfg);
       var wildcard = allowed.indexOf('*') !== -1;
-      var seen = {}, out = [], i;
+      var seen = {}, out = [], hidden = 0, i;
       function add(id) {
-        if (!id || id === '*' || seen[id]) return;
+        if (!id || id === '*' || seen[id]) return false;
         seen[id] = true;
         out.push(id);
+        return true;
       }
       if (wildcard) {
-        // Instructor is allowed everything, so offer everything that is actually
-        // in play: assigned models, plus the real image models when the feature
-        // makes pictures. A 300-row select would be unusable on a phone.
         var cfgIds = configuredIds(config);
         for (i = 0; i < cfgIds.length; i++) add(cfgIds[i]);
-        if (isImg) for (i = 0; i < imageCat.models.length; i++) add(imageCat.models[i].id);
+        if (isImg) {
+          for (i = 0; i < imageCat.models.length; i++) {
+            if (out.length >= MAX_ROUTE_OPTIONS && imageCat.models[i].id !== current) {
+              if (!seen[imageCat.models[i].id]) hidden++;
+              continue;
+            }
+            add(imageCat.models[i].id);
+          }
+        }
       } else {
         for (i = 0; i < allowed.length; i++) add(allowed[i]);
       }
-      add(current);
-      return out;
+      add(current);   // whatever is configured is ALWAYS selectable, cap or not
+      return { ids: out, hidden: hidden };
     }
 
     function cell(feature, tier) {
@@ -1617,8 +2807,12 @@
           onChange: function (e) { setRoute(tier, feature.id, e.target.value); }
         },
           ce('option', { value: '' }, 'Tier default'),
-          opts.map(function (id) { return ce('option', { key: id, value: id }, id); })
+          opts.ids.map(function (id) { return ce('option', { key: id, value: id }, id); })
         ),
+
+        opts.hidden ? ce('div', { className: 'aia-cellwarn soft' },
+          'Showing ' + opts.ids.length + ' of ' + (opts.ids.length + opts.hidden) + ' possible models. Add the one ' +
+          'you want to a tier on the Models tab and it appears here.') : null,
 
         /* The effective model, ALWAYS. "Tier default" is not an answer to
          * "what will run"; the slug is. */
@@ -1723,7 +2917,7 @@
 
       var req = { prompt: it.prompt, feature: it.feature, size: it.size };
 
-      Promise.resolve(im.lookup(req)).then(function (entry) {
+      Promise.resolve().then(function () { return im.lookup(req); }).then(function (entry) {
         if (entry) {
           // Already in the shared cache (or the static bundle). Not paid for
           // again, not re-uploaded, not re-indexed. This is what makes the run
@@ -1762,7 +2956,7 @@
       if (busyRef.current) return;   // never two runs at once, ever
       var items = itemsRef.current;
       if (!resume || !items || !items.length) {
-        items = im.fixedList();
+        items = fixedItems();
         itemsRef.current = items;
         cursorRef.current = 0;
       }
@@ -1797,7 +2991,7 @@
         return;
       }
       var items = itemsRef.current;
-      if (!items || !items.length) { items = im.fixedList(); itemsRef.current = items; }
+      if (!items || !items.length) { items = fixedItems(); itemsRef.current = items; }
       if (!items.length) { toast('Nothing to export.', 'error'); return; }
 
       setExp({ busy: true, done: 0, total: items.length, msg: 'Finding cached images...', text: '', count: 0, skipped: [] });
@@ -1807,7 +3001,8 @@
       function next() {
         if (i >= items.length) return Promise.resolve();
         var it = items[i++];
-        return Promise.resolve(im.lookup({ prompt: it.prompt, feature: it.feature, size: it.size }))
+        return Promise.resolve()
+          .then(function () { return im.lookup({ prompt: it.prompt, feature: it.feature, size: it.size }); })
           .then(function (entry) {
             if (entry && entry.url) found.push({ hash: entry.hash || it.hash, url: entry.url, label: it.label });
             if (aliveRef.current) {
@@ -1845,10 +3040,7 @@
     /* ----------------------------------------------------------- rendering */
 
     var im = images();
-    var fixedCount = 0;
-    if (im && typeof im.fixedList === 'function') {
-      try { fixedCount = im.fixedList().length; } catch (e) { fixedCount = 0; }
-    }
+    var fixedCount = fixedItems().length;
     var pctRun = run.total > 0 ? Math.round((run.done / run.total) * 100) : 0;
 
     return ce('div', null,
@@ -1922,8 +3114,13 @@
                 onBlur: function (e) { setImageLimit(t, e.target.value); },
                 onKeyDown: function (e) { if (e.key === 'Enter') e.target.blur(); }
               }),
-              ce('div', { style: { color: 'var(--text3)', fontSize: 'var(--fs-xs,12px)', marginTop: 4 } },
-                (v === -1 ? 'unlimited pictures' : v === 0 ? 'no pictures on this plan' : v + ' pictures a day') +
+              ce('div', {
+                style: {
+                  color: v < -1 ? 'var(--orange-fg,var(--orange))' : 'var(--text3)',
+                  fontSize: 'var(--fs-xs,12px)', marginTop: 4
+                }
+              },
+                imageLimitPhrase(v) +
                 ' · ' + (msgs === -1 ? 'unlimited messages' : msgs + ' messages a day'))
             );
           })
@@ -2025,7 +3222,7 @@
           'Read is open to any signed-in user on purpose: a cache nobody can read is not a cache. Writing a new ' +
           'entry is allowed only where one does not already exist, so a student can publish a picture they just ' +
           'paid for but can never overwrite or poison somebody else\'s.'),
-        (im && im.STORAGE_RULES_SNIPPET) ? ce('div', null,
+        (im && typeof im.STORAGE_RULES_SNIPPET === 'string' && im.STORAGE_RULES_SNIPPET) ? ce('div', null,
           ce('p', { className: 'aia-desc', style: { marginTop: 12 } },
             'And the matching Cloud Storage rules, which live in a different console tab (Storage -> Rules):'),
           ce('div', { className: 'aia-pre' }, im.STORAGE_RULES_SNIPPET)
@@ -2572,6 +3769,12 @@
     var aliveRef = useRef(true);
     useEffect(function () { return function () { aliveRef.current = false; }; }, []);
 
+    /* clearing.busy is state, so it is not true until React re-renders. Two
+     * clicks inside one task therefore both saw busy:false and both ran the
+     * delete - on the one control in this panel that destroys data and bills
+     * every student again. A ref flips synchronously. */
+    var clearingRef = useRef(false);
+
     var load = useCallback(function () {
       var im = images();
       if (!im || typeof im.listCache !== 'function') {
@@ -2579,7 +3782,10 @@
         return;
       }
       setCache(function (p) { return { status: 'loading', entries: p.entries, error: '' }; });
-      Promise.resolve(im.listCache()).then(function (res) {
+      // .then() turns a THROWN error into a rejection; calling im.listCache()
+      // bare does not, and a synchronous throw out of another file's function
+      // escapes straight through a React effect and unmounts the tree.
+      Promise.resolve().then(function () { return im.listCache(); }).then(function (res) {
         if (!aliveRef.current) return;
         if (res && res.ok) setCache({ status: 'loaded', entries: res.entries || {}, error: '' });
         else setCache({ status: 'denied', entries: {}, error: (res && res.error) ? res.error : 'permission denied' });
@@ -2634,8 +3840,11 @@
     function doClear() {
       var im = images();
       if (!im || typeof im.clearCache !== 'function') return;
+      if (clearingRef.current) return;
+      clearingRef.current = true;
       setClearing({ busy: true, msg: '', ok: false });
-      Promise.resolve(im.clearCache()).then(function (res) {
+      Promise.resolve().then(function () { return im.clearCache(); }).then(function (res) {
+        clearingRef.current = false;
         if (!aliveRef.current) return;
         if (res && res.ok) {
           setClearing({ busy: false, ok: true,
@@ -2649,6 +3858,7 @@
             msg: 'Could not clear the cache: ' + ((res && res.error) ? res.error : 'permission denied') });
         }
       }).catch(function (e) {
+        clearingRef.current = false;
         if (!aliveRef.current) return;
         setClearing({ busy: false, ok: false,
           msg: 'Could not clear the cache: ' + ((e && e.message) ? e.message : 'unknown error') });
@@ -3021,6 +4231,30 @@
       )
     );
   }
+
+  /* The pure half of the ranking feature - no React, no Firebase, no DOM. It is
+   * exported so the parsing and scoring rules can be tested directly instead of
+   * through a rendered panel, which is the only way a paste-parser ever stays
+   * honest. Nothing in the app reads these; treat them as internal. */
+  AIAdminPanel.ranking = {
+    slugKey: slugKey,
+    parseParams: parseParams,
+    fmtParams: fmtParams,
+    effPrice: effPrice,
+    priceBoundsOf: priceBoundsOf,
+    fitParts: fitParts,
+    sortRows: sortRows,
+    SORT_KEYS: SORT_KEYS,
+    parseRankingPaste: parseRankingPaste,
+    matchRankEntry: matchRankEntry,
+    buildImportPreview: buildImportPreview,
+    applyRankImport: applyRankImport,
+    clearHealthRanks: clearHealthRanks,
+    normalizeModelMeta: normalizeModelMeta,
+    metaFor: metaFor,
+    SEED_HEALTH_RANKS: SEED_HEALTH_RANKS,
+    FIT_EXPLAIN: FIT_EXPLAIN
+  };
 
   window.AIAdminPanel = AIAdminPanel;
 })();

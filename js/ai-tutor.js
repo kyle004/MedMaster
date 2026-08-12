@@ -109,6 +109,19 @@
       '.tutor-dot{width:6px;height:6px;border-radius:var(--r-full,999px);background:var(--text3);animation:tutorBounce 1.2s infinite}',
       '.tutor-dot:nth-child(2){animation-delay:.15s}.tutor-dot:nth-child(3){animation-delay:.3s}',
       '@keyframes tutorBounce{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}',
+      /* wall-clock wait status — see the AI WAIT STATE block below */
+      '.tutor-wait{display:inline-flex;align-items:center;gap:var(--sp-2,8px);flex-wrap:wrap;',
+      'font-size:var(--fs-sm,13px);color:var(--text2);line-height:var(--lh-normal,1.5)}',
+      '.tutor-wait.slow{color:var(--orange-fg,#fbbf24)}',
+      '.tutor-wait-secs{font-variant-numeric:tabular-nums;color:var(--text3);font-size:var(--fs-xs,12px)}',
+      '.tutor-wait-act{min-height:32px;padding:3px var(--sp-2,8px);font-size:var(--fs-xs,12px);',
+      'border-radius:var(--r-sm,6px);border:1px solid var(--border,#334155);background:var(--surface);',
+      'color:var(--text2);cursor:pointer;font-weight:var(--fw-semi,600)}',
+      '.tutor-wait-act:hover{border-color:var(--accent);color:var(--text)}',
+      '.tutor-wait-act:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
+      '.tutor-slowline{display:inline-flex;align-items:center;gap:var(--sp-2,8px);flex-wrap:wrap;',
+      'font-size:var(--fs-xs,12px);color:var(--text3);margin-top:var(--sp-1,4px)}',
+      '.tutor-err-t{font-weight:var(--fw-bold,700);margin-bottom:var(--sp-1,4px)}',
       '.tutor-bar{display:flex;align-items:center;gap:var(--sp-2,8px);flex-wrap:wrap;font-size:var(--fs-xs,12px);',
       'color:var(--text3);padding:var(--sp-2,8px) var(--sp-3,12px);border-top:1px solid var(--border,#334155)}',
       '.tutor-bar label{display:inline-flex;align-items:center;gap:var(--sp-1,4px)}',
@@ -398,12 +411,125 @@
     'server': 'The tutor did not answer that one. Try again in a moment.'
   };
 
+  /* One headline per code MM.ai.chat rejects with, so the six conditions do not
+     all read as the same grey box. 'no-auth' and 'quota-exceeded' are not
+     failures the student can retry; 'network' and 'server' are. */
+  var ERR_TITLE = {
+    'no-auth': 'You are signed out',
+    'tier-denied': 'Not included in your plan',
+    'quota-exceeded': 'That is all your messages for today',
+    'ai-disabled': 'AI is switched off right now',
+    'network': 'Could not reach the tutor',
+    'server': 'The tutor did not answer'
+  };
+
   function aiErrText(e) {
     var code = (e && e.code) ? String(e.code) : 'server';
     var msg = (e && e.message) ? String(e.message) : '';
     if (msg && !AI_GENERIC[msg]) return msg;          // real backend diagnosis
     if (OUR_COPY[code]) return OUR_COPY[code];
     return OUR_COPY.server;
+  }
+
+  function aiErrTitle(e) {
+    if (e && e.timedOut) return 'The tutor ran out of time';
+    var code = (e && e.code) ? String(e.code) : 'server';
+    return ERR_TITLE[code] || ERR_TITLE.server;
+  }
+
+  /* ======================================================================
+   * AI WAIT STATE  (file-local; the only pending-UI mechanism in this file)
+   * ----------------------------------------------------------------------
+   * The Netlify function buffers SSE, so onToken can stay completely silent
+   * for the whole generation and then fire everything at the end. Anything
+   * keyed on token arrival therefore sits frozen while the model is actually
+   * working, which reads as a crash.
+   *
+   * This clock is keyed on wall time and nothing else:
+   *   1. it is set synchronously in the same commit as `busy`, so there is an
+   *      acknowledgment on the very next paint, before any network work;
+   *   2. it ticks on its own interval, so it advances with zero tokens;
+   *   3. it escalates - quiet, then an elapsed counter, then "this model is
+   *      being slow", then an offer to give up and try again.
+   * ==================================================================== */
+  var WAIT_TICK_MS = 1000;
+  var WAIT_SOON_MS = 5000;    // start showing the elapsed counter
+  var WAIT_SLOW_MS = 20000;   // say out loud that this is slow
+  var WAIT_LONG_MS = 45000;   // offer a retry
+
+  function waitTier(ms) {
+    if (ms >= WAIT_LONG_MS) return 3;
+    if (ms >= WAIT_SLOW_MS) return 2;
+    if (ms >= WAIT_SOON_MS) return 1;
+    return 0;
+  }
+
+  var WAIT_TEXT = [
+    'Your tutor is reading your message.',
+    'Your tutor is writing a reply.',
+    'Still working — this model is being slow. Nothing is stuck.',
+    'This is taking much longer than usual. Keep waiting, or try again.'
+  ];
+
+  function useAiWait() {
+    var s = useState(null);
+    var wait = s[0], setWait = s[1];
+    var timerRef = useRef(null);
+    var startRef = useRef(0);
+
+    function clearTick() {
+      if (timerRef.current) {
+        try { clearInterval(timerRef.current); } catch (e) { /* ignore */ }
+        timerRef.current = null;
+      }
+    }
+    useEffect(function () { return clearTick; }, []);
+
+    function begin() {
+      clearTick();
+      startRef.current = Date.now();
+      setWait({ ms: 0, tier: 0 });
+      timerRef.current = setInterval(function () {
+        var ms = Date.now() - startRef.current;
+        setWait({ ms: ms, tier: waitTier(ms) });
+      }, WAIT_TICK_MS);
+    }
+    function end() { clearTick(); setWait(null); }
+
+    return { wait: wait, begin: begin, end: end };
+  }
+
+  /**
+   * The one status node in this file. `data-elapsed` is the honest seconds
+   * count and advances whether or not a token has ever arrived. The animated
+   * dots are decoration only: under prefers-reduced-motion the CSS stops them
+   * and the text status is unchanged.
+   */
+  function WaitNote(props) {
+    var w = props.wait;
+    if (!w) return null;
+    var secs = Math.floor(w.ms / 1000);
+    return ce('span', {
+      className: 'tutor-wait' + (w.tier >= 2 ? ' slow' : ''),
+      'data-elapsed': String(secs), 'data-tier': String(w.tier)
+    },
+      ce('span', { className: 'tutor-typing', 'aria-hidden': 'true' },
+        ce('span', { className: 'tutor-dot' }),
+        ce('span', { className: 'tutor-dot' }),
+        ce('span', { className: 'tutor-dot' })),
+      // Only the phrase is announced, and it changes at most three times.
+      // The seconds are aria-hidden so a screen reader is not read a clock.
+      ce('span', { className: 'tutor-wait-txt', role: 'status', 'aria-live': 'polite' },
+        props.text || WAIT_TEXT[w.tier]),
+      w.tier >= 1
+        ? ce('span', { className: 'tutor-wait-secs', 'aria-hidden': 'true' }, secs + 's')
+        : null,
+      (w.tier >= 3 && props.onRetry)
+        ? ce('button', {
+            type: 'button', className: 'tutor-wait-act', onClick: props.onRetry
+          }, 'Try again')
+        : null
+    );
   }
 
   var TAIL = 'Everything else in MedMaster still works.';
@@ -434,11 +560,23 @@
     var _an = useState(''); var announce = _an[0], setAnnounce = _an[1];
 
     var resolving = useAiResolving();
+    var waiter = useAiWait();
 
     var scrollRef = useRef(null);
     var inputRef = useRef(null);
     var abortRef = useRef(false);
     var lastSentRef = useRef('');
+    /* The transcript the in-flight call was made with, so a mid-flight retry
+       can re-run the same turn without appending the student's line twice. */
+    var convoRef = useRef(null);
+    /* Ref twins of `busy`. State does not update synchronously, so a second
+       click (or Enter, or a quick-action chip) in the same tick used to be
+       able to start a second call. These cannot. */
+    var busyRef = useRef(false);
+    var runRef = useRef(0);
+    var mountedRef = useRef(true);
+
+    useEffect(function () { return function () { mountedRef.current = false; }; }, []);
 
     var persona = useMemo(function () {
       for (var i = 0; i < personas.length; i++) if (personas[i].id === personaId) return personas[i];
@@ -506,8 +644,13 @@
     }
 
     function stopGeneration() {
-      if (!busy) return;
+      if (!busyRef.current) return;
       abortRef.current = true;
+      // Orphan the in-flight call: anything it resolves or rejects with from
+      // here on is ignored, so a late answer cannot resurrect the pending UI.
+      runRef.current++;
+      busyRef.current = false;
+      waiter.end();
       var partial = streaming;
       setStreaming('');
       setBusy(false);
@@ -524,21 +667,38 @@
 
     function send(overrideText) {
       var text = (overrideText != null ? overrideText : input).trim();
-      if (!text || busy) return;
+      if (!text || busyRef.current) return;
       if (!available) {
-        setErr({ text: 'The tutor is not available on your account right now.', retry: false });
+        setErr({ title: 'The tutor is off for your account', retry: false,
+                 text: 'The tutor is not available on your account right now.' });
         return;
       }
 
       setErr(null);
       setInput('');
       lastSentRef.current = text;
-      abortRef.current = false;
 
       var nextMsgs = msgs.concat([{ role: 'user', content: text }]);
       setMsgs(nextMsgs);
+      dispatch(nextMsgs);
+    }
+
+    /**
+     * The single place a turn is actually sent. Split out of send() so a
+     * mid-flight "Try again" can re-run the SAME transcript instead of
+     * appending the student's line a second time.
+     */
+    function dispatch(convo) {
+      convoRef.current = convo;
+      abortRef.current = false;
+      busyRef.current = true;
+      var runId = ++runRef.current;
+
       setBusy(true);
       setStreaming('');
+      // Acknowledgment first, network second. This state is committed in the
+      // same render as `busy`, so it is on screen before anything is awaited.
+      waiter.begin();
 
       // Assemble the system prompt: persona + student context + optional case
       var sys = (persona && persona.systemPrompt) ? persona.systemPrompt : 'You are an experienced nursing instructor helping a nursing student study.';
@@ -553,35 +713,58 @@
         }
       }
 
-      var apiMsgs = nextMsgs.map(function (m) {
+      var apiMsgs = convo.map(function (m) {
         return { role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content };
       });
 
+      /** true only for the call that is still the current one. */
+      function live() {
+        return mountedRef.current && runId === runRef.current && !abortRef.current;
+      }
+      /** Every exit from a turn goes through here — no path leaves it pending. */
+      function settle() {
+        if (runId !== runRef.current) return false;
+        busyRef.current = false;
+        if (!mountedRef.current) return false;
+        setBusy(false);
+        setStreaming('');
+        waiter.end();
+        return true;
+      }
+
       var acc = '';
-      A.chat({
-        system: sys,
-        messages: apiMsgs,
-        maxTokens: 1500,
-        onToken: function (chunk) {
-          if (abortRef.current) return;
-          acc += chunk;
-          setStreaming(acc);
-        }
-      }).then(function (full) {
-        if (abortRef.current) return;
+      var p;
+      try {
+        p = A.chat({
+          system: sys,
+          messages: apiMsgs,
+          maxTokens: 1500,
+          feature: 'tutor',
+          onToken: function (chunk) {
+            if (!live()) return;
+            acc += chunk;
+            setStreaming(acc);
+          }
+        });
+      } catch (e) {
+        // A synchronous throw used to leave `busy` true forever, which left the
+        // composer stuck on Stop with nothing to stop.
+        p = Promise.reject(e);
+      }
+
+      Promise.resolve(p).then(function (full) {
+        if (!live()) { settle(); return; }
         var finalText = full || acc;
+        if (!settle()) return;
         setMsgs(function (prev) {
           return prev.concat([{ role: 'assistant', content: finalText, persona: persona ? persona.id : '' }]);
         });
-        setStreaming('');
-        setBusy(false);
         setAnnounce(plain(finalText));
         speakIfWanted(plain(finalText));
-      })['catch'](function (e) {
-        if (abortRef.current) return;
-        setStreaming('');
-        setBusy(false);
-        var code = (e && e.code) ? e.code : 'server';
+      }, function (e) {
+        if (!live()) { settle(); return; }
+        if (!settle()) return;
+        var code = (e && e.code) ? String(e.code) : 'server';
         // The turn never happened: take the unanswered message back out of the
         // transcript and put the text back in the box so nobody retypes it.
         setMsgs(function (prev) {
@@ -590,11 +773,31 @@
         });
         setInput(lastSentRef.current);
         setErr({
+          title: aiErrTitle(e),
           text: aiErrText(e),
-          retry: code === 'network' || code === 'server',
+          code: code,
+          retry: code === 'network' || code === 'server' || !!(e && e.timedOut),
           reason: (e && e.reason) ? String(e.reason) : ''
         });
       });
+    }
+
+    /**
+     * "Try again" from inside the wait status, i.e. the model is still
+     * theoretically working and the student has run out of patience. Orphans
+     * the in-flight call and re-runs the identical transcript. It cannot
+     * double-submit: runRef is bumped before the new call and busyRef is set
+     * synchronously inside dispatch().
+     */
+    function retryInFlight() {
+      var convo = convoRef.current;
+      if (!convo || !convo.length) return;
+      abortRef.current = true;
+      runRef.current++;
+      busyRef.current = false;
+      waiter.end();
+      setStreaming('');
+      dispatch(convo);
     }
 
     function onKeyDown(e) {
@@ -820,31 +1023,57 @@
           streaming
             ? ce('div', { className: 'tutor-msg ai' },
                 ce('div', { className: 'tutor-av', 'aria-hidden': 'true' }, persona ? (persona.avatar || '🎓') : '🎓'),
-                ce('div', null, ce(Rich, { text: streaming, k: 'stream', caret: true })))
+                ce('div', null,
+                  ce(Rich, { text: streaming, k: 'stream', caret: true }),
+                  /* Text is arriving, so the dots would be noise — but if the
+                     stream itself stalls, say so rather than letting a half
+                     answer sit there looking finished. */
+                  (waiter.wait && waiter.wait.tier >= 2)
+                    ? ce('div', { className: 'tutor-slowline' },
+                        ce('span', { role: 'status', 'aria-live': 'polite' },
+                          'Still writing — this model is being slow.'),
+                        ce('span', { 'aria-hidden': 'true' }, Math.floor(waiter.wait.ms / 1000) + 's'))
+                    : null))
             : null,
+          /* No tokens yet. This is the state the buffered SSE proxy produces
+             for the entire generation, so it is the one that must never look
+             frozen: the counter inside WaitNote runs off wall time. */
           busy && !streaming
             ? ce('div', { className: 'tutor-msg ai' },
                 ce('div', { className: 'tutor-av', 'aria-hidden': 'true' }, persona ? (persona.avatar || '🎓') : '🎓'),
                 ce('div', { className: 'tutor-bubble' },
-                  ce('span', { className: 'tutor-typing' },
-                    ce('span', { className: 'tutor-dot' }), ce('span', { className: 'tutor-dot' }), ce('span', { className: 'tutor-dot' })),
-                  ce('span', { className: 'tutor-sr' }, 'Your tutor is writing a reply.')))
+                  ce(WaitNote, { wait: waiter.wait, onRetry: retryInFlight })))
             : null
         ),
 
         ce('div', { className: 'tutor-sr', 'aria-live': 'polite', 'aria-atomic': 'true' }, announce),
 
-        err ? ce('div', { className: 'tutor-err', role: 'alert' },
+        /* One box, six different things it can say. The headline names the
+           condition so 'you are signed out' and 'the network dropped' do not
+           read as the same shrug, and Retry only appears where retrying is
+           actually the right move. */
+        err ? ce('div', {
+          className: 'tutor-err', role: 'alert',
+          'data-code': err.code || ''
+        },
+          err.title ? ce('div', { className: 'tutor-err-t' }, err.title) : null,
           ce('div', null, err.text),
-          err.retry ? ce('div', { className: 'tutor-err-act' },
-            ce('button', {
+          ce('div', { className: 'tutor-err-act' },
+            err.retry ? ce('button', {
               className: 'btn btn-primary btn-sm',
+              disabled: busy,
               onClick: function () { send(lastSentRef.current); }
-            }, 'Retry'),
+            }, 'Retry') : null,
+            err.code === 'no-auth' ? ce('button', {
+              className: 'btn btn-primary btn-sm', onClick: requestSignIn
+            }, 'Sign in') : null,
+            err.code === 'quota-exceeded' ? ce('button', {
+              className: 'btn btn-primary btn-sm', onClick: function () { navTo('smart'); }
+            }, 'Drill my missed questions') : null,
             ce('button', {
               className: 'btn btn-outline btn-sm', onClick: function () { setErr(null); }
             }, 'Dismiss')
-          ) : null
+          )
         ) : null,
 
         // Quick actions

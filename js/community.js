@@ -440,7 +440,11 @@
 
     useEffect(function () { run(true); }, [key, enabled]);
 
+    /* All three mutators can be called from a write that resolves after the
+       page has gone (post, then navigate away before the round trip lands).
+       `run()` already checks `live`; these did not. */
     var patch = useCallback(function (id, changes) {
+      if (!live.current) return;
       setState(function (s) {
         return merge(s, {
           items: s.items.map(function (it) {
@@ -451,11 +455,13 @@
     }, []);
 
     var prepend = useCallback(function (item) {
+      if (!live.current) return;
       seen.current[item._id] = true;
       setState(function (s) { return merge(s, { items: [item].concat(s.items) }); });
     }, []);
 
     var drop = useCallback(function (id) {
+      if (!live.current) return;
       setState(function (s) {
         return merge(s, { items: s.items.filter(function (it) { return it._id !== id; }) });
       });
@@ -895,7 +901,92 @@
       e.code = 'ai-disabled';
       return Promise.reject(e);
     }
-    return m.ai.chat(cfg);
+    /* A synchronous throw out of chat() used to escape both call sites and
+       leave their busy flags true forever - a permanently disabled button with
+       no error next to it. Every failure now arrives as a rejection. */
+    try { return Promise.resolve(m.ai.chat(cfg)); }
+    catch (err) { return Promise.reject(err); }
+  }
+
+  /* ======================================================================
+   * AI WAIT STATE  (file-local; both AI touchpoints in this file use it)
+   * ----------------------------------------------------------------------
+   * The Netlify function buffers SSE, so a reply can arrive as a single lump
+   * at the very end. A spinner with a fixed caption therefore says exactly
+   * the same thing at second 1 and at second 90.
+   *
+   * This clock is keyed on wall time only: set synchronously with the busy
+   * flag (acknowledgment on the next paint), ticking on its own interval (so
+   * it advances with zero output), and escalating so slow reads as slow.
+   * ==================================================================== */
+  var WAIT_TICK_MS = 1000;
+  var WAIT_SOON_MS = 5000;    // start showing the elapsed counter
+  var WAIT_SLOW_MS = 20000;   // say out loud that this is slow
+  var WAIT_LONG_MS = 45000;   // offer a retry
+
+  function waitTier(ms) {
+    if (ms >= WAIT_LONG_MS) return 3;
+    if (ms >= WAIT_SLOW_MS) return 2;
+    if (ms >= WAIT_SOON_MS) return 1;
+    return 0;
+  }
+
+  function useAiWait() {
+    var st = useState(null);
+    var wait = st[0], setWait = st[1];
+    var timerRef = useRef(null);
+    var startRef = useRef(0);
+
+    function clearTick() {
+      if (timerRef.current) {
+        try { clearInterval(timerRef.current); } catch (e) { /* ignore */ }
+        timerRef.current = null;
+      }
+    }
+    useEffect(function () { return clearTick; }, []);
+
+    function begin() {
+      clearTick();
+      startRef.current = Date.now();
+      setWait({ ms: 0, tier: 0 });
+      timerRef.current = setInterval(function () {
+        var ms = Date.now() - startRef.current;
+        setWait({ ms: ms, tier: waitTier(ms) });
+      }, WAIT_TICK_MS);
+    }
+    function end() { clearTick(); setWait(null); }
+
+    return { wait: wait, begin: begin, end: end };
+  }
+
+  /**
+   * The one status node in this file. Reuses .cm-spin, which the stylesheet
+   * already freezes under prefers-reduced-motion — the text status and the
+   * elapsed counter are unaffected either way. `data-elapsed` is real seconds
+   * and advances whether or not a single character has arrived.
+   */
+  function AiWait(props) {
+    var w = props.wait;
+    if (!w) return null;
+    var secs = Math.floor(w.ms / 1000);
+    var texts = props.texts || [];
+    var body = texts[w.tier] || texts[0] || 'Working...';
+    return ce('div', {
+      className: 'cm-status cm-wait' + (w.tier >= 2 ? ' slow' : ''),
+      'data-elapsed': String(secs), 'data-tier': String(w.tier)
+    },
+      ce('span', { className: 'cm-spin', 'aria-hidden': 'true' }),
+      /* Only the phrase is announced, and only at tier boundaries. The
+         seconds are aria-hidden so nobody is read a ticking clock. */
+      ce('span', { role: 'status', 'aria-live': 'polite' }, body),
+      w.tier >= 1 ? ce('span', { className: 'cm-wait-secs', 'aria-hidden': 'true' }, secs + 's') : null,
+      (w.tier >= 3 && props.onRetry)
+        ? ce('button', { className: 'btn btn-outline btn-sm', onClick: props.onRetry }, 'Try again')
+        : null,
+      (w.tier >= 3 && props.onCancel)
+        ? ce('button', { className: 'btn btn-outline btn-sm', onClick: props.onCancel }, 'Stop waiting')
+        : null
+    );
   }
 
   /* ai.js fills e.message with a generic sentence when it has nothing better,
@@ -924,6 +1015,19 @@
     if (code === 'ai-disabled') return 'AI assist is turned off right now. Everything else in the builder works.';
     if (code === 'network') return 'Network hiccup - check your connection and try again. Nothing you typed is lost.';
     return 'The AI service had a problem. Try again in a minute - this one is not on you.';
+  }
+
+  /* The same six codes plus a retry verdict, because "sign in" and "the wifi
+     dropped" are not the same offer. A Retry button next to a spent daily
+     allowance is a button that is guaranteed to fail. */
+  function aiErrDetail(err) {
+    var code = err && err.code ? String(err.code) : 'server';
+    var retry = (code === 'network' || code === 'server' || !!(err && err.timedOut));
+    if (err && err.timedOut) {
+      return { code: code, retry: true,
+               text: 'The AI ran out of time on that one. Nothing you typed is lost - try again.' };
+    }
+    return { code: code, retry: retry, text: aiErrorMessage(err) };
   }
 
   /** Pull the first JSON object/array out of a model response. */
@@ -1076,6 +1180,11 @@
       '.cm-status{display:flex;align-items:center;gap:var(--sp-3,12px);justify-content:center;padding:var(--sp-5,20px);color:var(--text2);font-size:var(--fs-base,14px);}',
       '.cm-spin{width:18px;height:18px;border-radius:var(--r-full,999px);border:2px solid var(--surface3,#334155);border-top-color:var(--accent);animation:cmspin .8s linear infinite;flex:0 0 auto;}',
       '@keyframes cmspin{to{transform:rotate(360deg);}}',
+      /* AI wait status — see the AI WAIT STATE block below */
+      '.cm-wait{display:flex;align-items:center;gap:var(--sp-2,8px);flex-wrap:wrap;justify-content:flex-start;',
+      'padding:var(--sp-3,12px) 0;color:var(--text2);font-size:var(--fs-base,14px);line-height:var(--lh-normal,1.5);}',
+      '.cm-wait.slow{color:var(--orange-fg,#fbbf24);}',
+      '.cm-wait-secs{font-variant-numeric:tabular-nums;color:var(--text3);font-size:var(--fs-xs,12px);}',
       '.cm-banner{border-radius:var(--r-md,10px);padding:var(--sp-3,12px) var(--sp-4,16px);font-size:var(--fs-base,14px);line-height:var(--lh-body,1.65);display:flex;gap:var(--sp-3,12px);align-items:flex-start;margin-bottom:var(--sp-4,16px);border:1px solid var(--border,#334155);background:var(--surface);color:var(--text2);}',
       '.cm-banner .cm-banner-ico{flex:0 0 auto;font-size:var(--fs-md,16px);line-height:1.4;}',
       '.cm-banner.warn{border-color:var(--orange);color:var(--text);}',
@@ -1523,9 +1632,13 @@
     var s1 = useState('');                var note = s1[0], setNote = s1[1];
     var s2 = useState(false);             var busy = s2[0], setBusy = s2[1];
     var s3 = useState('');                var err = s3[0], setErr = s3[1];
+    /* `busy` is not readable synchronously, so two clicks in one tick both saw
+       false and filed the same report twice into the moderation queue. */
+    var sendingRef = useRef(false);
 
     function submit() {
-      if (busy) return;
+      if (sendingRef.current) return;
+      sendingRef.current = true;
       setBusy(true); setErr('');
       pushAt(P.reports, {
         targetType: props.targetType,
@@ -1544,6 +1657,7 @@
         toast('Report sent. A human reviews every report - nothing is removed automatically.', 'success');
         props.onDone();
       })['catch'](function (e) {
+        sendingRef.current = false;
         setBusy(false);
         setErr(writeErrText(e, 'Could not send that report. Try again in a moment.'));
       });
@@ -1720,9 +1834,19 @@
     var s2 = useState(false);   var busy = s2[0], setBusy = s2[1];
     var s3 = useState(null);    var review = s3[0], setReview = s3[1];
     var s4 = useState(false);   var aiBusy = s4[0], setAiBusy = s4[1];
-    var s5 = useState('');      var aiErr = s5[0], setAiErr = s5[1];
+    var s5 = useState(null);    var aiErr = s5[0], setAiErr = s5[1];
     var s6 = useState('');      var formErr = s6[0], setFormErr = s6[1];
     var aiResolvingNow = useAiResolving();
+    var waiter = useAiWait();
+    /* Ref twin of aiBusy - state is not synchronous, so two clicks in the same
+       tick could start two reviews. runRef orphans an abandoned call so a late
+       answer cannot overwrite a newer one or resurrect the pending UI. */
+    var aiBusyRef = useRef(false);
+    var aiRunRef = useRef(0);
+    var aliveRef = useRef(true);
+    /* Same reasoning as aiBusyRef, for the post itself. */
+    var postingRef = useRef(false);
+    useEffect(function () { return function () { aliveRef.current = false; }; }, []);
 
     function set(field, value) {
       setQ(function (cur) { var n = merge(cur, {}); n[field] = value; return n; });
@@ -1770,34 +1894,77 @@
     }
 
     function runAi() {
-      if (aiBusy) return;
-      setAiBusy(true); setAiErr(''); setReview(null);
+      if (aiBusyRef.current) return;
+      aiBusyRef.current = true;
+      var runId = ++aiRunRef.current;
+      setAiBusy(true); setAiErr(null); setReview(null);
+      // Acknowledgment first, network second: committed in the same render as
+      // aiBusy, so the status is on screen before anything is awaited.
+      waiter.begin();
+
+      function settle() {
+        if (runId !== aiRunRef.current) return false;
+        aiBusyRef.current = false;
+        if (!aliveRef.current) return false;
+        setAiBusy(false);
+        waiter.end();
+        return true;
+      }
+
       aiChat({
         system: AI_REVIEW_SYSTEM,
         messages: [{ role: 'user', content: buildReviewPrompt(q) }],
         maxTokens: 900,
-        temperature: 0.3
+        temperature: 0.3,
+        feature: 'community'
       }).then(function (text) {
+        if (!settle()) return;
         var parsed = extractJson(text);
         if (!parsed) {
           setReview({ verdict: 'needs-work', summary: clean(text, 900), accuracyNotes: [], distractorNotes: [] });
         } else {
           setReview(parsed);
         }
-        setAiBusy(false);
       })['catch'](function (e) {
-        setAiErr(aiErrorMessage(e));
-        setAiBusy(false);
+        if (!settle()) return;
+        setAiErr(aiErrDetail(e));
       });
     }
 
+    /* Stop waiting on a review that is not arriving. Nothing typed is touched;
+       the question is still postable with or without a second opinion. */
+    function cancelAi() {
+      if (!aiBusyRef.current) return;
+      aiRunRef.current++;
+      aiBusyRef.current = false;
+      setAiBusy(false);
+      waiter.end();
+      setAiErr({ code: 'cancelled', retry: true,
+                 text: 'Stopped waiting for the AI review. Nothing you wrote has changed - you can post as is, or try again.' });
+    }
+
+    /* Re-run while the old call is still notionally alive. Orphan it first;
+       aiBusyRef is set again synchronously inside runAi, so however fast this
+       is clicked it cannot start two reviews. */
+    function retryAi() {
+      aiRunRef.current++;
+      aiBusyRef.current = false;
+      waiter.end();
+      runAi();
+    }
+
     function submit() {
-      if (busy) return;
+      /* Ref twin of `busy`, for the same reason the AI review has one: state is
+         not synchronous, so two clicks landing in one tick both read busy===false
+         and BOTH post. That is two rows in the bank, two stat bumps and two
+         activity entries from one press. */
+      if (postingRef.current) return;
       var v = validateQuestion(q);
       setErrs(v);
       if (firstError(v)) { setFormErr('Fix the highlighted fields before posting.'); return; }
       var gateMsg = rateCheck('question');
       if (gateMsg) { setFormErr(gateMsg); return; }
+      postingRef.current = true;
       setBusy(true); setFormErr('');
 
       serverRateCheck(P.questions, isNewAccount() ? RATE.newUser.minGapMs : RATE.normal.minGapMs)
@@ -1832,9 +1999,15 @@
               targetType: 'question', targetId: id
             });
             toast('Question posted. It is live in the bank now, under your name.', 'success');
+            /* The row is written either way. onDone only exists to close this
+               form and slot the row into the list behind it; if the form has
+               already gone there is nothing left for it to do. */
+            if (!aliveRef.current) return;
             props.onDone(merge(row, { _id: id }));
           });
         })['catch'](function (e) {
+          postingRef.current = false;
+          if (!aliveRef.current) return;
           setBusy(false);
           setFormErr(writeErrText(e, 'Could not post that question. Try again in a moment - what you wrote is still here.'));
         });
@@ -1971,13 +2144,32 @@
       aiAvailable() ? ce('div', { className: 'cm-field' },
         ce('div', { className: 'cm-actions' },
           ce('button', {
-            className: 'btn btn-outline', onClick: runAi, disabled: aiBusy || clean(q.text).length < 15
+            className: 'btn btn-outline', onClick: runAi,
+            'aria-busy': aiBusy ? 'true' : 'false',
+            disabled: aiBusy || clean(q.text).length < 15
           }, aiBusy ? 'Checking...' : 'Check my question with AI'),
           ce('span', { className: 'cm-mini' },
             'Advisory second opinion. It never edits your question for you.')
         ),
-        aiErr ? ce('div', { className: 'cm-err', role: 'alert' }, aiErr) : null,
-        aiBusy ? ce(Spinner, { label: 'Reading your question...' }) : null,
+        aiErr ? ce('div', { className: 'cm-err', role: 'alert', 'data-code': aiErr.code },
+          ce('div', null, aiErr.text),
+          aiErr.retry ? ce('div', { className: 'cm-actions', style: { marginTop: 8 } },
+            ce('button', { className: 'btn btn-outline btn-sm', disabled: aiBusy, onClick: runAi }, 'Try again'),
+            ce('button', { className: 'btn btn-outline btn-sm', onClick: function () { setAiErr(null); } }, 'Dismiss')
+          ) : null
+        ) : null,
+        /* The honest wait. It replaces the fixed-caption spinner: the counter
+           runs off wall time, so a buffered stream that delivers nothing for
+           half a minute still reads as slow rather than as dead. */
+        ce(AiWait, {
+          wait: waiter.wait, onRetry: retryAi, onCancel: cancelAi,
+          texts: [
+            'Sending your question to the reviewer.',
+            'Reading your question...',
+            'Still working - this model is being slow. Nothing you typed is at risk.',
+            'This is taking much longer than usual. Keep waiting, or try again.'
+          ]
+        }),
         ce(AiReview, {
           review: review,
           onUseRationale: function (t) { set('rationale', t); toast('Rationale replaced. Edit it into your own words.', 'info'); }
@@ -2900,13 +3092,18 @@
     var s3 = useState(false); var help = s3[0], setHelp = s3[1];
     var s4 = useState('');   var err = s4[0], setErr = s4[1];
     var s5 = useState(false); var busy = s5[0], setBusy = s5[1];
+    /* Set synchronously: the disabled attribute alone let two clicks in one
+       tick start two threads. */
+    var postingRef = useRef(false);
 
     function submit() {
+      if (postingRef.current) return;
       var t = clean(title, LIMIT.title), b = clean(body, LIMIT.comment);
       if (t.length < 6) { setErr('Give the thread a real title - at least 6 characters.'); return; }
       if (b.length < 10) { setErr('Add some detail so people can actually help.'); return; }
       var msg = rateCheck('thread');
       if (msg) { setErr(msg); return; }
+      postingRef.current = true;
       setBusy(true); setErr('');
       var row = {
         title: t, body: b, category: cat, helpWanted: help,
@@ -2921,6 +3118,7 @@
         });
         props.onDone(merge(row, { _id: id }));
       })['catch'](function (e) {
+        postingRef.current = false;
         setBusy(false);
         setErr(writeErrText(e, 'Could not post that thread. Try again - nothing you wrote is lost.'));
       });
@@ -3415,29 +3613,82 @@
   function AiDraftPanel(props) {
     var s0 = useState('');     var topic = s0[0], setTopic = s0[1];
     var s1 = useState(false);  var busy = s1[0], setBusy = s1[1];
-    var s2 = useState('');     var err = s2[0], setErr = s2[1];
-    var s3 = useState('');     var stage = s3[0], setStage = s3[1];
+    var s2 = useState(null);   var err = s2[0], setErr = s2[1];
+    var s3 = useState(0);      var stage = s3[0], setStage = s3[1];
+    var waiter = useAiWait();
+    /* Enter in the topic box did NOT check `busy` (only the button was
+       disabled), so holding Enter fired one draft per keypress - two full
+       2200-token scenario calls plus their question calls, all racing to set
+       the same draft. A ref, set synchronously, is the only thing that closes
+       that: state has not updated by the time the next keydown arrives. */
+    var busyRef = useRef(false);
+    var runRef = useRef(0);
+    var aliveRef = useRef(true);
+    useEffect(function () { return function () { aliveRef.current = false; }; }, []);
+
+    /* Two sequential calls, so the wait copy names which one is running. */
+    var STAGE_TEXT = [
+      [
+        'Sending your topic to the model.',
+        'Drafting the patient and timeline...',
+        'Still drafting - this model is being slow. Nothing is stuck.',
+        'This is taking much longer than usual. Keep waiting, or try again.'
+      ],
+      [
+        'Patient drafted. Starting the questions.',
+        'Drafting practice questions...',
+        'Still on the questions - this model is being slow.',
+        'The questions are taking much longer than usual. Keep waiting, or try again.'
+      ]
+    ];
 
     function go() {
+      if (busyRef.current) return;
       var t = clean(topic, 120);
-      if (t.length < 5) { setErr('Tell it the clinical picture - a few words at least.'); return; }
-      setBusy(true); setErr(''); setStage('Drafting the patient and timeline...');
+      if (t.length < 5) {
+        setErr({ code: 'input', retry: false, text: 'Tell it the clinical picture - a few words at least.' });
+        return;
+      }
+      busyRef.current = true;
+      var runId = ++runRef.current;
+      setBusy(true); setErr(null); setStage(0);
+      // Acknowledgment first, network second.
+      waiter.begin();
+
+      function settle() {
+        if (runId !== runRef.current) return false;
+        busyRef.current = false;
+        if (!aliveRef.current) return false;
+        setBusy(false);
+        waiter.end();
+        return true;
+      }
+
       aiChat({
         system: AI_SCENARIO_SYSTEM,
         messages: [{ role: 'user', content: 'Draft a nursing simulation scenario about: ' + t }],
         maxTokens: 2200,
-        temperature: 0.6
+        temperature: 0.6,
+        feature: 'community'
       }).then(function (text) {
+        if (runId !== runRef.current) return null;
         var json = extractJson(text);
-        if (!json) throw new Error('The draft came back in an unexpected format. Try rephrasing the topic.');
+        if (!json) {
+          var bad = new Error('The draft came back in an unexpected format. Try rephrasing the topic.');
+          bad.code = 'server';
+          throw bad;
+        }
         var draft = coerceDraft(json);
-        setStage('Drafting practice questions...');
+        // Second call: restart the clock so the counter measures THIS one.
+        if (aliveRef.current) { setStage(1); waiter.begin(); }
         var m = MMx();
         var qPromise;
         if (m.ai && typeof m.ai.generateQuestions === 'function') {
-          qPromise = Promise.resolve(m.ai.generateQuestions({
-            topic: t, count: 4, difficulty: draft.difficulty, category: draft.category
-          }));
+          try {
+            qPromise = Promise.resolve(m.ai.generateQuestions({
+              topic: t, count: 4, difficulty: draft.difficulty, category: draft.category
+            }));
+          } catch (e) { qPromise = Promise.reject(e); }
         } else {
           qPromise = aiChat({
             system: 'You write NCLEX-style questions. Respond ONLY with JSON: ' +
@@ -3445,20 +3696,43 @@
                     'Every question MUST have a rationale explaining why the right answer is right.',
             messages: [{ role: 'user', content: 'Write 4 priority-setting questions for this scenario: ' + t +
                          '\nScenario summary: ' + draft.summary }],
-            maxTokens: 1400, temperature: 0.5
+            maxTokens: 1400, temperature: 0.5, feature: 'questions'
           }).then(function (qt) { return extractJson(qt); });
         }
+        /* The questions are a bonus: losing them still leaves a usable draft,
+           so this failure is swallowed on purpose and the draft goes through. */
         return qPromise.then(function (qraw) {
           draft.questions = coerceAiQuestions(qraw);
           return draft;
         })['catch'](function () { return draft; });
       }).then(function (draft) {
-        setBusy(false); setStage('');
+        if (!settle()) return;
+        if (!draft) return;
+        setStage(0);
         props.onDraft(draft);
       })['catch'](function (e) {
-        setBusy(false); setStage('');
-        setErr(aiErrorMessage(e));
+        if (!settle()) return;
+        setStage(0);
+        setErr(aiErrDetail(e));
       });
+    }
+
+    /* Stop waiting. The topic box keeps what was typed, so nothing is lost. */
+    function cancelDraft() {
+      if (!busyRef.current) return;
+      runRef.current++;
+      busyRef.current = false;
+      setBusy(false);
+      waiter.end();
+      setErr({ code: 'cancelled', retry: true,
+               text: 'Stopped waiting for the draft. Your topic is still in the box - try again whenever you want.' });
+    }
+
+    function retryDraft() {
+      runRef.current++;
+      busyRef.current = false;
+      waiter.end();
+      go();
     }
 
     return ce('div', { className: 'cm-item', style: { display: 'block' } },
@@ -3475,11 +3749,22 @@
           onChange: function (e) { setTopic(e.target.value); },
           onKeyDown: function (e) { if (e.key === 'Enter') go(); }
         }),
-        ce('button', { className: 'btn btn-primary', onClick: go, disabled: busy },
-          busy ? 'Drafting...' : 'Draft it')
+        ce('button', {
+          className: 'btn btn-primary', onClick: go, disabled: busy,
+          'aria-busy': busy ? 'true' : 'false'
+        }, busy ? 'Drafting...' : 'Draft it')
       ),
-      busy ? ce(Spinner, { label: stage || 'Working...' }) : null,
-      err ? ce('div', { className: 'cm-err', role: 'alert' }, err) : null
+      ce(AiWait, {
+        wait: waiter.wait, texts: STAGE_TEXT[stage] || STAGE_TEXT[0],
+        onRetry: retryDraft, onCancel: cancelDraft
+      }),
+      err ? ce('div', { className: 'cm-err', role: 'alert', 'data-code': err.code },
+        ce('div', null, err.text),
+        err.retry ? ce('div', { className: 'cm-actions', style: { marginTop: 8 } },
+          ce('button', { className: 'btn btn-outline btn-sm', disabled: busy, onClick: go }, 'Try again'),
+          ce('button', { className: 'btn btn-outline btn-sm', onClick: function () { setErr(null); } }, 'Dismiss')
+        ) : null
+      ) : null
     );
   }
 
@@ -3502,6 +3787,10 @@
     var s6 = useState(false);  var reviewed = s6[0], setReviewed = s6[1];
     var s7 = useState(false);  var showAi = s7[0], setShowAi = s7[1];
     var aiResolvingNow = useAiResolving();
+    /* Set synchronously, unlike `busy`: see publish(). */
+    var publishingRef = useRef(false);
+    var aliveRef = useRef(true);
+    useEffect(function () { return function () { aliveRef.current = false; }; }, []);
 
     function set(field, value) { setD(function (c) { var n = merge(c, {}); n[field] = value; return n; }); }
     function setPatient(field, value) {
@@ -3540,12 +3829,17 @@
     }
 
     function publish() {
+      /* Only the button's `disabled` stood between two clicks in one tick and
+         two published scenarios (plus two stat bumps and two fork notices).
+         A ref is set synchronously; state is not. */
+      if (publishingRef.current) return;
       var v = validateScenario(d);
       setErrs(v);
       if (firstError(v)) { setFormErr('Some sections still need attention - check the red notes.'); setStep(6); return; }
       if (aiDrafted && !reviewed) { setFormErr('Confirm you reviewed the AI-drafted content before publishing.'); return; }
       var msg = rateCheck('scenario');
       if (msg) { setFormErr(msg); return; }
+      publishingRef.current = true;
       setBusy(true); setFormErr('');
 
       serverRateCheck(P.scenarios, isNewAccount() ? RATE.newUser.minGapMs : RATE.normal.minGapMs)
@@ -3581,9 +3875,13 @@
               });
             }
             toast('Scenario published. Your cohort can run it in the sim engine now.', 'success');
+            /* Written either way; onDone only closes the builder behind it. */
+            if (!aliveRef.current) return;
             props.onDone(merge(row, { _id: id }));
           });
         })['catch'](function (e) {
+          publishingRef.current = false;
+          if (!aliveRef.current) return;
           setBusy(false);
           setFormErr(writeErrText(e, 'Could not publish that scenario. Your draft is still here - try again in a moment.'));
         });
@@ -4287,12 +4585,16 @@
     var s4 = useState('public'); var vis = s4[0], setVis = s4[1];
     var s5 = useState('');   var err = s5[0], setErr = s5[1];
     var s6 = useState(false); var busy = s6[0], setBusy = s6[1];
+    /* Set synchronously: two clicks in one tick used to found two groups. */
+    var creatingRef = useRef(false);
 
     function submit() {
+      if (creatingRef.current) return;
       var n = clean(name, LIMIT.name);
       if (n.length < 3) { setErr('Give the group a name.'); return; }
       var msg = rateCheck('group');
       if (msg) { setErr(msg); return; }
+      creatingRef.current = true;
       setBusy(true); setErr('');
       var code = makeInviteCode();
       var uid = myId();
@@ -4318,6 +4620,7 @@
                                   targetType: 'group', targetId: id });
         props.onDone(merge(row, { _id: id }));
       })['catch'](function (e) {
+        creatingRef.current = false;
         setBusy(false);
         setErr(writeErrText(e, 'Could not create that group. Try again in a moment.'));
       });

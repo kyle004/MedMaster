@@ -357,6 +357,19 @@
       '.sim-replay .cell{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);padding:8px;}',
       '.sim-replay .cell ul{margin:0;padding-left:16px;line-height:1.6;}',
 
+      /* ---- AI wait status (see the AI WAIT STATE block below) ---- */
+      '.sim-wait{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;',
+      'color:var(--text2);line-height:1.5;margin-top:6px;}',
+      '.sim-wait.slow{color:var(--orange-fg,#fbbf24);}',
+      '.sim-wait .secs{font-variant-numeric:tabular-nums;color:var(--text3);font-size:12px;}',
+      '.sim-wait .dots{display:inline-flex;gap:3px;align-items:center;flex:0 0 auto;}',
+      '.sim-wait .dots i{width:6px;height:6px;border-radius:999px;background:var(--text3);',
+      'animation:simWaitBounce 1.2s infinite;}',
+      '.sim-wait .dots i:nth-child(2){animation-delay:.15s;}',
+      '.sim-wait .dots i:nth-child(3){animation-delay:.3s;}',
+      '@keyframes simWaitBounce{0%,60%,100%{opacity:.3;transform:translateY(0);}',
+      '30%{opacity:1;transform:translateY(-3px);}}',
+
       /* ---- modal ---- */
       '.sim-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:1000;display:flex;',
       'align-items:center;justify-content:center;padding:16px;}',
@@ -377,6 +390,8 @@
       '}',
       '@media (prefers-reduced-motion:reduce){',
       '.sim-root *,.sim-root *::before,.sim-root *::after{animation:none!important;transition:none!important;}',
+      /* the dots stop; the text status and the elapsed counter do not */
+      '.sim-wait .dots i{animation:none!important;opacity:.55;}',
       /* keep the signal when the motion goes away */
       '.sim-vital.changed{box-shadow:inset 3px 0 0 0 var(--accent);}',
       '.sim-vital.crit{box-shadow:0 0 0 2px var(--sim-bad-br);}',
@@ -1070,6 +1085,102 @@
     return resolving;
   }
 
+  /* ======================================================================
+   * AI WAIT STATE  (file-local; both AI touchpoints in this file use it)
+   * ----------------------------------------------------------------------
+   * The Netlify function buffers SSE, so onToken can stay silent for an
+   * entire generation and then deliver everything at once. "Your instructor
+   * is reading the transcript..." and "Patient is thinking..." were both
+   * static strings with no clock behind them, so a slow model and a dead
+   * request looked exactly the same.
+   *
+   * This clock is keyed on wall time only: set synchronously with the busy
+   * flag (acknowledgment on the next paint), ticking on its own interval (so
+   * it advances with zero tokens), and escalating so slow reads as slow.
+   * ==================================================================== */
+  var WAIT_TICK_MS = 1000;
+  var WAIT_SOON_MS = 5000;    // start showing the elapsed counter
+  var WAIT_SLOW_MS = 20000;   // say out loud that this is slow
+  var WAIT_LONG_MS = 45000;   // offer a retry / a way out
+
+  function waitTier(ms) {
+    if (ms >= WAIT_LONG_MS) { return 3; }
+    if (ms >= WAIT_SLOW_MS) { return 2; }
+    if (ms >= WAIT_SOON_MS) { return 1; }
+    return 0;
+  }
+
+  var WAIT_TEXT_DEBRIEF = [
+    'Sending your run to the instructor.',
+    'Your instructor is reading the transcript.',
+    'Still working - this model is being slow. Nothing is stuck.',
+    'This is taking much longer than usual. Keep waiting, or try again.'
+  ];
+
+  var WAIT_TEXT_PATIENT = [
+    'Your patient heard you.',
+    'Your patient is thinking about that.',
+    'Still waiting on your patient - the model is being slow.',
+    'This answer is not coming quickly. Keep waiting, or stop and carry on.'
+  ];
+
+  function useAiWait() {
+    var st = useState(null);
+    var wait = st[0], setWait = st[1];
+    var timerRef = useRef(null);
+    var startRef = useRef(0);
+
+    function clearTick() {
+      if (timerRef.current) {
+        try { clearInterval(timerRef.current); } catch (e) {}
+        timerRef.current = null;
+      }
+    }
+    useEffect(function () { return clearTick; }, []);
+
+    function begin() {
+      clearTick();
+      startRef.current = Date.now();
+      setWait({ ms: 0, tier: 0 });
+      timerRef.current = setInterval(function () {
+        var ms = Date.now() - startRef.current;
+        setWait({ ms: ms, tier: waitTier(ms) });
+      }, WAIT_TICK_MS);
+    }
+    function end() { clearTick(); setWait(null); }
+
+    return { wait: wait, begin: begin, end: end };
+  }
+
+  /**
+   * The one status node in this file. `data-elapsed` is real seconds and
+   * advances whether or not anything has streamed. The dots are decoration:
+   * prefers-reduced-motion stops them and leaves the text status intact.
+   */
+  function WaitNote(props) {
+    var w = props.wait;
+    if (!w) { return null; }
+    var secs = Math.floor(w.ms / 1000);
+    var texts = props.texts || WAIT_TEXT_DEBRIEF;
+    return ce('div', {
+      className: 'sim-wait' + (w.tier >= 2 ? ' slow' : ''),
+      'data-elapsed': String(secs), 'data-tier': String(w.tier)
+    },
+      ce('span', { className: 'dots', 'aria-hidden': 'true' },
+        ce('i', null), ce('i', null), ce('i', null)),
+      /* Only the phrase is announced, and only at tier boundaries. The
+         seconds are aria-hidden so nobody is read a ticking clock. */
+      ce('span', { role: 'status', 'aria-live': 'polite' }, texts[w.tier]),
+      w.tier >= 1 ? ce('span', { className: 'secs', 'aria-hidden': 'true' }, secs + 's') : null,
+      (w.tier >= 3 && props.onRetry)
+        ? ce('button', { type: 'button', className: 'btn btn-outline btn-sm', onClick: props.onRetry }, 'Try again')
+        : null,
+      (w.tier >= 3 && props.onCancel)
+        ? ce('button', { type: 'button', className: 'btn btn-outline btn-sm', onClick: props.onCancel }, 'Stop waiting')
+        : null
+    );
+  }
+
   function buildDebriefPrompt(scenario, result, logLines) {
     var sc = obj(scenario);
     var lines = [];
@@ -1087,36 +1198,128 @@
     return lines.join('\n');
   }
 
-  function runAiDebrief(scenario, result, logLines, onToken) {
-    var ai = obj(MMx().ai);
-    if (!aiAvailable()) { return Promise.reject(new Error('unavailable')); }
-    if (typeof ai.debriefSimulation === 'function') {
-      try {
-        var r = ai.debriefSimulation(scenario, result, onToken);
-        if (r && typeof r.then === 'function') { return r; }
-        if (typeof r === 'string' && r) { return Promise.resolve(r); }
-      } catch (e) { /* fall through to chat */ }
-    }
-    if (typeof ai.chat !== 'function') { return Promise.reject(new Error('unavailable')); }
-    return ai.chat({
-      system: 'You are an experienced nursing clinical instructor running a post-simulation debrief. ' +
-        'Be warm but direct. Use short paragraphs and bullet points. Structure: What went well / ' +
-        'What put the patient at risk / The one habit to change / A prediction of how this shows up on NCLEX. ' +
-        'Never invent clinical data that is not in the transcript. Under 300 words.',
-      messages: [{ role: 'user', content: buildDebriefPrompt(scenario, result, logLines) }],
-      maxTokens: 700,
-      onToken: onToken
-    });
+  /* MM.ai.debriefSimulation() takes (scenario, performance) only - it ignores a
+     third onToken argument, and it CATCHES every error, resolving with a
+     markdown page that begins with this heading. Both behaviours are wrong for
+     a status UI: nothing ever streams and nothing ever rejects, so a quota wall
+     rendered as a successful debrief. Hence: prefer chat() (which streams and
+     rejects honestly), and if we do end up on debriefSimulation, recognise the
+     sentinel and turn it back into a rejection. */
+  var DEBRIEF_FAIL_MARK = '## Debrief unavailable';
+
+  function debriefErr(code, message) {
+    var e = new Error(message || 'The AI coach is unavailable right now.');
+    e.code = code || 'server';
+    return e;
   }
 
-  function aiErrorMessage(err) {
-    var code = err && err.code ? err.code : '';
-    if (code === 'no-auth') { return 'Sign in to get an AI debrief. Your scored debrief below is complete without it.'; }
-    if (code === 'tier-denied') { return 'AI debrief is not included in your plan. Everything below is still yours.'; }
-    if (code === 'quota-exceeded') { return 'You have used today\'s AI allowance. The scored debrief below is complete.'; }
-    if (code === 'ai-disabled') { return 'AI coaching is turned off right now. The scored debrief below is complete.'; }
-    if (code === 'network') { return 'Could not reach the AI coach. Check your connection and try again.'; }
-    return 'The AI coach is unavailable right now. Your full scored debrief is below.';
+  function runAiDebrief(scenario, result, logLines, onToken) {
+    var ai = obj(MMx().ai);
+    if (!aiAvailable()) { return Promise.reject(debriefErr('unavailable')); }
+
+    if (typeof ai.chat === 'function') {
+      try {
+        return Promise.resolve(ai.chat({
+          system: 'You are an experienced nursing clinical instructor running a post-simulation debrief. ' +
+            'Be warm but direct. Use short paragraphs and bullet points. Structure: What went well / ' +
+            'What put the patient at risk / The one habit to change / A prediction of how this shows up on NCLEX. ' +
+            'Never invent clinical data that is not in the transcript. Under 300 words.',
+          messages: [{ role: 'user', content: buildDebriefPrompt(scenario, result, logLines) }],
+          maxTokens: 700,
+          feature: 'debrief',
+          onToken: onToken
+        }));
+      } catch (e) {
+        // A synchronous throw is still a failure, not a hang.
+        return Promise.reject(e);
+      }
+    }
+
+    if (typeof ai.debriefSimulation !== 'function') { return Promise.reject(debriefErr('unavailable')); }
+    try {
+      return Promise.resolve(ai.debriefSimulation(scenario, result)).then(function (md) {
+        var text = str(md);
+        if (text.indexOf(DEBRIEF_FAIL_MARK) === 0) {
+          throw debriefErr('server', text.replace(DEBRIEF_FAIL_MARK, '').trim() ||
+            'The AI coach is unavailable right now.');
+        }
+        return text;
+      });
+    } catch (e) { return Promise.reject(e); }
+  }
+
+  /* One line per code MM.ai.chat rejects with. `retry` is the honest half: an
+     expired quota and a dropped connection are not the same offer. */
+  function aiDebriefError(err) {
+    var code = err && err.code ? String(err.code) : 'server';
+    if (err && err.timedOut) {
+      return { code: code, retry: true,
+               text: 'The AI coach ran out of time on this one. Your full scored debrief is below either way.' };
+    }
+    if (code === 'no-auth') {
+      return { code: code, retry: false,
+               text: 'Sign in to get an AI debrief. Your scored debrief below is complete without it.' };
+    }
+    if (code === 'tier-denied') {
+      return { code: code, retry: false,
+               text: 'AI debrief is not included in your plan. Everything below is still yours.' };
+    }
+    if (code === 'quota-exceeded') {
+      return { code: code, retry: false,
+               text: 'You have used today\'s AI allowance. The scored debrief below is complete.' };
+    }
+    if (code === 'ai-disabled') {
+      return { code: code, retry: false,
+               text: 'AI coaching is turned off site-wide right now. The scored debrief below is complete.' };
+    }
+    if (code === 'network') {
+      return { code: code, retry: true,
+               text: 'Could not reach the AI coach - check your connection. Nothing about your run is lost.' };
+    }
+    if (code === 'unavailable') {
+      return { code: code, retry: false,
+               text: 'AI coaching is not available on this device. Everything below was generated locally.' };
+    }
+    return { code: 'server', retry: true,
+             text: (err && err.message) ? str(err.message)
+               : 'The AI coach did not answer. Your full scored debrief is below.' };
+  }
+
+  /* Kept for callers outside this module that only want the sentence. */
+  function aiErrorMessage(err) { return aiDebriefError(err).text; }
+
+  /* The same six codes, said for the in-sim patient. Deliberately OUT of
+     character: a quota wall dressed up as the patient mumbling is the one
+     thing a student cannot debug. */
+  function aiPatientError(err) {
+    var code = err && err.code ? String(err.code) : 'server';
+    if (err && err.timedOut) {
+      return { code: code, retry: true,
+               text: 'Your patient did not answer in time. Ask again, or use the scripted prompts above.' };
+    }
+    if (code === 'no-auth') {
+      return { code: code, retry: false,
+               text: 'You are signed out, so the patient cannot answer free text. The scripted prompts above still work.' };
+    }
+    if (code === 'tier-denied') {
+      return { code: code, retry: false,
+               text: 'Free-text answers from the patient are not included in your plan. The scripted prompts above still work.' };
+    }
+    if (code === 'quota-exceeded') {
+      return { code: code, retry: false,
+               text: 'That is all your AI messages for today. The scripted prompts above still work, and the sim scores normally.' };
+    }
+    if (code === 'ai-disabled') {
+      return { code: code, retry: false,
+               text: 'AI is switched off site-wide, so the patient cannot answer free text. The scripted prompts above still work.' };
+    }
+    if (code === 'network') {
+      return { code: code, retry: true,
+               text: 'Could not reach your patient - check your connection. Your question is still in the log.' };
+    }
+    return { code: 'server', retry: true,
+             text: (err && err.message) ? str(err.message)
+               : 'Your patient did not answer that one. Try again, or ask it another way.' };
   }
 
   /* ---------------------------------------------------------------------- *
@@ -1687,9 +1890,18 @@
     var [text, setText] = useState('');
     var [busy, setBusy] = useState(false);
     var [listening, setListening] = useState(false);
+    var [askErr, setAskErr] = useState(null);
+    var waiter = useAiWait();
     var stopRef = useRef(null);
     var liveRef = useRef(true);
     var offResolveRef = useRef(null);
+    var resolveTimerRef = useRef(null);
+    /* Ref twin of `busy` plus a run counter. Enter and the Ask button and a
+       finished voice transcript can all land in the same tick; without these,
+       two of them start two patient turns and spend two AI messages. */
+    var busyRef = useRef(false);
+    var runRef = useRef(0);
+    var lastAskRef = useRef('');
     var voice = obj(MMx().voice);
     var isPeds = lower(sc.category) === 'peds';
     var ttsVoice = isPeds ? 'child' : 'patient';
@@ -1700,19 +1912,42 @@
         liveRef.current = false;
         if (stopRef.current) { try { stopRef.current(); } catch (e) {} }
         if (offResolveRef.current) { try { offResolveRef.current(); } catch (e) {} }
+        if (resolveTimerRef.current) { try { clearTimeout(resolveTimerRef.current); } catch (e) {} }
         if (typeof voice.stopSpeaking === 'function') { try { voice.stopSpeaking(); } catch (e) {} }
       };
     }, []);
 
     function speak(line) {
       if (typeof voice.speak !== 'function') { return; }
-      try { voice.speak(line, { voice: ttsVoice }); } catch (e) {}
+      /* MM.voice.speak REJECTS on a browser with no speech synthesis. The
+         try/catch never caught that (a rejected promise is not a throw), so
+         every patient line on such a browser raised an unhandled rejection.
+         Speech is a nicety here; the line is already in the transcript. */
+      try {
+        var sp = voice.speak(line, { voice: ttsVoice });
+        if (sp && typeof sp['catch'] === 'function') { sp['catch'](function () {}); }
+      } catch (e) {}
+    }
+
+    /* A tier read that never answers must not hold a sim turn open forever.
+       ai.js self-resolves at 6s; this is the ceiling on top of that. */
+    var RESOLVE_WAIT_MS = 7000;
+
+    /** Every exit from a patient turn goes through here. */
+    function settleTurn(runId) {
+      if (runId !== runRef.current) { return false; }
+      busyRef.current = false;
+      if (!liveRef.current) { return false; }
+      setBusy(false);
+      waiter.end();
+      return true;
     }
 
     function ask(question) {
       var qq = str(question).trim();
-      if (!qq || busy) { return; }
+      if (!qq || busyRef.current) { return; }
       setText('');
+      setAskErr(null);
       props.onExchange({ who: 'you', text: qq });
       var hit = matchDialogue(sc.dialogue, qq);
       if (hit) {
@@ -1720,13 +1955,22 @@
         speak(str(hit.line));
         return;
       }
+      lastAskRef.current = qq;
       respond(qq);
     }
 
-    /* Split out of ask() so a question asked before the tier has resolved can
-       simply be re-run once it has, without re-posting the student's line. */
+    /* Split out of ask() so a question asked before the tier has resolved -
+       or one that failed - can simply be re-run without re-posting the
+       student's line into the transcript a second time. */
     function respond(qq) {
       var ai = obj(MMx().ai);
+
+      busyRef.current = true;
+      var runId = ++runRef.current;
+      setBusy(true);
+      setAskErr(null);
+      // Acknowledgment on the next paint, before any await.
+      waiter.begin();
 
       /* We do not know this account's plan yet. Answering with the "I am not
          sure how to answer that" fallback here would be a verdict we cannot
@@ -1734,21 +1978,38 @@
          second of the sim. Hold the turn (the patient is simply thinking) and
          answer properly the moment the tier lands. */
       if (!aiAvailable() && aiResolving() && typeof ai.onResolved === 'function') {
-        setBusy(true);
-        try {
-          offResolveRef.current = ai.onResolved(function () {
+        var resolved = false;
+        var onceResolved = function () {
+          if (resolved) { return; }
+          resolved = true;
+          if (offResolveRef.current) {
+            try { offResolveRef.current(); } catch (e) {}
             offResolveRef.current = null;
-            if (!liveRef.current) { return; }
-            setBusy(false);
-            respond(qq);
-          });
-        } catch (e) { setBusy(false); }
+          }
+          if (resolveTimerRef.current) {
+            try { clearTimeout(resolveTimerRef.current); } catch (e) {}
+            resolveTimerRef.current = null;
+          }
+          if (!liveRef.current || runId !== runRef.current) { return; }
+          busyRef.current = false;
+          respond(qq);
+        };
+        try {
+          offResolveRef.current = ai.onResolved(onceResolved);
+        } catch (e) {
+          settleTurn(runId);
+          return;
+        }
+        /* Before this, a resolution callback that never fired left the input
+           reading "Patient is thinking..." and the Ask button disabled for the
+           rest of the simulation. */
+        resolveTimerRef.current = setTimeout(onceResolved, RESOLVE_WAIT_MS);
         return;
       }
 
-      var canAi = aiAvailable();
-      if (!canAi) {
+      if (!aiAvailable()) {
         /* no AI: take the closest scripted line we can defend, otherwise stay in character */
+        settleTurn(runId);
         var loose = matchDialogue(sc.dialogue, qq, 1);
         var fallback = loose
           ? str(loose.line)
@@ -1757,33 +2018,80 @@
         speak(fallback);
         return;
       }
-      setBusy(true);
-      var p;
+
+      var p = null;
       if (typeof ai.patientReply === 'function') {
         try { p = ai.patientReply(sc, qq, arr(props.exchanges)); } catch (e) { p = null; }
       }
       if (!p || typeof p.then !== 'function') {
         var pt = obj(sc.patient);
-        p = ai.chat({
-          system: 'You are role-playing a patient in a nursing simulation. Stay strictly in character, ' +
-            'answer in first person in 1-3 short sentences, use plain lay language, never give medical advice ' +
-            'or name your own diagnosis, and never break character. Patient: ' + str(pt.name) + ', ' +
-            str(pt.age) + ', ' + str(pt.sex) + '. Presenting problem: ' + str(pt.diagnosis) + '. ' +
-            'Known history: ' + arr(pt.history).join('; ') + '. ' +
-            'Scripted things this patient has said: ' + arr(sc.dialogue).map(function (d) { return str(d.line); }).join(' | '),
-          messages: [{ role: 'user', content: qq }],
-          maxTokens: 160
-        });
+        try {
+          p = ai.chat({
+            system: 'You are role-playing a patient in a nursing simulation. Stay strictly in character, ' +
+              'answer in first person in 1-3 short sentences, use plain lay language, never give medical advice ' +
+              'or name your own diagnosis, and never break character. Patient: ' + str(pt.name) + ', ' +
+              str(pt.age) + ', ' + str(pt.sex) + '. Presenting problem: ' + str(pt.diagnosis) + '. ' +
+              'Known history: ' + arr(pt.history).join('; ') + '. ' +
+              'Scripted things this patient has said: ' + arr(sc.dialogue).map(function (d) { return str(d.line); }).join(' | '),
+            messages: [{ role: 'user', content: qq }],
+            maxTokens: 160,
+            feature: 'patient'
+          });
+        } catch (e) {
+          // A synchronous throw used to blow up before .then and leave the
+          // panel stuck on "Waiting..." with the Ask button dead.
+          p = Promise.reject(e);
+        }
       }
-      p.then(function (reply) {
-        setBusy(false);
-        var line = str(reply).trim() || 'I am having trouble answering that.';
+
+      Promise.resolve(p).then(function (reply) {
+        if (!settleTurn(runId)) { return; }
+        var line = str(reply).trim();
+        if (!line) {
+          /* An empty answer is a failure, not a patient being coy. Say so
+             instead of putting words in the patient's mouth. */
+          setAskErr(aiPatientError({ code: 'server' }));
+          return;
+        }
         props.onExchange({ who: 'patient', text: line });
         speak(line);
-      }, function () {
-        setBusy(false);
-        props.onExchange({ who: 'patient', text: 'I... I am not sure. Could you ask me another way?' });
+      }, function (e) {
+        if (!settleTurn(runId)) { return; }
+        /* This used to post "I... I am not sure" as if the PATIENT had said it,
+           which hid a spent quota, a signed-out session and a dropped
+           connection behind an in-character line the student then tried to
+           work with. The student's own question stays in the transcript and
+           Try again re-runs it without re-posting it. */
+        setAskErr(aiPatientError(e));
       });
+    }
+
+    /* Give up on a patient turn that is not coming. The sim clock is running;
+       being stuck behind a dead request is worse than losing the answer. */
+    function cancelAsk() {
+      if (!busyRef.current) { return; }
+      runRef.current++;
+      busyRef.current = false;
+      if (offResolveRef.current) { try { offResolveRef.current(); } catch (e) {} offResolveRef.current = null; }
+      if (resolveTimerRef.current) { try { clearTimeout(resolveTimerRef.current); } catch (e) {} resolveTimerRef.current = null; }
+      setBusy(false);
+      waiter.end();
+      setAskErr({ code: 'cancelled', retry: true,
+                  text: 'Stopped waiting. Your question is still in the log - ask it again, or use the prompts above.' });
+    }
+
+    /* Re-run the SAME question. It never re-posts the student's line, and
+       busyRef is set again synchronously inside respond(), so a fast double
+       tap cannot start two turns. */
+    function retryAsk() {
+      var qq = lastAskRef.current;
+      if (!qq) { return; }
+      runRef.current++;
+      busyRef.current = false;
+      if (offResolveRef.current) { try { offResolveRef.current(); } catch (e) {} offResolveRef.current = null; }
+      if (resolveTimerRef.current) { try { clearTimeout(resolveTimerRef.current); } catch (e) {} resolveTimerRef.current = null; }
+      waiter.end();
+      respond(qq);
     }
 
     function micToggle() {
@@ -1834,9 +2142,25 @@
               'Talk to your patient. Start with "How are you feeling?"')),
       quick.length ? ce('div', { className: 'sim-filters', style: { marginTop: '10px' } },
         quick.map(function (t) {
-          return ce('button', { key: t, type: 'button', className: 'sim-chip',
+          return ce('button', { key: t, type: 'button', className: 'sim-chip', disabled: busy,
             onClick: function () { ask('Tell me about ' + t); } }, 'Ask about ' + t);
         })) : null,
+      /* The honest wait. It starts on the keystroke, counts wall time and
+         escalates, so a buffered stream that delivers nothing for 30 seconds
+         still reads as "slow", never as "broken". */
+      ce(WaitNote, {
+        wait: waiter.wait, texts: WAIT_TEXT_PATIENT,
+        onRetry: retryAsk, onCancel: cancelAsk
+      }),
+      askErr ? ce('div', { className: 'sim-fb mid', role: 'alert', 'data-code': askErr.code,
+        style: { marginTop: '8px' } },
+        ce('span', { className: 'mark' }, '!'),
+        ce('span', null, askErr.text,
+          askErr.retry ? ce('span', { className: 'sim-btnrow', style: { marginTop: '8px' } },
+            ce('button', { type: 'button', className: 'btn btn-outline btn-sm', disabled: busy,
+              onClick: retryAsk }, 'Try again'),
+            ce('button', { type: 'button', className: 'btn btn-outline btn-sm',
+              onClick: function () { setAskErr(null); } }, 'Dismiss')) : null)) : null,
       ce('div', { className: 'sim-filters', style: { marginTop: '8px' } },
         ce('input', {
           className: 'sim-search', value: text, 'aria-label': 'Ask the patient a question',
@@ -1846,6 +2170,7 @@
         }),
         micNode,
         ce('button', { type: 'button', className: 'btn btn-primary btn-sm', disabled: busy,
+          'aria-busy': busy ? 'true' : 'false',
           onClick: function () { ask(text); } }, busy ? 'Waiting...' : 'Ask')));
   }
 
@@ -2715,27 +3040,68 @@
     var result = obj(session.result);
     var [aiText, setAiText] = useState('');
     var [aiState, setAiState] = useState('idle');
-    var [aiErr, setAiErr] = useState('');
+    var [aiErr, setAiErr] = useState(null);
     var aiResolvingNow = useAiResolving();
+    var waiter = useAiWait();
     var mounted = useRef(true);
+    /* Ref twin of aiState: state is not synchronous, so two taps in the same
+       tick used to be able to fire two debriefs and spend two messages.
+       runRef also orphans an abandoned call so a late answer cannot land. */
+    var busyRef = useRef(false);
+    var runRef = useRef(0);
 
     useEffect(function () { return function () { mounted.current = false; }; }, []);
 
     function askAi() {
-      if (aiState === 'loading') { return; }
-      setAiState('loading'); setAiText(''); setAiErr('');
+      if (busyRef.current) { return; }
+      busyRef.current = true;
+      var runId = ++runRef.current;
+      setAiState('loading'); setAiText(''); setAiErr(null);
+      // Acknowledgment first, network second - committed in the same render.
+      waiter.begin();
+
+      function settle() {
+        if (runId !== runRef.current) { return false; }
+        busyRef.current = false;
+        if (!mounted.current) { return false; }
+        waiter.end();
+        return true;
+      }
+
       runAiDebrief(sc, result, arr(session.logLines), function (chunk) {
-        if (!mounted.current) { return; }
+        if (!mounted.current || runId !== runRef.current) { return; }
         setAiText(function (t) { return t + str(chunk); });
       }).then(function (full) {
-        if (!mounted.current) { return; }
+        if (!settle()) { return; }
         setAiText(function (t) { return (str(full).length > t.length) ? str(full) : t; });
         setAiState('done');
       }, function (err) {
-        if (!mounted.current) { return; }
-        setAiErr(aiErrorMessage(err));
+        if (!settle()) { return; }
+        setAiErr(aiDebriefError(err));
         setAiState('error');
       });
+    }
+
+    /* Give up on a debrief that is not arriving. The scored debrief underneath
+       is already complete, so there is always something to go back to. */
+    function cancelAi() {
+      if (!busyRef.current) { return; }
+      runRef.current++;
+      busyRef.current = false;
+      waiter.end();
+      setAiErr({ code: 'cancelled', retry: true,
+                 text: 'Stopped waiting for the AI coach. Everything below is your full scored debrief.' });
+      setAiState('error');
+    }
+
+    /* "Try again" while it is still notionally running: orphan it first, then
+       re-run. busyRef is set again synchronously inside askAi, so however fast
+       this is tapped it cannot start two calls. */
+    function retryAi() {
+      runRef.current++;
+      busyRef.current = false;
+      waiter.end();
+      askAi();
     }
 
     /* The AI debrief is opt-in and its cost is disclosed, exactly as the live
@@ -2813,12 +3179,20 @@
     /* ---- AI coach: opt-in, cost disclosed ---- */
     var aiPanel = ce('div', { className: 'sim-panel', key: 'ai', style: { marginBottom: '12px' } },
         ce('h3', null, 'AI instructor debrief'),
-        aiState === 'loading' && !aiText
-          ? ce('div', { style: { fontSize: '13px', color: 'var(--text2)' } }, 'Your instructor is reading the transcript...')
+        /* The wait, not a frozen sentence. The counter runs off wall time, so
+           it advances through a whole generation in which the buffered proxy
+           delivers no tokens at all. */
+        aiState === 'loading'
+          ? ce(WaitNote, {
+              wait: waiter.wait, texts: WAIT_TEXT_DEBRIEF,
+              onRetry: retryAi, onCancel: cancelAi
+            })
           : null,
         aiText ? ce('div', { style: { fontSize: '13.5px', lineHeight: 1.65, whiteSpace: 'pre-wrap' } }, aiText) : null,
-        aiState === 'error' ? ce('div', { className: 'sim-fb mid' },
-          ce('span', { className: 'mark' }, '!'), ce('span', null, aiErr)) : null,
+        (aiState === 'error' && aiErr) ? ce('div', {
+          className: 'sim-fb mid', role: 'alert', 'data-code': aiErr.code
+        },
+          ce('span', { className: 'mark' }, '!'), ce('span', null, aiErr.text)) : null,
         /* Still checking: say nothing about their plan, and hold the same
            two-line footprint the real copy will take so the panel does not
            jump when it lands. No lock, no error tone, no spinner left over. */
@@ -2839,7 +3213,10 @@
               ce('button', { type: 'button', className: 'btn btn-outline btn-sm', onClick: askAi },
                 'Get the full instructor debrief'))
           : null,
-        (aiState === 'error' || aiState === 'done')
+        /* Retry only where retrying is the right move: a plan that does not
+           include this, or a spent daily allowance, will not answer differently
+           in ten seconds, and a button that says otherwise is a lie. */
+        (aiState === 'done' || (aiState === 'error' && aiErr && aiErr.retry))
           ? ce('div', { className: 'sim-btnrow' },
               ce('button', { type: 'button', className: 'btn btn-outline btn-sm', onClick: askAi },
                 aiState === 'error' ? 'Try again' : 'Regenerate'))

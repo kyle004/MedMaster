@@ -12,7 +12,12 @@ window.SCENARIOS_OB = [
     category: 'OB',
     course: 'NUR2212C',
     difficulty: 'Hard',
-    durationMin: 20,
+    // durationMin must be >= the last vitalsTimeline atMin or the final
+    // deterioration stage can never fire (sim-engine ends the run at
+    // durationMin * 60 simulated seconds). Last stage here is atMin 25 and
+    // the 15-minute stage is named in its label, so the limit moves, not the
+    // timeline. 30 simulated minutes = 15 real minutes at TIME_SCALE 2.
+    durationMin: 30,
     icon: 'BLOOD',
     summary: 'A 28-year-old G2P2 is 2 hours post vaginal delivery with a boggy uterus, heavy lochia, and worsening vital signs. You must manage the hemorrhage while completing a routine newborn transition assessment.',
     highYield: true,
@@ -539,13 +544,19 @@ window.SCENARIOS_OB = [
 
     vitalsTimeline: [
       {
+        // atMin values rescaled 0/10/20/30 -> 0/6/12/18 so the final stage
+        // fires inside durationMin 20 (sim-engine ends the run at
+        // durationMin * 60 simulated seconds). Relative pacing preserved.
         atMin: 0,
         label: 'Newborn baseline - 8 hours of life',
         bp: 'Not routinely measured',
         hr: 145,
         rr: 42,
         temp: '98.1 F',
-        spo2: null,
+        // Room-air SpO2 was missing on every stage, so the monitor tile read
+        // "--" and the deterioration announcement read "SpO2 ,". Standard
+        // term-newborn values, normal at every stage.
+        spo2: 98,
         pain: 'Not in pain; weak cry',
         loc: 'Sleepy, difficult to arouse, jittery when disturbed',
         other: 'Airway patent, color pink, tone normal but sleepy, WEAK SUCK and poor feeding, mild temperature instability. Blood glucose 34 mg/dL.',
@@ -553,13 +564,13 @@ window.SCENARIOS_OB = [
         note: 'Vital signs are all within normal newborn ranges. The critical abnormality is the blood glucose of 34 mg/dL (normal is greater than 45).'
       },
       {
-        atMin: 10,
+        atMin: 6,
         label: 'First feeding attempt',
         bp: 'Not routinely measured',
         hr: 148,
         rr: 44,
         temp: '97.8 F',
-        spo2: null,
+        spo2: 97,
         pain: 'Weak, whimpering cry',
         loc: 'Falls asleep at the breast after only a few sucks',
         other: 'Shallow latch, no audible swallowing, minimal milk transfer; jitteriness persists',
@@ -567,13 +578,13 @@ window.SCENARIOS_OB = [
         note: 'Poor feeding effort with a falling temperature. Undress slightly, place skin-to-skin, and hand-express colostrum to the buccal mucosa.'
       },
       {
-        atMin: 20,
+        atMin: 12,
         label: 'If feeding is unsuccessful and warmth is not maintained',
         bp: 'Not routinely measured',
         hr: 158,
         rr: 68,
         temp: '97.2 F',
-        spo2: null,
+        spo2: 95,
         pain: 'Very weak cry',
         loc: 'Increasingly lethargic, hypotonic, difficult to arouse',
         other: 'Repeat glucose 28 mg/dL; mild tachypnea; cool extremities',
@@ -581,13 +592,13 @@ window.SCENARIOS_OB = [
         note: 'Cold stress increases glucose consumption and worsens hypoglycemia. This infant now needs 40 percent oral dextrose gel or IV D10W per provider order.'
       },
       {
-        atMin: 30,
+        atMin: 18,
         label: 'After effective feeding, warming, and provider notification',
         bp: 'Not routinely measured',
         hr: 144,
         rr: 44,
         temp: '98.3 F',
-        spo2: null,
+        spo2: 98,
         pain: 'Strong cry',
         loc: 'Alert, arouses easily, jitteriness resolved',
         other: 'Repeat glucose 52 mg/dL after feeding; deep latch with audible swallowing; skin-to-skin maintained',
@@ -918,7 +929,8 @@ window.SCENARIOS_OB = [
         note: 'BP 178/112 is a hypertensive emergency in pregnancy. Multiple severe features are present - this patient is at high risk for eclampsia, HELLP, abruption, and stroke.'
       },
       {
-        atMin: 8,
+        // atMin rescaled to fit durationMin 20 (the last stage used to sit past the time limit and never fired). Relative pacing preserved.
+        atMin: 6,
         label: 'Worsening severe features (before magnesium takes effect)',
         bp: '186/118',
         hr: 108,
@@ -932,7 +944,7 @@ window.SCENARIOS_OB = [
         note: 'Sustained clonus and an unrelieved headache signal impending eclampsia. Magnesium loading dose and antihypertensive therapy must not be delayed.'
       },
       {
-        atMin: 15,
+        atMin: 12,
         label: 'Magnesium sulfate infusing - toxicity developing',
         bp: '176/108',
         hr: 88,
@@ -946,7 +958,7 @@ window.SCENARIOS_OB = [
         note: 'MAGNESIUM TOXICITY. RR below 12, absent DTRs, and urine output below 30 mL/hr. STOP the infusion, notify the provider, and give calcium gluconate.'
       },
       {
-        atMin: 22,
+        atMin: 18,
         label: 'If severe hypertension is untreated - eclamptic seizure',
         bp: '192/122',
         hr: 120,
@@ -1342,7 +1354,8 @@ window.SCENARIOS_OB = [
         note: 'BP is normal for now, but mild tachycardia may be the first sign of blood loss. A pregnant patient can lose a large volume before hypotension appears.'
       },
       {
-        atMin: 10,
+        // atMin rescaled to fit durationMin 20 (the last stage used to sit past the time limit and never fired). Relative pacing preserved.
+        atMin: 6,
         label: 'Concealed hemorrhage progressing',
         bp: '108/64',
         hr: 116,
@@ -1356,7 +1369,7 @@ window.SCENARIOS_OB = [
         note: 'Rising fundal height with a rigid uterus indicates blood accumulating behind the placenta. External bleeding underestimates the true loss.'
       },
       {
-        atMin: 20,
+        atMin: 12,
         label: 'Hemorrhagic shock with early DIC',
         bp: '92/50',
         hr: 130,
@@ -1370,7 +1383,7 @@ window.SCENARIOS_OB = [
         note: 'Bleeding from IV sites plus a falling fibrinogen equals DIC. Draw repeat coagulation studies, activate the massive transfusion protocol, and move toward emergency cesarean.'
       },
       {
-        atMin: 30,
+        atMin: 18,
         label: 'Decompensated shock - emergency cesarean',
         bp: '78/40',
         hr: 142,
@@ -1747,7 +1760,8 @@ window.SCENARIOS_OB = [
         note: 'All maternal vital signs are within normal limits. The problem is cervical change before 37 weeks, not maternal instability.'
       },
       {
-        atMin: 10,
+        // atMin rescaled to fit durationMin 20 (the last stage used to sit past the time limit and never fired). Relative pacing preserved.
+        atMin: 6,
         label: 'After IV hydration and left lateral positioning',
         bp: '120/74',
         hr: 92,
@@ -1761,7 +1775,7 @@ window.SCENARIOS_OB = [
         note: 'Hydration decreases uterine irritability. Dehydration releases ADH, which is structurally similar to oxytocin and can stimulate contractions.'
       },
       {
-        atMin: 20,
+        atMin: 12,
         label: 'After nifedipine administration - expected side effects',
         bp: '104/62',
         hr: 108,
@@ -1775,7 +1789,7 @@ window.SCENARIOS_OB = [
         note: 'Expected nifedipine effects. Recheck BP before each dose, keep the patient in bed, and assist with position changes to prevent falls.'
       },
       {
-        atMin: 30,
+        atMin: 18,
         label: 'Stabilized on tocolysis',
         bp: '112/68',
         hr: 98,
@@ -2176,7 +2190,8 @@ window.SCENARIOS_OB = [
         note: 'Temperature 100.9 F meets the definition of maternal fever. Fever plus maternal tachycardia plus fetal tachycardia plus uterine tenderness equals chorioamnionitis.'
       },
       {
-        atMin: 20,
+        // atMin rescaled to fit durationMin 20 (the last stage used to sit past the time limit and never fired). Relative pacing preserved.
+        atMin: 6,
         label: 'Worsening infection before antibiotics take effect',
         bp: '110/64',
         hr: 122,
@@ -2190,7 +2205,7 @@ window.SCENARIOS_OB = [
         note: 'Foul-smelling fluid and a rising fetal baseline confirm progression. Blood cultures and antibiotics must not be delayed further.'
       },
       {
-        atMin: 40,
+        atMin: 12,
         label: 'Early sepsis if antibiotics and delivery are delayed',
         bp: '92/50',
         hr: 132,
@@ -2204,7 +2219,7 @@ window.SCENARIOS_OB = [
         note: 'MATERNAL SEPSIS. Fever plus hypotension plus confusion. Notify the provider immediately, initiate the sepsis bundle, and expedite delivery.'
       },
       {
-        atMin: 55,
+        atMin: 18,
         label: 'After antibiotics, acetaminophen, and fluids',
         bp: '112/68',
         hr: 98,

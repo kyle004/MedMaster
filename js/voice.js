@@ -168,6 +168,21 @@
       'font-size:12px;color:var(--text2)}',
       '.mmv-cmd b{color:var(--text);display:block;font-size:13px}',
 
+      /* ---- AI wait status (see the AI WAIT STATE block below) ---- */
+      '.mmv-wait{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--text2);',
+      'font-size:13px;line-height:1.5}',
+      '.mmv-wait.slow{color:var(--orange)}',
+      '.mmv-wait .secs{font-variant-numeric:tabular-nums;color:var(--text3);font-size:12px}',
+      '.mmv-wait .dots{display:inline-flex;gap:3px;align-items:center;flex:0 0 auto}',
+      '.mmv-wait .dots i{width:6px;height:6px;border-radius:50%;background:var(--text3);',
+      'animation:mmv-waitbounce 1.2s infinite}',
+      '.mmv-wait .dots i:nth-child(2){animation-delay:.15s}',
+      '.mmv-wait .dots i:nth-child(3){animation-delay:.3s}',
+      '@keyframes mmv-waitbounce{0%,60%,100%{opacity:.3;transform:translateY(0)}',
+      '30%{opacity:1;transform:translateY(-3px)}}',
+      /* the motion goes; the words and the counter stay */
+      '@media (prefers-reduced-motion:reduce){.mmv-wait .dots i{animation:none;opacity:.55}}',
+
       /* ---- notice ---- */
       '.mmv-note{border:1px solid var(--surface2);border-left:3px solid var(--orange);border-radius:8px;',
       'padding:10px 12px;font-size:13px;color:var(--text2);background:var(--surface);line-height:1.5}',
@@ -1717,19 +1732,54 @@
     return gradeSbarNow(scenario, transcript);
   }
 
+  /**
+   * MM.ai.gradeSBAR never rejects. On any failure it RESOLVES with
+   * {score:0, breakdown:{all zeros}, error:'<code>', feedback:'<why>'} - a
+   * shape normalizeGrade() happily accepts, because 0 is a valid number.
+   * So a quota wall, a dropped connection or a signed-out session used to
+   * render as a 0 / 20 report tagged "AI graded", with the error sentence
+   * sitting where the coaching should be. A student cannot tell that apart
+   * from "you scored nothing".
+   *
+   * Any resolved-but-failed payload therefore falls back to the local keyword
+   * score, and carries the code out on `aiError` so the caller can say what
+   * actually happened.
+   */
+  function withAiError(res, fallback) {
+    var out = {};
+    for (var k in fallback) {
+      if (Object.prototype.hasOwnProperty.call(fallback, k)) out[k] = fallback[k];
+    }
+    out.aiError = (res && res.error) ? String(res.error) : 'server';
+    return out;
+  }
+
   function gradeSbarNow(scenario, transcript) {
     var local = gradeSbarLocally(scenario, transcript);
+    /* Nothing was captured. There is nothing for a grader to read, and asking
+       anyway spent an AI message to be told a score for silence - the model
+       happily returns "85%, strong report" for an empty string, which is the
+       one grade a student must never be shown. The local score already says
+       the honest thing ("No speech was captured"). */
+    if (!str(transcript).trim()) return Promise.resolve(local);
     if (!aiAvailable()) return Promise.resolve(local);
     var p;
     try { p = window.MM.ai.gradeSBAR(scenario, transcript); }
-    catch (e) { return Promise.resolve(local); }
+    catch (e) { return Promise.resolve(withAiError({ error: (e && e.code) || 'server' }, local)); }
     return Promise.resolve(p)
       .then(function (res) {
         if (typeof res === 'string') {
-          try { res = JSON.parse(res); } catch (e) { return local; }
+          try { res = JSON.parse(res); } catch (e) { return withAiError({ error: 'server' }, local); }
         }
+        /* An AI failure disguised as a zero. Never score it. */
+        if (res && res.error) return withAiError(res, local);
+        /* Unreadable JSON from the model. normalizeGrade already falls back on
+           parseError; tag it so the report can say why it is keyword scored. */
+        if (res && res.parseError) return withAiError({ error: 'unreadable' }, local);
         return normalizeGrade(res, local);
-      })['catch'](function () { return local; });
+      })['catch'](function (e) {
+        return withAiError({ error: (e && e.code) || 'server' }, local);
+      });
   }
 
   /* ======================================================================
@@ -2338,6 +2388,110 @@
   }
 
   /* ======================================================================
+   * AI WAIT STATE  (file-local; the SBAR grading wait is the AI call here)
+   * ----------------------------------------------------------------------
+   * Grading is a single non-streaming chat() behind a Netlify function that
+   * buffers, so there is nothing at all to key a progress signal on until the
+   * whole answer lands. "Grading your report with AI..." therefore said the
+   * same thing at second 1 and at second 100, and MM.ai.chat only gives up at
+   * 130 seconds.
+   *
+   * This clock is keyed on wall time only: set synchronously when grading
+   * starts, ticking on its own interval, escalating, and at 45 seconds it
+   * offers the way out that actually exists here - the local keyword score,
+   * which is already computed and needs no network at all.
+   * ==================================================================== */
+  var WAIT_TICK_MS = 1000;
+  var WAIT_SOON_MS = 5000;
+  var WAIT_SLOW_MS = 20000;
+  var WAIT_LONG_MS = 45000;
+
+  function waitTier(ms) {
+    if (ms >= WAIT_LONG_MS) return 3;
+    if (ms >= WAIT_SLOW_MS) return 2;
+    if (ms >= WAIT_SOON_MS) return 1;
+    return 0;
+  }
+
+  function useAiWait() {
+    var st = useState(null);
+    var wait = st[0], setWait = st[1];
+    var timerRef = useRef(null);
+    var startRef = useRef(0);
+
+    function clearTick() {
+      if (timerRef.current) {
+        try { clearInterval(timerRef.current); } catch (e) { }
+        timerRef.current = null;
+      }
+    }
+    useEffect(function () { return clearTick; }, []);
+
+    function begin() {
+      clearTick();
+      startRef.current = Date.now();
+      setWait({ ms: 0, tier: 0 });
+      timerRef.current = setInterval(function () {
+        var ms = Date.now() - startRef.current;
+        setWait({ ms: ms, tier: waitTier(ms) });
+      }, WAIT_TICK_MS);
+    }
+    function end() { clearTick(); setWait(null); }
+
+    return { wait: wait, begin: begin, end: end };
+  }
+
+  /**
+   * The one status node. `data-elapsed` is real seconds and advances whether
+   * or not anything has come back. The dots are decoration: reduced motion
+   * stops them and leaves the words and the counter alone.
+   */
+  function WaitNote(props) {
+    var w = props.wait;
+    if (!w) return null;
+    var secs = Math.floor(w.ms / 1000);
+    var texts = props.texts || [];
+    return ce('div', {
+      className: 'mmv-wait' + (w.tier >= 2 ? ' slow' : ''),
+      'data-elapsed': String(secs), 'data-tier': String(w.tier)
+    }, [
+      ce('span', { className: 'dots', key: 'd', 'aria-hidden': 'true' },
+        [ce('i', { key: 'i1' }), ce('i', { key: 'i2' }), ce('i', { key: 'i3' })]),
+      /* Only the phrase is announced, and only at tier boundaries. */
+      ce('span', { key: 't', role: 'status', 'aria-live': 'polite' },
+        texts[w.tier] || texts[0] || 'Working...'),
+      w.tier >= 1 ? ce('span', { className: 'secs', key: 's', 'aria-hidden': 'true' }, secs + 's') : null,
+      (w.tier >= 3 && props.onEscape)
+        ? ce('button', {
+            key: 'e', type: 'button', className: 'btn btn-outline btn-sm',
+            style: { minHeight: '44px' }, onClick: props.onEscape
+          }, props.escapeLabel || 'Score it without AI')
+        : null
+    ]);
+  }
+
+  var GRADE_WAIT_TEXT = [
+    'Report captured. Sending it to be graded.',
+    'Grading your report with AI...',
+    'Still grading - this model is being slow. Your report is safe.',
+    'Grading is taking much longer than usual. You can keep waiting, or score it here.'
+  ];
+
+  /* One line per code MM.ai.chat rejects with, said for a graded report. In
+     every case the keyword score is already on screen, so none of these is a
+     dead end - they only explain why the badge says "Keyword scored". */
+  var GRADE_ERR_TEXT = {
+    'no-auth': 'You are signed out, so this was scored against the scenario key instead of by AI.',
+    'tier-denied': 'AI grading is not included in your plan, so this was scored against the scenario key.',
+    'quota-exceeded': 'That is all your AI messages for today, so this was scored against the scenario key. They reset at midnight Eastern.',
+    'ai-disabled': 'AI grading is switched off site-wide right now, so this was scored against the scenario key.',
+    'network': 'The AI grader could not be reached, so this was scored against the scenario key. Nothing you said was lost.',
+    'unreadable': 'The AI grader sent something unreadable, so this was scored against the scenario key.',
+    'cancelled': 'You stopped waiting for the AI grader, so this was scored against the scenario key.',
+    'server': 'The AI grader had a problem, so this was scored against the scenario key.'
+  };
+
+  /* ======================================================================
    * 18. <SBARRecorder>
    *     props: {scenario, onComplete}
    * ==================================================================== */
@@ -2369,12 +2523,23 @@
     var manualHook = useState('');
     var manual = manualHook[0], setManual = manualHook[1];
 
+    var waiter = useAiWait();
+
     var stopRef = useRef(null);
     var timerRef = useRef(null);
     var aliveRef = useRef(true);
     var marksRef = useRef([]);
     var secRef = useRef(0);
     var liveRef = useRef(null);
+    /* Grading can be entered from three places (onEnd, the typed fallback and
+       the stop-safety net below) and each of them costs an AI message. A ref,
+       set synchronously, is the only thing that can stop two of them landing
+       in the same tick; `gradeRunRef` also orphans a grade the student has
+       given up on so a late one cannot overwrite the local score. */
+    var gradingRef = useRef(false);
+    var gradeRunRef = useRef(0);
+    var endGuardRef = useRef(null);
+    var bodyRef = useRef('');
 
     useEffect(function () {
       aliveRef.current = true;
@@ -2382,6 +2547,7 @@
         aliveRef.current = false;
         if (stopRef.current) { callSafe(stopRef.current); stopRef.current = null; }
         if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+        if (endGuardRef.current) { clearTimeout(endGuardRef.current); endGuardRef.current = null; }
         stopSpeaking();
       };
     }, []);
@@ -2398,6 +2564,10 @@
       setActiveSec(0); setReached(-1); setElapsed(0); setShowCompare(false);
       marksRef.current = [{ section: 0, at: 0 }];
       secRef.current = 0;
+      gradingRef.current = false;
+      gradeRunRef.current++;
+      waiter.end();
+      if (endGuardRef.current) { clearTimeout(endGuardRef.current); endGuardRef.current = null; }
     }
 
     function start() {
@@ -2445,37 +2615,96 @@
       });
     }
 
+    /* Stopping the recogniser is a request, not a guarantee: if the engine has
+       already ended (or the tab lost the mic) onEnd never fires, and before
+       this the panel sat on "Grading your report with AI..." forever with no
+       control left on screen. The net grades what we have. */
+    var END_GUARD_MS = 3500;
+
     function stop() {
+      /* Stopping the recogniser can deliver onEnd SYNCHRONOUSLY (several
+         engines dispatch `end` from inside stop()), in which case the grade
+         has already started - and with a fast grader, already finished - by
+         the time we get back here. Arming the net regardless fired a SECOND
+         grade three and a half seconds later: a second AI message spent, and
+         the student's finished report replaced by a spinner. */
+      var gradesBefore = gradeRunRef.current;
       if (stopRef.current) { callSafe(stopRef.current); stopRef.current = null; }
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      if (gradeRunRef.current !== gradesBefore) return;   /* already graded */
       setPhase('grading');
+      if (endGuardRef.current) clearTimeout(endGuardRef.current);
+      endGuardRef.current = setTimeout(function () {
+        endGuardRef.current = null;
+        if (!aliveRef.current || gradingRef.current) return;
+        if (gradeRunRef.current !== gradesBefore) return; /* onEnd got there first */
+        grade(finalText || text);
+      }, END_GUARD_MS);
+    }
+
+    /** Show a result and finish. The one place `done` is reached. */
+    function finishWith(res, body) {
+      gradingRef.current = false;
+      if (!aliveRef.current) return;
+      waiter.end();
+      setResult(res);
+      setPhase('done');
+      setReached(3);
+      callSafe(p.onComplete, {
+        scenarioId: scenario.id, transcript: body,
+        score: res.score, maxScore: res.maxScore, pct: res.pct,
+        breakdown: res.breakdown, missing: res.missing,
+        feedback: res.feedback, source: res.source, aiError: res.aiError || '',
+        timeSec: elapsed
+      });
     }
 
     function grade(t) {
+      if (gradingRef.current) return;
       var body = str(t).trim();
+      bodyRef.current = body;
+      gradingRef.current = true;
+      var runId = ++gradeRunRef.current;
+      if (endGuardRef.current) { clearTimeout(endGuardRef.current); endGuardRef.current = null; }
       setPhase('grading');
-      gradeSbar(scenario, body).then(function (res) {
-        if (!aliveRef.current) return;
-        setResult(res);
-        setPhase('done');
-        setReached(3);
-        callSafe(p.onComplete, {
-          scenarioId: scenario.id, transcript: body,
-          score: res.score, maxScore: res.maxScore, pct: res.pct,
-          breakdown: res.breakdown, missing: res.missing,
-          feedback: res.feedback, source: res.source, timeSec: elapsed
-        });
-      })['catch'](function () {
-        if (!aliveRef.current) return;
+      // Acknowledgment first, network second: committed in the same render as
+      // the grading phase, so it is on screen before anything is awaited.
+      waiter.begin();
+
+      var pr;
+      try { pr = gradeSbar(scenario, body); }
+      catch (e) { pr = Promise.reject(e); }
+
+      Promise.resolve(pr).then(function (res) {
+        if (runId !== gradeRunRef.current) return;
+        finishWith(res, body);
+      }, function (e) {
+        if (runId !== gradeRunRef.current) return;
+        /* Nothing reaches here in practice - gradeSbarNow resolves on every
+           failure path - but a grade that throws must still end in a score,
+           never in a spinner. */
         var local = gradeSbarLocally(scenario, body);
-        setResult(local);
-        setPhase('done');
+        local.aiError = (e && e.code) ? String(e.code) : 'server';
+        finishWith(local, body);
       });
+    }
+
+    /* The 45-second escape. There is no network involved: the keyword score
+       was computed before the AI was ever asked, so this is instant. */
+    function scoreLocally() {
+      if (!gradingRef.current) return;
+      // Orphan the AI grade first: if it lands later it must not overwrite
+      // the score the student just chose to accept.
+      gradeRunRef.current++;
+      var body = bodyRef.current;
+      var local = gradeSbarLocally(scenario, body);
+      local.aiError = 'cancelled';
+      finishWith(local, body);
     }
 
     function gradeTyped() {
       var body = str(manual).trim();
-      if (!body) return;
+      if (!body || gradingRef.current) return;
       setFinalText(body);
       grade(body);
     }
@@ -2536,8 +2765,14 @@
       ]);
     } else if (phase === 'grading') {
       controls = ce('div', { className: 'mmv-row', key: 'ctl' }, [
-        ce('span', { className: 'mmv-muted', key: 'g' },
-          aiAvailable() ? 'Grading your report with AI...' : 'Scoring your report...')
+        aiAvailable()
+          /* The honest wait: a clock that runs whether or not the grader has
+             sent a byte, and a way out at 45 seconds that costs nothing. */
+          ? ce(WaitNote, {
+              key: 'w', wait: waiter.wait, texts: GRADE_WAIT_TEXT,
+              onEscape: scoreLocally, escapeLabel: 'Score it without AI'
+            })
+          : ce('span', { className: 'mmv-muted', key: 'g' }, 'Scoring your report...')
       ]);
     } else {
       controls = ce('div', { className: 'mmv-row', key: 'ctl' }, [
@@ -2622,9 +2857,26 @@
           result.feedback
             ? ce('p', { className: 'mmv-muted', key: 'f', style: { marginTop: '10px', lineHeight: 1.6 } }, result.feedback)
             : null,
+          /* Why it is keyword scored, named. "AI grading was unavailable" was
+             the same sentence for a signed-out student, a spent allowance, a
+             plan that never included it and a dropped connection. */
           result.source === 'local'
-            ? ce('div', { className: 'mmv-dim', key: 'd', style: { marginTop: '6px' } },
-              'AI grading was unavailable, so this score comes from matching your report against the scenario key.')
+            ? ce('div', {
+                className: 'mmv-dim', key: 'd', style: { marginTop: '6px' },
+                'data-code': result.aiError || ''
+              },
+              result.aiError
+                ? (GRADE_ERR_TEXT[result.aiError] || GRADE_ERR_TEXT.server)
+                : 'AI grading is not switched on here, so this score comes from matching your report against the scenario key.')
+            : null,
+          (result.source === 'local' && result.aiError &&
+           (result.aiError === 'network' || result.aiError === 'server' ||
+            result.aiError === 'unreadable' || result.aiError === 'cancelled'))
+            ? ce('div', { className: 'mmv-row', key: 'rg', style: { marginTop: '8px' } },
+                ce('button', {
+                  type: 'button', className: 'btn btn-outline btn-sm', style: { minHeight: '44px' },
+                  onClick: function () { grade(bodyRef.current || finalText || text); }
+                }, 'Try AI grading again'))
             : null
         ]),
         ce('div', { className: 'mmv-sec', key: 'bd' }, [

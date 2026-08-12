@@ -47,6 +47,17 @@
     return isFinite(n) ? n : d;
   }
   function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+  /* Hard ceiling on any string that came from the model. A runaway generation
+     is not just an ugly transcript: narration is echoed back into the prompt by
+     compactAssistant() on every subsequent turn, so one 100KB paragraph turns
+     into a 100KB tax on the next eight requests. Cut at a word boundary. */
+  function cut(v, n) {
+    var t = str(v);
+    if (t.length <= n) return t;
+    var head = t.slice(0, n - 1);
+    var trimmed = head.replace(/\s+\S*$/, '');
+    return (trimmed.length > n * 0.6 ? trimmed : head) + '…';
+  }
   function MMx() { return window.MM || {}; }
   function aiApi() { return obj(MMx().ai); }
   function voiceApi() { return obj(MMx().voice); }
@@ -232,12 +243,29 @@
   var RE_ASSESS = /(assess|auscultat|listen to|inspect|palpat|percuss|check|recheck|measure|obtain|monitor|reassess|evaluate|observe|capillary refill|breath sound|lung sound|bowel sound|neuro|pupil|pain scale|skin|edema|fundus|strip|telemetry|weigh)/i;
   var RE_EDUCATE = /(teach|educat|explain|instruct|demonstrat|reinforce|show (the|them|him|her) how|discharge instruction)/i;
   var RE_COMMUNICATE = /(sbar|hand ?off|report|notify|inform|document|chart it|communicat|update the (family|provider)|call)/i;
-  var RE_FREE_VITALS = /^(what|show|tell|give|repeat|read)?[^a-z]*(are|is|me)?[^a-z]*(my|the|his|her|current|latest)?[^a-z]*(vital|vitals|vital signs|numbers|sats?|monitor)\b/i;
-  var RE_FREE_CHART = /^(show|open|pull up|check|look at|review|see)?[^a-z]*(me)?[^a-z]*(the)?[^a-z]*(chart|charts|record|labs?|orders?|history|allergies|mar)\b/i;
+  /* Free data checks: "what are my vitals again?", "show me the chart".
+     These cost no turn and no points, which is right for a student peeking at
+     information they would simply have on a real unit - and badly wrong for a
+     real nursing action that merely STARTS with one of these words. Unanchored,
+     the old patterns swallowed "Monitor her cardiac rhythm continuously and
+     titrate oxygen" and "Review the orders and clarify the heparin dose": the
+     student took a graded action, was charged nothing, told nothing, and the
+     scene never advanced. Both patterns must now match the WHOLE utterance, so
+     a peek stays a peek and anything with a clinical tail is a real turn. */
+  var RE_FREE_VITALS = /^\s*(?:what|show|tell|give|repeat|read)?[^a-z]*(?:are|is|me)?[^a-z]*(?:(?:my|the|his|her|their|current|latest|last|patient'?s?)[^a-z]*){0,3}(?:vital signs|vitals|vital|numbers|sats?|monitor)\b[^a-z]*(?:again|now|please|reading|readings)?[^a-z]*$/i;
+  var RE_FREE_CHART = /^\s*(?:show|open|pull up|check|look at|review|see)?[^a-z]*(?:me)?[^a-z]*(?:(?:the|his|her|their|patient'?s?)[^a-z]*){0,3}(?:charts|chart|records|record|labs|lab|orders|order|history|allergies|mar)\b[^a-z]*(?:again|now|please)?[^a-z]*$/i;
 
   /* ==========================================================================
    * 1. CONSTANTS
    * ======================================================================== */
+
+  /* Ceilings on model-authored prose. The protocol asks for 2-4 sentences of
+     narration; 1600 characters is roughly ten. Nothing a well-behaved model
+     writes is ever clipped, and nothing a badly-behaved one writes can flood
+     the transcript or ride along in the next eight prompts. */
+  var MAX_NARRATION = 1600;
+  var MAX_SPEECH    = 600;
+  var MAX_FEEDBACK  = 800;
 
   var TURN_CAP = 25;            // hard stop - the model can never run forever
   var FORCE_HANDOFF_AT = 21;    // start pushing toward handoff here
@@ -541,13 +569,31 @@
    * }
    * ======================================================================== */
 
+  /**
+   * stripFences(text) -> the payload with an ENCLOSING code fence removed.
+   *
+   * This deliberately only unwraps a fence that the whole reply is wrapped in.
+   * It used to strip the first fence found ANYWHERE, which meant a perfectly
+   * valid turn whose narration happened to quote a code block -
+   *   {"narration":"the board reads ```json\n{\"x\":1}\n``` ..."}
+   * - was parsed as the fragment inside the student's own narration, and the
+   * real turn was thrown away. parseTurnJSON() tries the raw text first now,
+   * so an unfenced reply never reaches this function's guesswork at all.
+   */
   function stripFences(text) {
     var t = str(text).trim();
-    var whole = /^```[a-zA-Z]*\s*([\s\S]*?)\s*```$/.exec(t);
+    if (t.slice(0, 3) !== '```') return t;
+    var whole = /^```[a-zA-Z]*\s*([\s\S]*?)\s*```\s*$/.exec(t);
     if (whole) return whole[1].trim();
-    var inner = /```[a-zA-Z]*\s*([\s\S]*?)```/.exec(t);
+    var inner = /^```[a-zA-Z]*\s*([\s\S]*?)```/.exec(t);
     if (inner) return inner[1].trim();
-    return t;
+    return t.replace(/^```[a-zA-Z]*\s*/, '').replace(/\s*```\s*$/, '').trim();
+  }
+
+  /** the first fenced block anywhere - a last resort, tried after everything else */
+  function firstFencedBlock(text) {
+    var m = /```[a-zA-Z]*\s*([\s\S]*?)```/.exec(str(text));
+    return m ? m[1].trim() : null;
   }
 
   function outermostObject(text) {
@@ -564,22 +610,35 @@
    */
   function parseTurnJSON(raw) {
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
-    var t = stripFences(raw);
-    if (!t) return null;
+    var whole = str(raw).trim();
+    if (!whole) return null;
 
-    var attempts = [];
-    attempts.push(t);
-    var carved = outermostObject(t);
-    if (carved && carved !== t) attempts.push(carved);
+    /* Order matters and it is not arbitrary. The raw reply is tried FIRST,
+       because a well-formed turn is the common case and any rewriting we do
+       can only damage it. Only when that fails do we start guessing. */
+    var attempts = [], seen = {};
+    function add(s) {
+      var v = str(s).trim();
+      if (!v || seen[v]) return;
+      seen[v] = true;
+      attempts.push(v);
+    }
+    add(whole);
+    add(stripFences(whole));
+    add(outermostObject(whole));
+    add(firstFencedBlock(whole));
+    var i, j, v;
+    /* carve an object out of each candidate as a further fallback */
+    var carveFrom = attempts.slice();
+    for (j = 0; j < carveFrom.length; j++) add(outermostObject(carveFrom[j]));
 
-    var i, v;
     for (i = 0; i < attempts.length; i++) {
       try {
         v = JSON.parse(attempts[i]);
         if (v && typeof v === 'object' && !Array.isArray(v)) return v;
       } catch (e) { /* next shape */ }
     }
-    /* trailing-comma repair, then newline-in-string repair */
+    /* trailing-comma repair */
     for (i = 0; i < attempts.length; i++) {
       try {
         v = JSON.parse(attempts[i].replace(/,\s*([\]}])/g, '$1'));
@@ -589,15 +648,15 @@
     return null;
   }
 
-  function strArray(v, cap) {
-    var out = [];
+  function strArray(v, cap, maxLen) {
+    var out = [], lim = maxLen || 300;
     if (Array.isArray(v)) {
       for (var i = 0; i < v.length; i++) {
         var s = str(typeof v[i] === 'object' ? (obj(v[i]).text || obj(v[i]).name) : v[i]).trim();
-        if (s) out.push(s);
+        if (s) out.push(cut(s, lim));
       }
     } else if (typeof v === 'string' && v.trim()) {
-      out.push(v.trim());
+      out.push(cut(v.trim(), lim));
     }
     return cap ? out.slice(0, cap) : out;
   }
@@ -607,17 +666,61 @@
     return (list.indexOf(s) !== -1) ? s : dflt;
   }
 
+  /**
+   * Some models answer "vitals" with one prose line instead of an object.
+   * Silently dropping it blanked the whole monitor, which reads to the student
+   * as a broken sim rather than a sloppy model, so pull the numbers back out.
+   */
+  function vitalsFromText(s) {
+    var t = str(s), out = {}, m;
+    m = /\b(?:bp|blood\s*pressure)\D{0,4}(\d{2,3}\s*\/\s*\d{2,3})/i.exec(t);
+    if (m) out.bp = m[1].replace(/\s+/g, '');
+    m = /\b(?:hr|heart\s*rate|pulse)\D{0,4}(\d{2,3})/i.exec(t);
+    if (m) out.hr = m[1];
+    m = /\b(?:rr|resp(?:iration|iratory)?s?(?:\s*rate)?)\D{0,4}(\d{1,2})/i.exec(t);
+    if (m) out.rr = m[1];
+    m = /\b(?:spo2|sao2|o2\s*sat\w*|sat\w*)\D{0,4}(\d{2,3})/i.exec(t);
+    if (m) out.spo2 = m[1];
+    m = /\b(?:temp\w*)\D{0,4}(\d{2,3}(?:\.\d)?\s*(?:°?\s*[CF])?)/i.exec(t);
+    if (m) out.temp = m[1].trim();
+    m = /\bpain\D{0,4}(\d{1,2}\s*\/\s*10)/i.exec(t);
+    if (m) out.pain = m[1].replace(/\s+/g, '');
+    m = /\b(?:loc|level of consciousness)\s*[:\-]?\s*([A-Za-z][A-Za-z ,'-]{2,40})/i.exec(t);
+    if (m) out.loc = m[1].trim();
+    return out;
+  }
+
+  /** one vital value the model may have sent as an object rather than a scalar */
+  function flattenVital(val) {
+    var o = obj(val);
+    var sys = o.systolic !== undefined ? o.systolic : o.sys;
+    var dia = o.diastolic !== undefined ? o.diastolic : o.dia;
+    if (sys !== undefined && sys !== null && dia !== undefined && dia !== null) {
+      return str(sys).trim() + '/' + str(dia).trim();
+    }
+    var keys = ['value', 'val', 'reading', 'text', 'result', 'description'];
+    for (var i = 0; i < keys.length; i++) {
+      var c = o[keys[i]];
+      if (typeof c === 'number') return c;
+      if (typeof c === 'string' && c.trim()) return c.trim();
+    }
+    return '';
+  }
+
   function normalizeVitals(v, prev) {
-    var src = obj(v), out = {}, base = obj(prev);
+    /* a whole-object string payload, e.g. "BP 88/54, HR 132, RR 34" */
+    var src = (typeof v === 'string') ? vitalsFromText(v) : obj(v);
+    var out = {}, base = obj(prev);
     for (var i = 0; i < VITAL_KEYS.length; i++) {
       var k = VITAL_KEYS[i].k;
       var val = src[k];
+      if (val && typeof val === 'object') val = flattenVital(val);
       if (val === undefined || val === null || val === '') {
         out[k] = (base[k] === undefined) ? '' : base[k];
       } else if (typeof val === 'number') {
         out[k] = val;
       } else {
-        out[k] = str(val).trim();
+        out[k] = cut(str(val).trim(), 60);
       }
     }
     return out;
@@ -632,11 +735,18 @@
 
   function normalizeOptions(v, seed) {
     var raw = arr(v), out = [], i, o, text;
+    /* Two buttons with identical text is not a hard choice, it is a broken
+       screen - and the student cannot tell which one they pressed. */
+    var seenText = {};
     for (i = 0; i < raw.length && out.length < 6; i++) {
       o = raw[i];
       if (typeof o === 'string') { text = o.trim(); o = {}; }
       else { o = obj(o); text = str(o.text || o.label || o.action).trim(); }
+      text = cut(text, 240);
       if (!text) continue;
+      var dedupe = text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      if (seenText[dedupe]) continue;
+      seenText[dedupe] = true;
       out.push({
         id: String.fromCharCode(97 + out.length),
         text: text,
@@ -654,37 +764,61 @@
     return shuffled;
   }
 
+  var CHART_PLACEHOLDER_NAME = 'Unnamed patient';
+
   function normalizeChart(v) {
     var c = obj(v);
     return {
-      name: str(c.name || c.patientName).trim() || 'Unnamed patient',
-      age: str(c.age).trim() || 'Adult',
-      sex: str(c.sex || c.gender).trim(),
-      weightKg: str(c.weightKg || c.weight).trim(),
-      room: str(c.room || c.bed).trim(),
-      admittingDx: str(c.admittingDx || c.diagnosis || c.admittingDiagnosis).trim() || 'Pending',
-      allergies: strArray(c.allergies, 6),
-      codeStatus: str(c.codeStatus).trim() || 'Full Code',
-      chiefComplaint: str(c.chiefComplaint || c.complaint).trim(),
-      history: strArray(c.history || c.pmh, 8)
+      name: cut(str(c.name || c.patientName).trim(), 120) || CHART_PLACEHOLDER_NAME,
+      age: cut(str(c.age).trim(), 40) || 'Adult',
+      sex: cut(str(c.sex || c.gender).trim(), 40),
+      weightKg: cut(str(c.weightKg || c.weight).trim(), 40),
+      room: cut(str(c.room || c.bed).trim(), 40),
+      admittingDx: cut(str(c.admittingDx || c.diagnosis || c.admittingDiagnosis).trim(), 200) || 'Pending',
+      allergies: strArray(c.allergies, 6, 80),
+      codeStatus: cut(str(c.codeStatus).trim(), 60) || 'Full Code',
+      chiefComplaint: cut(str(c.chiefComplaint || c.complaint).trim(), 200),
+      history: strArray(c.history || c.pmh, 8, 160)
     };
+  }
+
+  /**
+   * chartUsable(rawChart) -> is this good enough to run a simulation on?
+   *
+   * normalizeChart() is deliberately forgiving - it fills every field with a
+   * placeholder so nothing downstream has to null-check. That forgiveness is
+   * exactly why the opening turn cannot use it as its gate: `"chart": {}`
+   * normalises into a complete-looking chart for "Unnamed patient", which is
+   * how a chartless run used to slip past the opening retry and hang the
+   * header on "Admitting patient..." forever. Gate on the RAW payload.
+   */
+  function chartUsable(raw) {
+    var c = obj(raw);
+    var name = str(c.name || c.patientName).trim();
+    if (!name || name.toLowerCase() === CHART_PLACEHOLDER_NAME.toLowerCase()) return false;
+    return true;
   }
 
   /**
    * normalizeTurn(parsed, ctx) -> a complete, safe turn object.
    * ctx: {prevVitals, seed, turnNumber, phase}
+   *
+   * Every free-text field the model owns is length-capped here. The spec asks
+   * for 2-4 sentences; these ceilings are several times that, so nothing
+   * legitimate is ever clipped, and a runaway generation cannot flood the
+   * transcript, the DOM, or the next eight prompts.
    */
   function normalizeTurn(parsed, ctx) {
     var p = obj(parsed), c = obj(ctx);
-    var narration = str(p.narration || p.narrative || p.scene).trim();
+    var narration = cut(str(p.narration || p.narrative || p.scene).trim(), MAX_NARRATION);
     var speech = p.patientSpeech;
-    speech = (typeof speech === 'string' && speech.trim()) ? speech.trim() : null;
+    speech = (typeof speech === 'string' && speech.trim()) ? cut(speech.trim(), MAX_SPEECH) : null;
 
     var fb = p.feedbackOnLastAction;
-    fb = (typeof fb === 'string' && fb.trim()) ? fb.trim() : null;
+    fb = (typeof fb === 'string' && fb.trim()) ? cut(fb.trim(), MAX_FEEDBACK) : null;
 
     var hint = p.hint;
-    hint = (typeof hint === 'string' && hint.trim()) ? hint.trim() : null;
+    hint = (typeof hint === 'string' && hint.trim()) ? cut(hint.trim(), MAX_FEEDBACK) : null;
 
     var quality = QUALITIES.indexOf(oneOf(p.lastActionQuality, QUALITIES, '')) !== -1
       ? oneOf(p.lastActionQuality, QUALITIES, null) : null;
@@ -698,14 +832,14 @@
       patientSpeech: speech,
       vitals: normalizeVitals(p.vitals, c.prevVitals),
       trend: oneOf(p.trend, TRENDS, 'stable'),
-      newFindings: strArray(p.newFindings || p.findings, 6),
+      newFindings: strArray(p.newFindings || p.findings, 6, 240),
       feedbackOnLastAction: fb,
       lastActionQuality: quality,
       options: normalizeOptions(p.options, numOr(c.seed, 7) + numOr(c.turnNumber, 0) * 101),
       phase: oneOf(p.phase, PHASES, str(c.phase) || 'assessment'),
       outcome: outcome,
       hint: hint,
-      rubricHits: strArray(p.rubricHits || p.rubric, 8),
+      rubricHits: strArray(p.rubricHits || p.rubric, 8, 60),
       scoreDelta: clamp(Math.round(numOr(p.scoreDelta, 0)), -10, 10),
       isFinal: p.isFinal === true,
       chart: p.chart ? normalizeChart(p.chart) : null
@@ -1517,6 +1651,10 @@
       '.ais-note.info{border-left-color:var(--accent)}',
       '.ais-think{display:flex;align-items:center;gap:var(--sp-3);font-size:var(--fs-sm);color:var(--text2);',
       'background:var(--bg);border:1px dashed var(--border);border-radius:var(--r-md);padding:11px var(--sp-3)}',
+      '.ais-think-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto;',
+      'overflow-wrap:anywhere}',
+      '.ais-elapsed{font-variant-numeric:tabular-nums;flex:0 0 auto}',
+      '.ais-slow{display:flex;flex-direction:column;gap:var(--sp-2)}',
       '.ais-dots{display:inline-flex;gap:4px}',
       '.ais-dots i{width:6px;height:6px;border-radius:var(--r-full);background:var(--accent);display:block;',
       'animation:ais-bounce 1.1s ease-in-out infinite}',
@@ -1836,13 +1974,63 @@
     );
   }
 
+  /* ==========================================================================
+   * HONEST PROGRESS
+   * --------------------------------------------------------------------------
+   * The Netlify function BUFFERS the upstream SSE stream - the classic
+   * exports.handler runtime cannot stream a response body - so `onToken`
+   * normally fires exactly once, at the very end, with the entire reply. Any
+   * indicator driven off token arrival is therefore completely frozen for the
+   * whole generation, which is precisely what "sometimes it just doesn't load"
+   * looks like from the student's chair.
+   *
+   * So: the elapsed counter runs on its OWN interval and the stage text
+   * advances on the clock. Nothing here is a fake progress bar. It reports the
+   * only two things we honestly know - how long we have been waiting, and how
+   * many characters have actually arrived - and the stage labels describe what
+   * the request is doing, not how far along it is.
+   * ======================================================================== */
+
+  var MIDRUN_CLOCK_AT = 5;   // mid-run: start showing the counter after 5s
+  var SLOW_NOTE_AT    = 20;  // mid-run: name the cause after 20s
+  var SLOW_WARN_AT    = 30;  // any turn: offer a retry rather than wait out 130s
+
+  var OPENING_STAGES = [
+    { at: 0,  text: 'Contacting the unit...' },
+    { at: 5,  text: 'Pulling the chart...' },
+    { at: 12, text: 'Getting report from the off-going nurse...' },
+    { at: 24, text: 'Still on the phone with report - this model is running slow...' }
+  ];
+
+  function stageText(stages, seconds) {
+    var list = arr(stages), out = list.length ? str(list[0].text) : '';
+    for (var i = 0; i < list.length; i++) {
+      if (numOr(seconds, 0) >= numOr(list[i].at, 0)) out = str(list[i].text);
+    }
+    return out;
+  }
+
+  /**
+   * Thinking props:
+   *   label        what we are doing right now (staged, and character counts
+   *                folded in, by the caller - see RunScreen)
+   *   seconds      elapsed seconds for THIS request
+   *   showSeconds  render the counter (mid-run turns hide it for the first 5s)
+   *   note         an extra honest line, e.g. the slow-model warning
+   */
   function Thinking(props) {
     var p = obj(props);
+    var secs = Math.max(0, Math.floor(numOr(p.seconds, 0)));
     return ce('div', { className: 'ais-think', role: 'status', 'aria-live': 'polite' }, [
       ce('span', { className: 'ais-dots', key: 'd', 'aria-hidden': 'true' },
         [ce('i', { key: 1 }), ce('i', { key: 2 }), ce('i', { key: 3 })]),
-      ce('span', { key: 't' }, str(p.label) || 'The scenario is responding...'),
-      p.chars ? ce('span', { key: 'c', className: 'ais-lab' }, p.chars + ' chars') : null
+      ce('span', { className: 'ais-think-main', key: 't' }, [
+        ce('span', { key: 'l' }, str(p.label) || 'The scenario is responding...'),
+        p.note ? ce('span', { className: 'ais-lab', key: 'n' }, str(p.note)) : null
+      ]),
+      (p.showSeconds !== false && secs > 0)
+        ? ce('span', { key: 's', className: 'ais-lab ais-elapsed' }, secs + 's')
+        : null
     ]);
   }
 
@@ -1895,6 +2083,25 @@
     var vsup = isFn(voiceApi().isSupported) ? voiceApi().isSupported() : { stt: false, tts: false };
 
     useEffect(function () { setTopicId('surprise'); }, [category]);
+
+    /* Wake the Netlify container while the student is still picking a topic.
+       A cold start is dead time bolted onto the front of the opening call -
+       the single slowest, most visible call in the whole mode. Fire and
+       forget: it needs no auth, spends nothing, and its failure is not the
+       student's problem. Feature-detected so an older cached ai.js is fine. */
+    useEffect(function () {
+      var ai = aiApi();
+      if (!isFn(ai.warmup)) return;
+      try {
+        var w = ai.warmup();
+        /* Fire and forget means forget the REJECTION too. warmup() is a fetch;
+           with the network down it returns a rejected promise, and try/catch
+           does not see that - it surfaced as an unhandled rejection (a red
+           console error, and a crash under any error-reporting shim) on the
+           setup screen of a student who simply had no signal. */
+        if (w && isFn(w.then)) w.then(null, function () { /* silence is correct */ });
+      } catch (e) { /* never let a warmup break setup */ }
+    }, []);
 
     function start() {
       /* prime speech synthesis inside the user gesture - iOS will not speak otherwise */
@@ -2189,10 +2396,76 @@
     } catch (e) { return '{"narration":"(previous turn)"}'; }
   }
 
+  /* ==========================================================================
+   * HISTORY COMPACTION  (this is a LATENCY control, not a memory feature)
+   * --------------------------------------------------------------------------
+   * Every turn re-sends the entire system prompt - which contains the whole
+   * APPROVED CLINICAL GROUND TRUTH block - plus the whole conversation. The
+   * system prompt is fixed and load-bearing, so the only place there is any
+   * fat to cut is the transcript, and by turn 12 the transcript is the larger
+   * half of the request. Prompt tokens are what the student experiences as
+   * "the AI is taking forever", so history is compacted hard:
+   *
+   *   - the last KEEP_TURNS exchanges survive verbatim (that is the working
+   *     memory the model actually reasons over)
+   *   - everything older collapses into ONE short synthetic user message:
+   *     how many turns were dropped, which competencies were already tagged,
+   *     and where the scene stood. Nothing clinically load-bearing is in there
+   *     anyway - the authoritative STATE BLOCK is rebuilt from app state and
+   *     re-sent on every single turn.
+   *   - assistant turns were already stored through compactAssistant(), so
+   *     even the verbatim tail is a fraction of the raw model output.
+   *
+   * The opening user message (the long "generate the patient" instruction) is
+   * deliberately NOT kept: it is spent by turn 2 and costs hundreds of tokens
+   * on every turn after that.
+   * ======================================================================== */
+  var KEEP_TURNS = 8;                  // verbatim exchanges kept in full
+  var KEEP_MSGS  = KEEP_TURNS * 2;     // each exchange is one user + one assistant
+
+  /** One short stand-in message for everything that got dropped. */
+  function historySummary(dropped) {
+    var d = arr(dropped);
+    var exchanges = 0, lastScene = '', lastPhase = '';
+    var hits = [], seen = {}, i, j, m, parsed, rh;
+
+    for (i = 0; i < d.length; i++) {
+      m = obj(d[i]);
+      if (m.role !== 'assistant') continue;
+      exchanges++;
+      parsed = null;
+      try { parsed = JSON.parse(str(m.content)); } catch (e) { parsed = null; }
+      if (!parsed || typeof parsed !== 'object') continue;
+      if (str(parsed.narration)) lastScene = str(parsed.narration);
+      if (str(parsed.phase)) lastPhase = str(parsed.phase);
+      rh = arr(parsed.rubricHits);
+      for (j = 0; j < rh.length; j++) {
+        var tag = str(rh[j]).trim();
+        if (!tag || seen[tag]) continue;
+        seen[tag] = true;
+        hits.push(tag);
+      }
+    }
+
+    var L = [];
+    L.push('=== EARLIER IN THIS RUN (compacted) ===');
+    L.push(exchanges + ' earlier turn(s) have been summarised and removed from this transcript to keep the ' +
+           'request small. Treat them as having happened.');
+    if (hits.length) L.push('Competencies already demonstrated: ' + hits.slice(0, 12).join(', ') + '.');
+    if (lastPhase) L.push('Phase at that point: ' + lastPhase + '.');
+    if (lastScene) L.push('The scene as it stood: ' + lastScene.slice(0, 400));
+    L.push('The STATE BLOCK in the next message is authoritative for stability, phase and what has been done. ' +
+           'Do not contradict it, and do not re-introduce the patient.');
+    return L.join('\n');
+  }
+
   function trimMessages(msgs) {
     var m = arr(msgs);
-    if (m.length <= 14) return m.slice();
-    return [m[0]].concat(m.slice(m.length - 12));
+    if (m.length <= KEEP_MSGS + 1) return m.slice();
+    var cut = m.length - KEEP_MSGS;
+    /* keep the boundary on an exchange: the tail must start with a user turn */
+    if (obj(m[cut]).role !== 'user' && cut > 0) cut = cut - 1;
+    return [{ role: 'user', content: historySummary(m.slice(0, cut)) }].concat(m.slice(cut));
   }
 
   /** map one student action onto the grounded intervention list */
@@ -2412,24 +2685,75 @@
     return FRIENDLY_ERR[code] || FRIENDLY_ERR.server;
   }
 
-  function askTurn(system, messages, temperature, onToken) {
+  /* --------------------------------------------------------------------------
+   * TURN BUDGET
+   * A turn is a fixed-shape JSON object: narration (~60 words), an optional
+   * line of patient speech, one or two sentences of feedback, up to six
+   * findings, exactly four options of 4-14 words, a handful of snake_case
+   * tags and a few scalars. Measured against that shape a normal turn is
+   * ~350-450 output tokens; the opening turn adds the chart block and lands
+   * around 600-700. 1500 was never a budget, it was a ceiling nothing hit -
+   * and every unused token is still generation time the student waits through
+   * when a model decides to be verbose. 1000 keeps ~40% headroom over the
+   * biggest legitimate turn and truncates nothing.
+   * ------------------------------------------------------------------------ */
+  var TURN_MAX_TOKENS = 1000;
+
+  /* Opening variety comes from the seed in the prompt, not from sampling
+     temperature. 0.95 bought a little more prose colour and a much higher rate
+     of non-JSON replies on the one turn that cannot survive one. */
+  var OPENING_TEMP       = 0.75;
+  var TURN_TEMP          = 0.7;
+  var REPAIR_TEMP        = 0.2;
+  var OPENING_RETRY_TEMP = 0.5;   // cooler still on an automatic opening retry
+  var OPENING_MAX_RETRIES = 2;
+
+  /**
+   * askTurn(opts) -> Promise<{parsed, raw, repaired}>
+   * opts: {system, messages, temperature, onToken}
+   *
+   * `parsed` is null only when BOTH the first reply and the repair attempt
+   * failed to parse. What the caller does about that depends entirely on
+   * whether this is the opening turn - see sendTurn().
+   */
+  function askTurn(opts) {
+    var o = obj(opts);
     var ai = aiApi();
     if (!isFn(ai.chat)) return Promise.reject({ code: 'ai-disabled' });
 
-    return ai.chat({
-      system: system, messages: trimMessages(messages),
-      maxTokens: 1500, temperature: temperature, onToken: onToken
-    }).then(function (raw) {
+    var system = o.system;
+    var messages = arr(o.messages);
+    var trimmed = trimMessages(messages);
+
+    /* ai.chat must be treated as hostile at its boundary: if it throws
+       SYNCHRONOUSLY the throw escapes the click handler, sendTurn never
+       reaches its error branch, and the run sits busy forever with no error
+       and no retry - a hang, not a failure. Convert it to a rejection. */
+    var first;
+    try {
+      first = ai.chat({
+        system: system, messages: trimmed,
+        maxTokens: TURN_MAX_TOKENS,
+        temperature: numOr(o.temperature, TURN_TEMP),
+        // Structured output. The server drops the parameter and retries when a
+        // model does not support it, so this can only ever help.
+        json: true,
+        onToken: isFn(o.onToken) ? o.onToken : undefined
+      });
+    } catch (e) { return Promise.reject(e); }
+
+    return Promise.resolve(first).then(function (raw) {
       var parsed = parseTurnJSON(raw);
       if (parsed) return { parsed: parsed, raw: raw, repaired: false };
 
-      /* one repair attempt, then a graceful in-character fallback */
-      var repair = trimMessages(messages).concat([
+      /* one repair attempt at low temperature */
+      var repair = trimmed.concat([
         { role: 'assistant', content: str(raw).slice(0, 1200) || '(empty reply)' },
         { role: 'user', content: REPAIR_MESSAGE }
       ]);
       return ai.chat({
-        system: system, messages: repair, maxTokens: 1500, temperature: 0.2
+        system: system, messages: repair,
+        maxTokens: TURN_MAX_TOKENS, temperature: REPAIR_TEMP, json: true
       }).then(function (raw2) {
         return { parsed: parseTurnJSON(raw2), raw: raw2, repaired: true };
       }, function () {
@@ -2549,10 +2873,40 @@
     var sbarBusyHook = useState(false);
     var sbarBusy = sbarBusyHook[0], setSbarBusy = sbarBusyHook[1];
 
+    /* --- per-request wait state ------------------------------------------
+     * `elapsed` above is the RUN clock. This is the clock for the ONE call
+     * currently in flight, and it is what the progress indicator reports.
+     * It has to be its own interval: the Netlify function buffers the SSE
+     * body, so token arrival tells us nothing until the very end.
+     * ------------------------------------------------------------------- */
+    var waitHook = useState(0);
+    var waitSec = waitHook[0], setWaitSec = waitHook[1];
+    var reqHook = useState(0);
+    var reqId = reqHook[0], setReqId = reqHook[1];
+    var attemptHook = useState(0);
+    var openAttempt = attemptHook[0], setOpenAttempt = attemptHook[1];
+
     var aliveRef = useRef(true);
     var startedRef = useRef(false);
     var retryRef = useRef(null);
     var logRef = useRef(null);
+    /* The id of the only request whose result may be applied. Starting a new
+       turn - including an automatic opening retry, and including the Retry
+       button pressed while a call is still in flight - bumps it, so the older
+       reply is dropped on arrival instead of racing the newer one into run
+       state. This is the "abort" the UI offers: nothing half-applied, no
+       double-committed turn, no lost run. */
+    var reqRef = useRef(0);
+    /* Synchronous mirror of `busy`. React state is only as current as the last
+       render, and two taps inside one frame both read the stale value. */
+    var inFlightRef = useRef(false);
+    /* A run may only be scored and persisted ONCE. The handoff screen offers
+       three ways out - the SBAR recorder, the typed report, and "skip" - and
+       the typed report is graded asynchronously while the skip button is still
+       on screen. Submitting a report and then skipping used to finish the run
+       twice: two debriefs, two aiScenarioResults rows, two simResults rows on
+       the dashboard for one patient. */
+    var finishedRef = useRef(false);
 
     var vsup = isFn(voiceApi().isSupported) ? voiceApi().isSupported() : { stt: false, tts: false };
 
@@ -2561,6 +2915,11 @@
       if (aliveRef.current) setRunState(next);
       return next;
     }
+
+    function clearDraft() { setDraft(''); setInterim(''); }
+
+    /* the single place `busy` is turned off, so the ref can never drift */
+    function idle() { inFlightRef.current = false; setBusy(false); }
 
     useEffect(function () {
       aliveRef.current = true;
@@ -2581,6 +2940,21 @@
       }, 1000);
       return function () { clearInterval(id); };
     }, []);
+
+    /* per-request wait clock - runs on its own interval, never on token arrival */
+    useEffect(function () {
+      if (!busy) {
+        setWaitSec(0);
+        return undefined;
+      }
+      var t0 = Date.now();
+      setWaitSec(0);
+      var id = setInterval(function () {
+        if (!aliveRef.current) return;
+        setWaitSec(Math.floor((Date.now() - t0) / 1000));
+      }, 1000);
+      return function () { clearInterval(id); };
+    }, [busy, reqId]);
 
     /* keep the transcript pinned to the newest turn */
     useEffect(function () {
@@ -2618,19 +2992,81 @@
 
     /* --------------------------------------------------------- AI plumbing */
 
-    function sendTurn(userContent, action, temperature) {
+    /**
+     * sendTurn(userContent, action, temperature [, attempt])
+     *
+     * THE OPENING TURN IS NOT LIKE THE OTHERS.
+     * The chart arrives once and only once - normalizeTurn() reads `turn.chart`
+     * on turn 1 and commitTurn() keeps the first one it sees. So a degraded
+     * opening is not a small stumble the student can act through, the way a
+     * degraded turn 7 is: it produces a run with no patient, no chart, no real
+     * options, and a header stuck on "Admitting patient..." forever. That is
+     * exactly the reported bug, and high sampling temperature on the opening
+     * call is why it was intermittent.
+     *
+     * Therefore the opening NEVER degrades. If the reply and the repair both
+     * fail to parse - OR the reply parses perfectly but contains no usable
+     * "chart" block, which produces exactly the same broken run and used to
+     * sail straight through this gate - the whole opening call is retried from
+     * scratch at a cooler temperature (up to OPENING_MAX_RETRIES times), and if
+     * it still cannot be read the student gets a plain error with a working
+     * Retry button. A chartless run is not one of the outcomes.
+     *
+     * Mid-run, degradedTurn() stays exactly as it was - it costs the student
+     * nothing (stepStability zeroes the drift on a degraded turn) and the run
+     * continues.
+     */
+    function sendTurn(userContent, action, temperature, attempt) {
+      if (!aliveRef.current) return;
       var current = runRef.current;
+      var isOpening = numOr(current.turnCount, 0) === 0 && !action;
+      var tryN = Math.max(0, Math.floor(numOr(attempt, 0)));
       var msgs = arr(current.messages).concat([{ role: 'user', content: userContent }]);
 
+      reqRef.current = reqRef.current + 1;
+      var myReq = reqRef.current;
+      function fresh() { return aliveRef.current && myReq === reqRef.current; }
+
+      setReqId(myReq);
+      inFlightRef.current = true;
       setBusy(true); setChars(0); setErr(null);
+      setOpenAttempt(isOpening ? tryN : 0);
 
-      retryRef.current = function () { sendTurn(userContent, action, temperature); };
+      /* Retry always starts over from attempt 0 at the original temperature. */
+      retryRef.current = function () { sendTurn(userContent, action, temperature, 0); };
 
-      askTurn(current.system, msgs, temperature, function (chunk, full) {
-        if (!aliveRef.current) return;
-        setChars(str(full).length);
+      askTurn({
+        system: current.system,
+        messages: msgs,
+        temperature: temperature,
+        onToken: function (chunk, full) {
+          if (!fresh()) return;
+          setChars(str(full).length);
+        }
       }).then(function (res) {
-        if (!aliveRef.current) return;
+        if (!fresh()) return;
+
+        /* An opening that parsed but carries no patient is just as unplayable
+           as one that did not parse at all - same retry, same error. */
+        var openingBad = isOpening &&
+          (!res.parsed || !chartUsable(obj(res.parsed).chart));
+
+        if (openingBad) {
+          if (tryN < OPENING_MAX_RETRIES) {
+            /* fresh opening call, cooler - never a degraded turn 1 */
+            sendTurn(userContent, action, OPENING_RETRY_TEMP, tryN + 1);
+            return;
+          }
+          idle();
+          setErr({
+            code: 'opening-unparseable',
+            opening: true,
+            message: 'The model could not produce a readable patient chart after ' +
+                     (OPENING_MAX_RETRIES + 1) + ' attempts.'
+          });
+          return;
+        }
+
         var ctx = {
           prevVitals: runRef.current.vitals,
           seed: runRef.current.seed,
@@ -2646,20 +3082,26 @@
           { role: 'assistant', content: compactAssistant(turn) }
         ]);
         commit(next);
-        setBusy(false);
-        setDraft(''); setInterim('');
-        setHint({ open: false, busy: false, text: '', tier: numOr(hint.tier, 0) });
+        idle();
+        clearDraft();
+        /* Reset the hint panel without reading a render-scoped `hint`, which
+           can be a render behind and would silently walk the tier backwards
+           while a hint request is still in flight. */
+        setHint(function (h) {
+          var cur = obj(h);
+          return { open: !!cur.busy, busy: !!cur.busy, text: '', tier: numOr(cur.tier, 0) };
+        });
         speakTurn(turn);
 
-        if (next.phase === 'complete') {
-          var done = finalizeRun(next, scenario);
-          commit(done.run);
-          if (isFn(p.onFinish)) p.onFinish(done);
-        }
+        if (next.phase === 'complete') finish(next);
       }, function (e) {
-        if (!aliveRef.current) return;
-        setBusy(false);
-        setErr({ code: (e && e.code) ? e.code : 'server', message: errText(e) });
+        if (!fresh()) return;
+        idle();
+        setErr({
+          code: (e && e.code) ? e.code : 'server',
+          opening: isOpening,
+          message: errText(e)
+        });
       });
     }
 
@@ -2667,21 +3109,29 @@
     useEffect(function () {
       if (startedRef.current) return;
       startedRef.current = true;
-      sendTurn(openingUserMessage({ seed: runRef.current.seed, stability: runRef.current.stability }), null, 0.95);
+      sendTurn(openingUserMessage({ seed: runRef.current.seed, stability: runRef.current.stability }),
+        null, OPENING_TEMP);
     }, []);
 
     /* ------------------------------------------------------------ actions */
 
     function takeAction(text, mode) {
       var body = str(text).trim();
-      if (!body || busy) return;
+      /* `busy` is render state and a second tap can be handled before React has
+         re-rendered the disabled buttons, so the authoritative check is the
+         ref. Without it a double-tap on a phone sent two turns for one action:
+         two AI messages spent, two commits, and a transcript that skipped a
+         beat. */
+      if (!body || busy || inFlightRef.current) return;
 
       /* free data checks never cost a turn and never cost points */
-      if (mode !== 'choice' && RE_FREE_VITALS.test(body)) { showVitals(); return; }
-      if (mode !== 'choice' && RE_FREE_CHART.test(body)) { setShowChart(true); creditChart('chart'); return; }
+      if (mode !== 'choice' && RE_FREE_VITALS.test(body)) { clearDraft(); showVitals(); return; }
+      if (mode !== 'choice' && RE_FREE_CHART.test(body)) {
+        clearDraft(); setShowChart(true); creditChart('chart'); return;
+      }
 
       var current = runRef.current;
-      sendTurn(stateBlock(current, body, mode), { text: body, mode: mode }, 0.7);
+      sendTurn(stateBlock(current, body, mode), { text: body, mode: mode }, TURN_TEMP);
     }
 
     function creditChart(tab) {
@@ -2729,11 +3179,16 @@
       ].join('\n');
 
       var ai = aiApi();
-      var pr = isFn(ai.chat)
-        ? ai.chat({ system: sys, messages: [{ role: 'user', content: msg }], maxTokens: 260, temperature: 0.5 })
-        : Promise.reject({ code: 'ai-disabled' });
+      var pr;
+      /* a synchronous throw here would leave the hint panel spinning and the
+         hint button disabled for the rest of the run */
+      try {
+        pr = isFn(ai.chat)
+          ? ai.chat({ system: sys, messages: [{ role: 'user', content: msg }], maxTokens: 260, temperature: 0.5 })
+          : Promise.reject({ code: 'ai-disabled' });
+      } catch (e) { pr = Promise.reject(e); }
 
-      pr.then(function (text) {
+      Promise.resolve(pr).then(function (text) {
         if (!aliveRef.current) return;
         var body = str(text).trim() || (last && last.hint ? str(last.hint) : 'Go back to your ABCs and reassess.');
         applyHint(tier, body);
@@ -2771,22 +3226,42 @@
 
     /* ------------------------------------------------------------- handoff */
 
-    function finishWithSbar(sbarResult) {
-      var next = cloneRun(runRef.current);
-      next.sbar = sbarResult || null;
+    /**
+     * finish(run, sbarResult) - the ONLY way a run is scored and persisted.
+     *
+     * Four callers can reach an ending: the forced ending inside sendTurn, the
+     * SBAR recorder, the typed report's async grader, and the "skip the
+     * handoff" button. The last two can both be live at the same moment - the
+     * skip button stays on screen while the grader works - so this is
+     * idempotent. finalizeRun() writes to progress, and a second write is two
+     * rows on the dashboard for one patient.
+     */
+    function finish(runToScore, sbarResult) {
+      if (finishedRef.current) return null;
+      finishedRef.current = true;
+      var next = cloneRun(runToScore || runRef.current);
+      if (sbarResult !== undefined) next.sbar = sbarResult || null;
       commit(next);
       var done = finalizeRun(next, scenario);
       commit(done.run);
       if (isFn(p.onFinish)) p.onFinish(done);
+      return done;
     }
+
+    function finishWithSbar(sbarResult) { return finish(null, sbarResult || null); }
 
     function submitTypedSbar() {
       var body = str(sbarText).trim();
-      if (!body) return;
+      if (!body || sbarBusy || finishedRef.current) return;
       setSbarBusy(true);
       var hs = handoffScenario(runRef.current, scenario);
       var ai = aiApi();
-      var pr = isFn(ai.gradeSBAR) ? ai.gradeSBAR(hs, body) : Promise.reject(new Error('no grader'));
+      var pr;
+      /* a synchronous throw here would strand the run on a "Grading..." button
+         that can never be pressed again */
+      try {
+        pr = isFn(ai.gradeSBAR) ? ai.gradeSBAR(hs, body) : Promise.reject(new Error('no grader'));
+      } catch (e) { pr = Promise.reject(e); }
       Promise.resolve(pr).then(function (res) {
         if (!aliveRef.current) return;
         var r = obj(res);
@@ -2873,7 +3348,11 @@
       ce('button', {
         className: 'ais-mini', key: 'id', type: 'button', onClick: openChart,
         'aria-expanded': showChart ? 'true' : 'false'
-      }, [str(chart.name) || 'Admitting patient...',
+      }, [str(chart.name) ||
+            /* No chart and no call in flight means the opening failed. Saying
+               "Admitting patient..." forever is the lie the student reported
+               as a hang; when it has actually stopped, say so. */
+            (err && run.turnCount === 0 ? 'No chart yet' : 'Admitting patient...'),
           str(chart.age) ? ' · ' + str(chart.age) : '',
           showChart ? ' · hide chart' : ' · open chart'].join(''))
     ]);
@@ -2906,15 +3385,20 @@
       })
     );
 
+    var openingFailed = !!(err && err.opening) && run.turnCount === 0;
+
     var errorBox = err ? ce('div', { className: 'ais-note err', key: 'err', role: 'alert' }, [
       ce('div', { key: 'm', style: { marginBottom: '8px' } },
-        str(err.message) + ' Your run is intact - nothing has been lost.'),
+        openingFailed
+          ? str(err.message) + ' Nothing has started yet, so nothing has been lost - ' +
+            'admit the patient again and you will get a different one.'
+          : str(err.message) + ' Your run is intact - nothing has been lost.'),
       ce('div', { className: 'ais-row', key: 'b' }, [
         ce('button', {
           key: 'r', type: 'button', className: 'btn btn-primary btn-sm',
           onClick: function () { if (isFn(retryRef.current)) retryRef.current(); }
-        }, 'Retry this turn'),
-        (err.code === 'quota-exceeded' || err.code === 'tier-denied' || err.code === 'no-auth')
+        }, openingFailed ? 'Try admitting the patient again' : 'Retry this turn'),
+        (openingFailed || err.code === 'quota-exceeded' || err.code === 'tier-denied' || err.code === 'no-auth')
           ? ce('button', {
               key: 'e', type: 'button', className: 'btn btn-outline btn-sm',
               onClick: function () { if (isFn(p.onExit)) p.onExit(); }
@@ -3061,12 +3545,64 @@
       return '';
     })();
 
+    /* ---- what to say while we wait ----------------------------------------
+       Everything here is either measured (seconds waited, characters received)
+       or a description of the request itself. No invented percentages, and no
+       indicator that depends on token arrival - the function buffers the SSE
+       body, so tokens usually all land at once at the very end. */
+    var isOpeningWait = run.turnCount === 0;
+    var waitLabel;
+    if (chars > 0) {
+      /* Characters really have arrived, so say the true thing. Because the
+         function buffers the SSE body this usually flips straight from a stage
+         message to the finished turn - which is exactly why the stage messages
+         and the clock above cannot depend on it. */
+      waitLabel = (isOpeningWait ? 'Receiving report... (' : 'Receiving the response... (') +
+        chars + ' chars)';
+    } else if (isOpeningWait) {
+      waitLabel = openAttempt > 0
+        ? 'Re-paging the charge nurse... (attempt ' + (openAttempt + 1) + ' of ' + (OPENING_MAX_RETRIES + 1) + ')'
+        : stageText(OPENING_STAGES, waitSec);
+    } else {
+      waitLabel = 'The scenario is responding...';
+    }
+    /* Mid-run the counter stays out of the way for the first few seconds; a
+       normal turn is back before then and a ticking clock would only add
+       pressure. After 20s the honest thing is to name the cause. */
+    var waitNote = (!isOpeningWait && waitSec >= SLOW_NOTE_AT)
+      ? 'Still working - this model is slow today.' : '';
+    var showWaitSecs = isOpeningWait || waitSec >= MIDRUN_CLOCK_AT;
+
+    /* A 130s client timeout is a terrible thing to hit in silence. At 30s we
+       say so and hand back control; Retry bumps the request id, so the reply
+       still in flight is discarded rather than landing on top of the new one. */
+    var slowBox = (busy && waitSec >= SLOW_WARN_AT)
+      ? ce('div', { className: 'ais-note ais-slow', key: 'slow', role: 'status' }, [
+          ce('div', { key: 'm' },
+            'This model is slow right now - ' + waitSec + ' seconds so far. You can keep waiting, or retry.'),
+          ce('div', { className: 'ais-row', key: 'b' }, [
+            ce('button', {
+              key: 'r', type: 'button', className: 'btn btn-outline btn-sm',
+              onClick: function () { if (isFn(retryRef.current)) retryRef.current(); }
+            }, isOpeningWait ? 'Retry admitting the patient' : 'Retry this turn')
+          ])
+        ])
+      : null;
+
     /* The options stay mounted while the model thinks - dimmed, not unmounted.
        Swapping them for a spinner reflows the page mid-read every turn. */
     var actionUI = (run.phase === 'handoff') ? handoffUI
+      : openingFailed
+        /* No chart means no playable run. Offering options and a text box here
+           would be pretending there is a patient to act on; the error box above
+           owns this state. */
+        ? null
       : ce('div', { className: 'ais-act' + (busy ? ' busy' : ''), key: 'act' }, [
-          busy ? ce(Thinking, { key: 'think', chars: chars,
-            label: run.turnCount === 0 ? 'Admitting your patient...' : 'The scenario is responding...' }) : null,
+          busy ? ce(Thinking, {
+            key: 'think', seconds: waitSec,
+            showSeconds: showWaitSecs, note: waitNote, label: waitLabel
+          }) : null,
+          slowBox,
           hintUI,
           (inputMode === 'choice') ? choiceUI : null,
           (inputMode === 'text') ? textUI : null,
@@ -3492,6 +4028,8 @@
   AIScenarioMode.buildSystemPrompt = buildSystemPrompt;
   AIScenarioMode.openingUserMessage = openingUserMessage;
   AIScenarioMode.stateBlock = stateBlock;
+  AIScenarioMode.trimMessages = trimMessages;
+  AIScenarioMode.KEEP_TURNS = KEEP_TURNS;
   AIScenarioMode.createRun = createRun;
   AIScenarioMode.commitTurn = commitTurn;
   AIScenarioMode.finalizeRun = finalizeRun;
