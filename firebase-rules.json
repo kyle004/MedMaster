@@ -117,6 +117,35 @@
       }
     },
 
+    "codeblue": {
+      "rooms": {
+        ".read": "auth != null",
+        ".indexOn": ["createdAt", "status"],
+        "$roomId": {
+          ".write": "auth != null",
+          "state": {
+            ".validate": "newData.hasChildren()"
+          },
+          "events": {
+            "$eventId": {
+              ".write": "auth != null && !data.exists()"
+            }
+          },
+          "players": {
+            "$uid": {
+              ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')"
+            }
+          }
+        }
+      },
+      "results": {
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
+          ".write": "auth != null && auth.uid === $uid"
+        }
+      }
+    },
+
     "imageCache": {
       ".read": "auth != null",
       ".write": "auth != null && auth.token.email === 'codingky@gmail.com'",

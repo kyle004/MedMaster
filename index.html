@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <title>MedMaster</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b82f6'/%3E%3Cstop offset='1' stop-color='%236366f1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M32 12c-2.5 0-4.5 1-4.5 3v9h-7c-2 0-3 2-3 4.5s1 4.5 3 4.5h7v9h-7c-2 0-3 2-3 4.5s1 4.5 3 4.5h7v1c0 2 2 3.5 4.5 3.5s4.5-1.5 4.5-3.5v-1h7c2 0 3-2 3-4.5s-1-4.5-3-4.5h-7v-9h7c2 0 3-2 3-4.5s-1-4.5-3-4.5h-7v-9c0-2-2-3-4.5-3z' fill='white' opacity='0.95'/%3E%3C/svg%3E">
-<meta name="app-version" content="31">
+<meta name="app-version" content="32">
 
 <!-- Two third-party origins are on the critical path. Warm the DNS + TLS
      handshake now instead of paying for it when the parser reaches the
@@ -114,6 +114,7 @@
 <script defer src="js/community.js"></script>
 <script defer src="js/ai-tutor.js"></script>
 <script defer src="js/ai-scenario.js"></script>
+<script defer src="js/codeblue.js"></script>
 
 <!-- ==========================================================
      ON-DEMAND MODULE LOADER
@@ -3070,6 +3071,11 @@ function useVoiceChat(roomId, myId, myName, db) {
 
   return { inVoice, voiceParticipants, isMuted, joinVoice, leaveVoice, toggleMute, audioError };
 }
+// Shared with feature modules (code blue reuses the same WebRTC voice mesh).
+// Safe: modules share this exact React instance, so calling the hook from a
+// module component follows the rules of hooks.
+window.MM = window.MM || {};
+window.MM.useVoiceChat = useVoiceChat;
 
 function VoiceBar(props) {
   const { inVoice, voiceParticipants, isMuted, onJoin, onLeave, onToggleMute, audioError } = props;
@@ -3731,6 +3737,7 @@ const NAV_SECTIONS = [
   { id:'clinical', label:'Clinical', items:[
       {id:'simulations', icon:'🩺',   label:'Simulations', since:24},
       {id:'aiscenario',  icon:'🧑‍⚕️', label:'Live AI Patient', since:24},
+      {id:'codeblue',    icon:'🚨', label:'Code Blue Team', since:32},
       {id:'medadmin',    icon:'💉',   label:'Med Admin Signoff', since:24} ]},
   { id:'exams', label:'Exams', items:[
       {id:'labday',      icon:'🧪',   label:'Lab Day Exam'},
@@ -3765,6 +3772,8 @@ function navResolve(id) {
 }
 
 const WHATS_NEW = [
+  {id:'codeblue', icon:'🚨', title:'Code Blue Team',
+   blurb:'Run a mock code with your study group. Real roles, a live rhythm, a 2-minute cycle clock, and a team debrief nobody forgets.'},
   {id:'simulations', icon:'🩺', title:'Clinical Simulations',
    blurb:'Twenty patient scenarios — sepsis, DIC, ICP, OB, peds. Assess, intervene, and get debriefed on the critical actions you missed.'},
   {id:'aiscenario', icon:'🧑‍⚕️', title:'Live AI Patient',
@@ -9414,7 +9423,7 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
     features: {
       home: true, learn: true, guided: true, challenge: true, smart: true,
       test: true, labday: true, analyze: true,
-      simulations: true, aiscenario: true, medadmin: true,
+      simulations: true, aiscenario: true, codeblue: true, medadmin: true,
       pharm: true, missed: true, dashboard: true,
       flashcards: true, formulas: true, tutor: true,
       leaderboard: true, rooms: true, community: true
@@ -10083,14 +10092,14 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
         const featureLabels = {
           home:'Home', learn:'Formula Lab', guided:'Guided Practice', challenge:'Challenge', smart:'Smart Study',
           test:'Test Mode', labday:'Lab Day', analyze:'Analyzer',
-          simulations:'Clinical Simulations', aiscenario:'Live AI Patient', medadmin:'Med Admin Signoff',
+          simulations:'Clinical Simulations', aiscenario:'Live AI Patient', codeblue:'Code Blue Team', medadmin:'Med Admin Signoff',
           pharm:'Pharmacology', missed:'Missed Questions', dashboard:'My Stats',
           flashcards:'Flashcards', formulas:'Formula Builder', tutor:'AI Tutor',
           leaderboard:'Leaderboard', rooms:'Study Rooms', community:'Community'
         };
         const featureSections = {
           Study: ['home','learn','guided','challenge','smart'],
-          Clinical: ['simulations','aiscenario','medadmin'],
+          Clinical: ['simulations','aiscenario','codeblue','medadmin'],
           Test: ['test','labday','analyze'],
           Review: ['pharm','missed','dashboard'],
           Tools: ['flashcards','formulas','tutor'],
@@ -10711,7 +10720,7 @@ function App() {
     features: {
       home: true, learn: true, guided: true, challenge: true, smart: true,
       test: true, labday: true, analyze: true,
-      simulations: true, aiscenario: true, medadmin: true,
+      simulations: true, aiscenario: true, codeblue: true, medadmin: true,
       pharm: true, missed: true, dashboard: true,
       flashcards: true, formulas: true, tutor: true,
       leaderboard: true, rooms: true, community: true
@@ -10881,7 +10890,7 @@ function App() {
   // Tell the update checker when a reload would destroy work in flight
   // (DR02 C1). The banner reads this before offering to refresh.
   useEffect(() => {
-    const BUSY = {simulations:1, aiscenario:1, medadmin:1, test:1, labday:1};
+    const BUSY = {simulations:1, aiscenario:1, codeblue:1, medadmin:1, test:1, labday:1};
     window.__mmActivityInProgress = !!BUSY[page];
     return () => { window.__mmActivityInProgress = false; };
   }, [page]);
@@ -10941,6 +10950,7 @@ function App() {
       case 'learn': return React.createElement(FormulaLab);
       case 'simulations': return modulePage('SimulationHub', 'Clinical Simulations', {progress, setProgress, authUser});
       case 'aiscenario': return modulePage('AIScenarioMode', 'Live AI Patient', {progress, setProgress, authUser});
+      case 'codeblue': return modulePage('CodeBlueMode', 'Code Blue Team', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
       case 'medadmin': return modulePage('MedAdminTrainer', 'Med Admin Trainer', {progress, setProgress, authUser});
       case 'community': return modulePage('CommunityHub', 'Community', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
       case 'tutor': return modulePage('AITutorPage', 'AI Tutor', {progress, setProgress, authUser});
