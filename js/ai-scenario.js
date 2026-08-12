@@ -1099,7 +1099,8 @@
       '          "allergies":["..."],"codeStatus":"...","chiefComplaint":"...","history":["...","..."]}',
       'The name must NOT be the reference patient name. Age, sex and background must differ too.',
       '',
-      'Return the JSON object only.'
+      'Return the JSON object only. Emit it COMPACT - no indentation, no newlines between keys,',
+      'no markdown fences. Whitespace is wasted budget that can truncate your own reply.'
     ].join('\n');
   }
 
@@ -1154,7 +1155,8 @@
     L.push('=== THE STUDENT\'S ACTION THIS TURN (' + str(mode) + ') ===');
     L.push(str(actionText) || '(the student did nothing and time passed)');
     L.push('');
-    L.push('Evaluate that action, advance the scene by one beat, and return the JSON object only.');
+    L.push('Evaluate that action, advance the scene by one beat, and return the JSON object only,');
+    L.push('emitted COMPACT: no indentation, no newlines between keys, no markdown fences.');
     return L.join('\n');
   }
 
@@ -2692,12 +2694,23 @@
    * findings, exactly four options of 4-14 words, a handful of snake_case
    * tags and a few scalars. Measured against that shape a normal turn is
    * ~350-450 output tokens; the opening turn adds the chart block and lands
-   * around 600-700. 1500 was never a budget, it was a ceiling nothing hit -
-   * and every unused token is still generation time the student waits through
-   * when a model decides to be verbose. 1000 keeps ~40% headroom over the
-   * biggest legitimate turn and truncates nothing.
+   * around 600-700 tokens of CONTENT - but the ceiling must be set for the
+   * worst case, not the average, because a turn that hits the ceiling is not
+   * "slightly long", it is UNPARSEABLE (truncated JSON = unterminated string)
+   * and the run dies. Three things inflate real-world output well past the
+   * content size: json/response_format mode makes many providers pretty-print
+   * (whitespace roughly doubles tokens), some providers spend budget on
+   * reasoning preambles, and the OPENING turn additionally carries the full
+   * patient chart. The 1000 ceiling shipped in v30 caused exactly this:
+   * "could not produce a readable patient chart after 3 attempts", because
+   * the opening turn AND both its retries truncated at the same cap.
+   *
+   * So: mid-run turns get 1600; the opening turn and every repair attempt get
+   * 2400. Unused ceiling costs nothing - OpenRouter bills tokens actually
+   * generated, and generation stops at the closing brace either way.
    * ------------------------------------------------------------------------ */
-  var TURN_MAX_TOKENS = 1000;
+  var TURN_MAX_TOKENS    = 1600;
+  var OPENING_MAX_TOKENS = 2400;
 
   /* Opening variety comes from the seed in the prompt, not from sampling
      temperature. 0.95 bought a little more prose colour and a much higher rate
@@ -2729,11 +2742,16 @@
        SYNCHRONOUSLY the throw escapes the click handler, sendTurn never
        reaches its error branch, and the run sits busy forever with no error
        and no retry - a hang, not a failure. Convert it to a rejection. */
+    /* The opening turn carries the whole patient chart and so needs the
+       bigger ceiling; a truncated opening is what "could not produce a
+       readable patient chart" looks like from the outside. */
+    var budget = o.opening ? OPENING_MAX_TOKENS : TURN_MAX_TOKENS;
+
     var first;
     try {
       first = ai.chat({
         system: system, messages: trimmed,
-        maxTokens: TURN_MAX_TOKENS,
+        maxTokens: budget,
         temperature: numOr(o.temperature, TURN_TEMP),
         // Structured output. The server drops the parameter and retries when a
         // model does not support it, so this can only ever help.
@@ -2746,20 +2764,81 @@
       var parsed = parseTurnJSON(raw);
       if (parsed) return { parsed: parsed, raw: raw, repaired: false };
 
-      /* one repair attempt at low temperature */
+      /* A reply that LOOKS like truncated JSON (has an opening brace, does
+         not parse, and ends mid-structure) gets a completion attempt first:
+         balance the brackets and try to parse the salvage. Costs nothing,
+         and recovers the most common failure mode outright. */
+      var salvaged = completeTruncatedJSON(str(raw));
+      if (salvaged) return { parsed: salvaged, raw: raw, repaired: false, salvaged: true };
+
+      /* One repair attempt at low temperature - ALWAYS at the opening-size
+         ceiling, because if the first reply truncated, resending the same
+         budget just truncates the repair identically (the v30 bug). */
       var repair = trimmed.concat([
         { role: 'assistant', content: str(raw).slice(0, 1200) || '(empty reply)' },
         { role: 'user', content: REPAIR_MESSAGE }
       ]);
       return ai.chat({
         system: system, messages: repair,
-        maxTokens: TURN_MAX_TOKENS, temperature: REPAIR_TEMP, json: true
+        maxTokens: OPENING_MAX_TOKENS, temperature: REPAIR_TEMP, json: true
       }).then(function (raw2) {
-        return { parsed: parseTurnJSON(raw2), raw: raw2, repaired: true };
+        var p2 = parseTurnJSON(raw2);
+        if (!p2) p2 = completeTruncatedJSON(str(raw2));
+        return { parsed: p2, raw: raw2, repaired: true };
       }, function () {
         return { parsed: null, raw: raw, repaired: true };
       });
     });
+  }
+
+  /**
+   * completeTruncatedJSON(raw) - best-effort recovery of a JSON object that
+   * was cut off mid-generation by a token ceiling.
+   *
+   * Strategy: find the outermost '{', walk it tracking string/escape state
+   * and bracket depth, then append the closers the walk still owes (plus a
+   * closing quote if we ended inside a string). Trailing commas are trimmed.
+   * If the result parses AND kept the fields a turn cannot function without
+   * (narration or options or chart), hand it to the caller; otherwise null.
+   * A field that was mid-word when the cut happened stays clipped - that is
+   * cosmetic, and normalizeTurn tolerates it - but no field is invented.
+   */
+  function completeTruncatedJSON(raw) {
+    var s = str(raw);
+    var start = s.indexOf('{');
+    if (start === -1) return null;
+    s = s.slice(start);
+    // Strip a trailing markdown fence the cut may have left half-open
+    s = s.replace(/```\s*$/, '');
+
+    var inStr = false, esc = false, stack = [], i, ch;
+    for (i = 0; i < s.length; i++) {
+      ch = s.charAt(i);
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { if (inStr) esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') stack.push('}');
+      else if (ch === '[') stack.push(']');
+      else if (ch === '}' || ch === ']') {
+        if (stack.length && stack[stack.length - 1] === ch) stack.pop();
+        else return null; // structurally broken beyond truncation - give up
+      }
+    }
+    if (!stack.length && !inStr) return null; // it was complete; failure is elsewhere
+
+    var fixed = s;
+    if (inStr) fixed += '"';
+    // Trim a dangling comma or colon the cut may have left before we close up
+    fixed = fixed.replace(/[,:]\s*$/, '');
+    while (stack.length) fixed += stack.pop();
+
+    var parsed = null;
+    try { parsed = JSON.parse(fixed); } catch (e) { return null; }
+    if (!parsed || typeof parsed !== 'object') return null;
+    // Only accept a salvage that still has enough substance to drive a turn.
+    var hasCore = !!(str(parsed.narration) || arr(parsed.options).length || obj(parsed.chart).name);
+    return hasCore ? parsed : null;
   }
 
   function buildReferenceSbar(run, sc) {
@@ -3039,6 +3118,7 @@
         system: current.system,
         messages: msgs,
         temperature: temperature,
+        opening: isOpening,
         onToken: function (chunk, full) {
           if (!fresh()) return;
           setChars(str(full).length);
@@ -4045,6 +4125,7 @@
   AIScenarioMode.OUTCOME_META = OUTCOME_META;
   AIScenarioMode.ZONE_META = ZONE_META;
   AIScenarioMode.TURN_CAP = TURN_CAP;
+  AIScenarioMode.completeTruncatedJSON = completeTruncatedJSON;
   AIScenarioMode.MIN_TURNS_FOR_OUTCOME = MIN_TURNS_FOR_OUTCOME;
   AIScenarioMode.HINT_COST = HINT_COST;
 
