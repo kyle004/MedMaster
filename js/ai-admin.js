@@ -113,25 +113,67 @@
    * the point). Any role with no positive-scoring candidate is left unset, so
    * it keeps using the device voice rather than being mis-cast.
    */
+  /**
+   * sanitizeVoiceCatalog(raw) -> [voice]
+   *
+   * Keeps only entries that can actually be rendered and assigned: an object
+   * with a usable voice_id. Everything else - null, a string, a number, an
+   * entry with no id - is dropped rather than allowed to reach a render
+   * function. `labels` is normalized to an object so `v.labels.gender` is
+   * always safe, and name/category are coerced to strings.
+   *
+   * A provider that adds a field is fine; a provider that returns one bad row
+   * should cost that row, not the page.
+   */
+  function sanitizeVoiceCatalog(raw) {
+    if (!Array.isArray(raw)) return [];
+    var out = [], seen = {};
+    for (var i = 0; i < raw.length; i++) {
+      var v = raw[i];
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      var id = String(v.voice_id || v.id || '').trim();
+      if (!id || seen[id]) continue;
+      seen[id] = true;
+      var lab = (v.labels && typeof v.labels === 'object' && !Array.isArray(v.labels)) ? v.labels : {};
+      out.push({
+        voice_id: id,
+        name: String(v.name || id),
+        category: String(v.category || ''),
+        description: typeof v.description === 'string' ? v.description : '',
+        preview_url: typeof v.preview_url === 'string' ? v.preview_url : '',
+        labels: {
+          accent: String(lab.accent || ''),
+          age: String(lab.age || ''),
+          gender: String(lab.gender || ''),
+          description: String(lab.description || ''),
+          use_case: String(lab.use_case || lab.useCase || '')
+        }
+      });
+    }
+    return out;
+  }
+
   function autoCast(voices) {
-    var list = arr(voices), out = {}, taken = {};
+    var list = Array.isArray(voices) ? voices : [];
+    var out = {}, taken = {};
     var order = ['child', 'patient', 'instructor', 'family', 'nurse']; // scarcest role first
     for (var i = 0; i < order.length; i++) {
       var role = order[i], spec = VOICE_PROFILE_CAST[role];
       if (!spec) continue;
       var best = null, bestScore = 0;
       for (var j = 0; j < list.length; j++) {
-        var v = obj(list[j]);
-        var id = str(v.voice_id || v.id);
+        var v = (list[j] && typeof list[j] === 'object') ? list[j] : {};
+        var id = String(v.voice_id || v.id || '');
         if (!id || taken[id]) continue;
-        var lab = obj(v.labels);
+        var lab = (v.labels && typeof v.labels === 'object') ? v.labels : {};
         var hay = [v.name, v.category, v.description, lab.accent, lab.age,
                    lab.gender, lab.description, lab.use_case, lab.useCase]
+                  .filter(function (x) { return typeof x === 'string'; })
                   .join(' ').toLowerCase();
         var score = 0, k;
         for (k = 0; k < spec.want.length; k++) if (hay.indexOf(spec.want[k]) !== -1) score += 2;
         for (k = 0; k < spec.avoid.length; k++) if (hay.indexOf(spec.avoid[k]) !== -1) score -= 3;
-        if (str(v.category) === 'premade') score += 1;
+        if (String(v.category || '') === 'premade') score += 1;
         if (score > bestScore) { bestScore = score; best = id; }
       }
       if (best) { out[role] = best; taken[best] = true; }
@@ -3976,7 +4018,13 @@
         if (!aliveRef.current) return;
         setCat({
           status: 'loaded',
-          voices: Array.isArray(d.voices) ? d.voices : [],
+          /* Sanitize ONCE, here, rather than guarding at every render site.
+             A catalog entry that is null, a string, or missing voice_id
+             crashed the tab with "Cannot read properties of null (reading
+             'voice_id')" - one bad row took out the whole page. Normalizing
+             on arrival means every consumer downstream (cards, dropdowns,
+             auto-cast, pre-generate) sees a predictable shape. */
+          voices: sanitizeVoiceCatalog(d.voices),
           error: '', fetchedAt: d.fetchedAt || Date.now(), cached: d.cached === true
         });
       }, function (e) {
@@ -4135,21 +4183,25 @@
        confidently are left on the device voice rather than mis-cast. Purely a
        starting point - every assignment stays individually editable. */
     function autoAssignAll() {
-      var voices = arr(cat.voices);
+      var voices = (cat && Array.isArray(cat.voices)) ? cat.voices : [];
       if (!voices.length) { toast('Load the voice catalog first.', 'info'); return; }
       var picks = autoCast(voices);
-      var roles = keys(picks);
+      var roles = Object.keys(picks);
       if (!roles.length) { toast('No confident matches in this catalog - assign manually.', 'info'); return; }
       var byId = {};
-      for (var i = 0; i < voices.length; i++) byId[str(obj(voices[i]).voice_id)] = voices[i];
+      for (var i = 0; i < voices.length; i++) {
+        var vv = (voices[i] && typeof voices[i] === 'object') ? voices[i] : {};
+        byId[String(vv.voice_id || '')] = vv;
+      }
       var writes = [];
       for (var r = 0; r < roles.length; r++) {
-        var role = roles[r], v = obj(byId[picks[role]]);
+        var role = roles[r];
+        var v = byId[picks[role]] || {};
         var prev = profiles[role];
         writes.push(writeCfg('voiceProfiles/' + role, {
-          voiceId: str(v.voice_id),
+          voiceId: String(v.voice_id || ''),
           modelId: (prev && prev.modelId) ? prev.modelId : DEFAULT_TTS_MODEL,
-          name: str(v.name)
+          name: String(v.name || '')
         }));
       }
       Promise.all(writes).then(function (res) {
@@ -4667,7 +4719,7 @@
           ce('p', { className: 'aia-h' }, 'Cast a voice for each speaker'),
           ce('button', {
             type: 'button', className: 'btn btn-primary btn-sm',
-            disabled: cat.status !== 'loaded' || !arr(cat.voices).length,
+            disabled: cat.status !== 'loaded' || !(cat.voices && cat.voices.length),
             onClick: autoAssignAll,
             title: cat.status === 'loaded'
               ? 'Score every catalog voice against what each role needs and fill them all in'

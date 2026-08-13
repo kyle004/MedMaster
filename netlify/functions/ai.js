@@ -21,6 +21,21 @@
  *     {id, name, contextLength, promptPrice, completionPrice, isFree} and cached
  *     in module memory for ten minutes. Powers the Admin Panel model picker.
  *
+ * WHO IS THE OWNER
+ *   OWNER_EMAIL *and* a verified email claim. `email` on a Firebase ID token is
+ *   only as trustworthy as the sign-in provider that put it there, so the
+ *   `email_verified` flag is load-bearing everywhere the owner is granted
+ *   something — see isOwnerUser() below. tts.js applies the identical rule.
+ *
+ * QUOTA IS RESERVED, NOT TALLIED
+ *   /aiUsage/<uid>/<day> is INCREMENTED before the upstream call and the value
+ *   the increment returns is checked, rather than read first and written after.
+ *   A read-then-write gate is a TOCTOU hole: N parallel tabs all read the same
+ *   stale total and all pass, so the daily limit multiplies by N. A request that
+ *   turns out to have cost nothing (upstream 4xx/5xx, network failure, an image
+ *   model that returned no image) refunds its reservation. Same discipline, same
+ *   wording, as tts.js.
+ *
  * OpenRouter speaks the OpenAI chat-completions shape, NOT the Anthropic shape:
  *   - the system prompt is the first message with role 'system', not a top-level field
  *   - non-streaming text is at data.choices[0].message.content
@@ -365,8 +380,25 @@ function corsHeaders(origin) {
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Expose-Headers': 'X-MM-Tier, X-MM-Model, X-MM-Used, X-MM-Limit, X-MM-Prompt-Tokens, X-MM-Completion-Tokens, X-MM-Cost',
     'Access-Control-Max-Age': '86400',
-    'Vary': 'Origin'
+    'Vary': 'Origin',
+    // Defence in depth, and identical to tts.js. Everything this file returns is
+    // JSON or SSE, some of it containing caller-influenced strings; nosniff stops
+    // a browser deciding for itself that one of them is HTML. Set here rather
+    // than in json() so the 204 preflight and warmup replies carry it too.
+    'X-Content-Type-Options': 'nosniff'
   };
+}
+
+/**
+ * A caller-supplied `action` that is about to be echoed back in an error.
+ * Reduced to a short, boring charset: the diagnostic value is "which word did
+ * you send", and no part of that needs punctuation, markup or 200 characters.
+ * The untouched value is already in the server log if it is ever needed.
+ * Mirrors safeAction() in tts.js.
+ */
+function safeAction(v) {
+  var s = String(v == null ? '' : v).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+  return s || 'unknown';
 }
 
 function json(status, obj, origin, extra) {
@@ -611,9 +643,23 @@ function dbGet(path, idToken) {
   });
 }
 
+/**
+ * Sentinel for "the write did not happen" — a transport error or a non-2xx.
+ *
+ * It has to be distinguishable from a successful write that simply has no
+ * payload to report: RTDB answers 204/empty for ?print=silent, and `null` is
+ * also a perfectly legitimate JSON body. Collapsing both onto `null` made
+ * recordUsage follow a SUCCESSFUL atomic increment with a non-atomic absolute
+ * overwrite, clobbering every other in-flight request's ticks. Identity
+ * comparison (r === DB_FAILED) is the only correct test. Mirrors tts.js.
+ */
+var DB_FAILED = { dbWriteFailed: true };
+
+function dbWriteFailed(r) { return r === DB_FAILED; }
+
 function dbPut(path, value, idToken) {
   var base = dbBase();
-  if (!base) return Promise.resolve(null);
+  if (!base) return Promise.resolve(DB_FAILED);
   var url = base + '/' + path + '.json?' + dbAuthParam(idToken);
   return fetchWithTimeout(url, {
     method: 'PUT',
@@ -622,12 +668,14 @@ function dbPut(path, value, idToken) {
   }, 10000).then(function (res) {
     if (!res.ok) {
       logErr('dbPut ' + path, new Error('status ' + res.status));
-      return null;
+      return DB_FAILED;
     }
+    // The write landed. An unreadable/absent body (204, print=silent) is a
+    // success with nothing to report, NOT a failure.
     return res.json().catch(function () { return null; });
   }).catch(function (e) {
     logErr('dbPut ' + path, e);
-    return null;
+    return DB_FAILED;
   });
 }
 
@@ -636,7 +684,7 @@ function dbPut(path, value, idToken) {
 // lands in a single request instead of six.
 function dbPatch(path, obj, idToken) {
   var base = dbBase();
-  if (!base) return Promise.resolve(null);
+  if (!base) return Promise.resolve(DB_FAILED);
   var url = base + '/' + (path ? path : '') + '.json?' + dbAuthParam(idToken);
   return fetchWithTimeout(url, {
     method: 'PATCH',
@@ -645,16 +693,63 @@ function dbPatch(path, obj, idToken) {
   }, 10000).then(function (res) {
     if (!res.ok) {
       logErr('dbPatch ' + path, new Error('status ' + res.status));
-      return null;
+      return DB_FAILED;
     }
     return res.json().catch(function () { return null; });
   }).catch(function (e) {
     logErr('dbPatch ' + path, e);
-    return null;
+    return DB_FAILED;
   });
 }
 
 /* ------------------------------------------------------------- tier plumbing */
+
+/**
+ * Is this verified token the owner?
+ *
+ * BOTH halves are required, and the second half is the security-relevant one.
+ * `email` is a claim, not an identity: Firebase will happily mint a token
+ * carrying any address for sign-in methods that never prove control of the
+ * mailbox (custom tokens, an admin-created account, some federated providers,
+ * anything that ends up unverified). Comparing the address alone hands a
+ * stranger the owner's powers — the model allow-list, the daily quota, the site
+ * spend cap, the kill switch, arbitrary model selection, and the owner-only
+ * catalog endpoint. `email_verified` is what turns the claim into evidence, so
+ * it is checked at EVERY owner comparison in this file. tts.js applies the
+ * identical rule via its own isOwnerUser().
+ */
+function isOwnerUser(u) {
+  return !!u && u.email === OWNER_EMAIL && u.emailVerified === true;
+}
+
+/* ------------------------------------------------------ in-flight reservations
+ *
+ * Calls this CONTAINER has already reserved against a student's day but has not
+ * finished serving, keyed <safe uid>/<usage key>.
+ *
+ * The durable record is the atomic RTDB increment; this map exists only because
+ * the increment's RESULT is not knowable to the requests that are already past
+ * their own read. Two requests handled by the same warm lambda would otherwise
+ * both read the same stale daily total and both pass the gate. Entries are
+ * added the instant the gate is passed (synchronously, so there is no await
+ * between the check and the reservation) and removed when the request ends.
+ * Mirrors charHolds in tts.js, which meters characters rather than calls.
+ * ------------------------------------------------------------------------- */
+var callHolds = Object.create(null);
+
+function heldCalls(k) {
+  var n = callHolds[k];
+  return (typeof n === 'number' && isFinite(n) && n > 0) ? n : 0;
+}
+
+function holdCalls(k, n) {
+  callHolds[k] = heldCalls(k) + (n > 0 ? n : 0);
+}
+
+function releaseCalls(k, n) {
+  var left = heldCalls(k) - (n > 0 ? n : 0);
+  if (left > 0) callHolds[k] = left; else delete callHolds[k];
+}
 
 /**
  * Sanitize a tier's `featureModels` map on read.
@@ -814,6 +909,13 @@ function normalizeConfig(raw) {
   return cfg;
 }
 
+/**
+ * `email` here means "an email this function has already accepted as proof of
+ * identity". Call sites pass the address ONLY when isOwnerUser() said yes; an
+ * unverified owner-email claim arrives as '' and resolves like anybody else's,
+ * so the owner shortcut cannot become a second, softer owner check that skips
+ * the verified flag.
+ */
 function resolveTier(cfg, email, tierRecord) {
   if (email && email === OWNER_EMAIL) return 'instructor';
   var t = 'free';
@@ -1284,7 +1386,7 @@ function handleListModels(idToken, projectId, apiKey, origin, modality) {
     logErr('token verify (listModels)', e);
     throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again.' };
   }).then(function (u) {
-    if (u.email !== OWNER_EMAIL) {
+    if (!isOwnerUser(u)) {   // verified owner email only — see isOwnerUser()
       throw { httpStatus: 403, code: 'tier-denied', message: 'The OpenRouter model catalog is owner only.' };
     }
     return getOpenRouterModels(apiKey, mod);
@@ -1389,6 +1491,27 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
   var size = normalizeImageSize(body.size);
   var prompt = (typeof body.prompt === 'string') ? body.prompt.trim() : '';
   var hash = '';
+  // The in-flight reservation this request owns, if it got as far as taking one.
+  var holdKey = '', held = false;
+
+  function releaseHold() {
+    if (!held) return;
+    held = false;
+    releaseCalls(holdKey, 1);
+  }
+
+  /**
+   * Hand the reserved image back. Called when the request produced no picture:
+   * an upstream failure, or a model that answered without one. The wire contract
+   * above is explicit that only a delivered image costs one of the day's images,
+   * so the reservation is undone rather than kept. (tts.js deliberately does the
+   * opposite for a billed-but-empty clip — see the note there.)
+   */
+  function refundHold() {
+    if (!held) return Promise.resolve(null);
+    releaseHold();
+    return refundUsage(user && user.uid, imgKey, idToken);
+  }
 
   if (!prompt) {
     return Promise.resolve(fail(400, 'server', 'No image prompt supplied.', origin));
@@ -1400,7 +1523,9 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
     throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again to keep using AI.' };
   }).then(function (u) {
     user = u;
-    isOwner = (u.email === OWNER_EMAIL);
+    // A verified owner email, never the bare claim — see isOwnerUser().
+    isOwner = isOwnerUser(u);
+    holdKey = safeKey(u.uid) + '/' + imgKey;
     return Promise.all([
       dbGet('userTiers/' + encodeURIComponent(u.uid), idToken),
       dbGet('appConfig/aiConfig', idToken),
@@ -1408,7 +1533,8 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
     ]);
   }).then(function (trio) {
     cfg = normalizeConfig(trio[1]);
-    tier = resolveTier(cfg, user.email, trio[0]);
+    // Only a VERIFIED owner email earns the instructor shortcut in resolveTier.
+    tier = resolveTier(cfg, isOwner ? user.email : '', trio[0]);
     rules = cfg.tiers[tier] || cfg.tiers.free || DEFAULT_AI_CONFIG.tiers.free;
     spent6 = typeof trio[2] === 'number' ? trio[2] : 0;
 
@@ -1471,16 +1597,44 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
       };
     }
     if (limit < 0) return 0; // unlimited — skip the read
-    return dbGet('aiUsage/' + encodeURIComponent(user.uid) + '/' + imgKey, idToken);
+    return dbGet(usagePathFor(user.uid, imgKey), idToken);
   }).then(function (count) {
     usedToday = typeof count === 'number' ? count : 0;
-    if (limit >= 0 && usedToday >= limit) {
+
+    /* ---- RESERVE, then check ----------------------------------------------
+     * Identical discipline to tts.js, for the identical reason: reading the
+     * counter here and writing it after the render is a TOCTOU hole, and with
+     * images the unit being multiplied by the number of open tabs is the most
+     * expensive call the app makes. See the reservation note on callHolds.
+     */
+    var inflight = heldCalls(holdKey);
+    if (limit >= 0 && usedToday + inflight >= limit) {
       throw {
         httpStatus: 429, code: 'quota-exceeded',
         message: 'You have used all ' + limit + ' of your AI images for today (the daily image limit is ' +
                  limit + ', separate from your AI messages). It resets at midnight Eastern.',
-        extra: { used: usedToday, limit: limit, kind: 'image', tier: tier, resetsAt: nextResetMs(QUOTA_TZ) }
+        extra: { used: usedToday + inflight, limit: limit, kind: 'image', tier: tier, resetsAt: nextResetMs(QUOTA_TZ) }
       };
+    }
+    holdCalls(holdKey, 1);
+    held = true;
+    return recordUsage(user.uid, imgKey, usedToday, limit, idToken);
+  }).then(function (afterIncrement) {
+    // What the atomic increment says the student's day now totals. A number is
+    // authoritative; DB_FAILED or a payload-less success tells us nothing, and
+    // "nothing" must not become a denial.
+    if (limit >= 0 && typeof afterIncrement === 'number' && isFinite(afterIncrement) && afterIncrement > limit) {
+      return refundHold().then(function () {
+        throw {
+          httpStatus: 429, code: 'quota-exceeded',
+          message: 'You have used all ' + limit + ' of your AI images for today (the daily image limit is ' +
+                   limit + ', separate from your AI messages). It resets at midnight Eastern.',
+          extra: {
+            used: afterIncrement - 1, limit: limit, kind: 'image', tier: tier,
+            reason: 'quota-race', resetsAt: nextResetMs(QUOTA_TZ)
+          }
+        };
+      });
     }
 
     // ---- upstream -----------------------------------------------------------
@@ -1504,10 +1658,14 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
       body: JSON.stringify(payload)
     }, IMAGE_TIMEOUT_MS).then(function (res) {
       if (!res.ok) {
-        return res.text().then(function (t) {
-          throw upstreamError(res.status, t, model);
-        }, function () {
-          throw { httpStatus: 502, code: 'server', message: 'The AI service could not complete that request.' };
+        // Nothing was generated and nothing was billed: give the reserved image
+        // back before reporting the failure.
+        return refundHold().then(function () {
+          return res.text().then(function (t) {
+            throw upstreamError(res.status, t, model);
+          }, function () {
+            throw { httpStatus: 502, code: 'server', message: 'The AI service could not complete that request.' };
+          });
         });
       }
       return res.json().then(function (data) {
@@ -1518,7 +1676,15 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
           // Capability is detected from the RESPONSE, never from an allow-list of
           // slugs — OpenRouter adds image models constantly. The slug is only a
           // hint used to word the message.
-          return recordSpend(user.uid, key, u.cost, model, feature, idToken).then(function () {
+          //
+          // OpenRouter still billed for the tokens, so the SPEND is recorded;
+          // the student got no picture, so the reserved image is handed back.
+          // Spend and quota are separate questions and this is a case where the
+          // two answers differ.
+          return Promise.all([
+            recordSpend(user.uid, key, u.cost, model, feature, idToken),
+            refundHold()
+          ]).then(function () {
             throw {
               httpStatus: 502, code: 'image-unsupported',
               message: looksLikeImageModel(model)
@@ -1530,11 +1696,9 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
           });
         }
 
-        // Only a real image costs the student one of their images for the day.
-        return Promise.all([
-          recordUsage(user.uid, imgKey, usedToday, limit, idToken),
-          recordSpend(user.uid, key, u.cost, model, feature, idToken)
-        ]).then(function () {
+        // The image itself was already reserved before the call; only the money
+        // is still outstanding.
+        return recordSpend(user.uid, key, u.cost, model, feature, idToken).then(function () {
           return json(200, {
             ok: true,
             b64: img.b64,
@@ -1558,14 +1722,22 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
     }, function (e) {
       logErr('openrouter image fetch', e);
       var aborted = e && (e.name === 'AbortError' || String(e).indexOf('abort') !== -1);
-      throw {
+      var thrown = {
         httpStatus: 504,
         code: 'network',
         message: aborted
           ? 'The image took longer than ' + Math.round(IMAGE_TIMEOUT_MS / 1000) + ' seconds to generate. Try a simpler prompt.'
           : 'Could not reach the AI service. Try again in a moment.'
       };
+      // Never reached OpenRouter, so nothing was billed and nothing was made.
+      return refundHold().then(function () { throw thrown; });
     });
+  }).then(function (out) {
+    releaseHold();
+    return out;
+  }, function (e) {
+    releaseHold();
+    throw e;
   }).catch(function (e) {
     if (e && e.code && e.httpStatus) return fail(e.httpStatus, e.code, e.message, origin, e.extra);
     logErr('generateImage unhandled', e);
@@ -1634,7 +1806,10 @@ exports.handler = function (event) {
     return handleGenerateImage(body, idToken, projectId, apiKey, origin);
   }
   if (action !== 'chat') {
-    return Promise.resolve(fail(400, 'server', 'Unknown action "' + String(action).slice(0, 40) + '".', origin));
+    // The echo is sanitized, not raw: see safeAction(). The full value is in the
+    // server log if anyone ever needs it.
+    logWarn('action', 'unknown action "' + String(action).slice(0, 120) + '"');
+    return Promise.resolve(fail(400, 'server', 'Unknown action "' + safeAction(action) + '".', origin));
   }
 
   var messages = sanitizeMessages(body.messages);
@@ -1648,6 +1823,25 @@ exports.handler = function (event) {
   // Which part of the app spent this money. Purely for attribution in the admin
   // panel; it can never widen what the caller is allowed to do.
   var feature = normalizeFeature(body.feature);
+  // The in-flight reservation this request owns, if it got as far as taking one.
+  var holdKey = '', held = false;
+
+  function releaseHold() {
+    if (!held) return;
+    held = false;
+    releaseCalls(holdKey, 1);
+  }
+
+  /**
+   * Hand the reserved call back. Only for requests that produced nothing and
+   * cost nothing — an upstream 4xx/5xx or a network failure. A turn that reached
+   * the model keeps its tick.
+   */
+  function refundHold() {
+    if (!held) return Promise.resolve(null);
+    releaseHold();
+    return refundUsage(user && user.uid, key, idToken);
+  }
 
   // ---- 2. verify the ID token ----------------------------------------------
   return verifyIdToken(idToken, projectId).catch(function (e) {
@@ -1655,7 +1849,9 @@ exports.handler = function (event) {
     throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again to keep using AI.' };
   }).then(function (u) {
     user = u;
-    isOwner = (u.email === OWNER_EMAIL);
+    // A verified owner email, never the bare claim — see isOwnerUser().
+    isOwner = isOwnerUser(u);
+    holdKey = safeKey(u.uid) + '/' + key;
 
     // ---- 3. tier + config + today's spend -----------------------------------
     return Promise.all([
@@ -1665,7 +1861,8 @@ exports.handler = function (event) {
     ]);
   }).then(function (pair) {
     cfg = normalizeConfig(pair[1]);
-    tier = resolveTier(cfg, user.email, pair[0]);
+    // Only a VERIFIED owner email earns the instructor shortcut in resolveTier.
+    tier = resolveTier(cfg, isOwner ? user.email : '', pair[0]);
     rules = cfg.tiers[tier] || cfg.tiers.free || DEFAULT_AI_CONFIG.tiers.free;
     spent6 = typeof pair[2] === 'number' ? pair[2] : 0;
 
@@ -1736,15 +1933,58 @@ exports.handler = function (event) {
       };
     }
     if (limit < 0) return 0; // unlimited — skip the read
-    return dbGet('aiUsage/' + encodeURIComponent(user.uid) + '/' + key, idToken);
+    return dbGet(usagePathFor(user.uid, key), idToken);
   }).then(function (count) {
     usedToday = typeof count === 'number' ? count : 0;
-    if (limit >= 0 && usedToday >= limit) {
+
+    /* ---- 4d. RESERVE, then check -------------------------------------------
+     * The old shape read the counter here and wrote it after the model replied,
+     * which is a textbook TOCTOU: every concurrent request read the same stale
+     * total, every one of them passed, and the daily limit multiplied by the
+     * number of open tabs.
+     *
+     * The budget is now taken BEFORE the money is spent, in two layers:
+     *
+     *   1. `callHolds` covers requests this container is already handling. The
+     *      check and the hold happen in the same synchronous block, so a second
+     *      request cannot slip between them.
+     *   2. The RTDB increment below is the cross-container answer. It is atomic
+     *      and it RETURNS the post-increment total, so a request that only finds
+     *      out it lost the race after incrementing can hand the tick back and
+     *      deny before calling OpenRouter.
+     *
+     * Residual window: two containers may both issue an increment, but the loser
+     * sees its own post-increment value exceed the limit and refunds, so the
+     * overshoot is bounded by one call per racing container rather than
+     * unbounded. Fail-open wherever the counter is unreadable — a broken counter
+     * must not lock students out. tts.js does the same thing with characters.
+     */
+    var inflight = heldCalls(holdKey);
+    if (limit >= 0 && usedToday + inflight >= limit) {
       throw {
         httpStatus: 429, code: 'quota-exceeded',
         message: 'You have used all ' + limit + ' of your AI messages for today.',
-        extra: { used: usedToday, limit: limit, resetsAt: nextResetMs(QUOTA_TZ) }
+        extra: { used: usedToday + inflight, limit: limit, resetsAt: nextResetMs(QUOTA_TZ) }
       };
+    }
+    holdCalls(holdKey, 1);
+    held = true;
+    return recordUsage(user.uid, key, usedToday, limit, idToken);
+  }).then(function (afterIncrement) {
+    // What the atomic increment says the student's day now totals. A number is
+    // authoritative; DB_FAILED or a payload-less success tells us nothing, and
+    // "nothing" must not become a denial.
+    if (limit >= 0 && typeof afterIncrement === 'number' && isFinite(afterIncrement) && afterIncrement > limit) {
+      return refundHold().then(function () {
+        throw {
+          httpStatus: 429, code: 'quota-exceeded',
+          message: 'You have used all ' + limit + ' of your AI messages for today.',
+          extra: {
+            used: afterIncrement - 1, limit: limit,
+            reason: 'quota-race', resetsAt: nextResetMs(QUOTA_TZ)
+          }
+        };
+      });
     }
 
     // ---- 5. build + send the upstream request -------------------------------
@@ -1815,17 +2055,12 @@ exports.handler = function (event) {
     }
 
     return sendUpstream(wantJson).then(function (res) {
-      // Count the call now that upstream accepted it.
-      var bump = recordUsage(user.uid, key, usedToday, limit, idToken);
-
+      // The call was counted before it was made — see the reservation note above.
       if (wantStream) {
         return readSSE(res).then(function (raw) {
           var sse = stripSSEComments(raw);
           var u = usageFromSSE(sse);
-          return Promise.all([
-            bump,
-            recordSpend(user.uid, key, u.cost, model, feature, idToken)
-          ]).then(function () {
+          return recordSpend(user.uid, key, u.cost, model, feature, idToken).then(function () {
             var headers = corsHeaders(origin);
             headers['Content-Type'] = 'text/event-stream; charset=utf-8';
             headers['Cache-Control'] = 'no-cache, no-store';
@@ -1846,10 +2081,7 @@ exports.handler = function (event) {
         // per-model pricing varies too widely to guess, so `cost` is whatever
         // OpenRouter actually billed (null if it did not report one).
         var u = normalizeUsage(data && data.usage);
-        return Promise.all([
-          bump,
-          recordSpend(user.uid, key, u.cost, model, feature, idToken)
-        ]).then(function () {
+        return recordSpend(user.uid, key, u.cost, model, feature, idToken).then(function () {
           return json(200, {
             text: textFromOpenRouter(data),
             model: data && data.model ? data.model : model,
@@ -1868,7 +2100,19 @@ exports.handler = function (event) {
           }, origin);
         });
       });
+    }, function (e) {
+      // sendUpstream itself failed: a 4xx/5xx or a network error, so OpenRouter
+      // never ran the model and never billed for it. Give the student their
+      // reserved call back before reporting the failure — a misconfigured model
+      // slug must not quietly eat a day's allowance.
+      return refundHold().then(function () { throw e; });
     });
+  }).then(function (out) {
+    releaseHold();
+    return out;
+  }, function (e) {
+    releaseHold();
+    throw e;
   }).catch(function (e) {
     if (e && e.code && e.httpStatus) {
       return fail(e.httpStatus, e.code, e.message, origin, e.extra);
@@ -1880,23 +2124,62 @@ exports.handler = function (event) {
 
 /* --------------------------------------------------------- usage + spend write */
 
+/**
+ * /aiUsage/<uid>/<day>  (and <day>_img for images), built in ONE place so the
+ * read and the write can never disagree about the key.
+ *
+ * safeKey, not encodeURIComponent: this path segment is an RTDB KEY. RTDB
+ * rejects a key containing . # $ / [ ] with a 400, and encodeURIComponent
+ * leaves '.' (and ! ~ * ' ( )) untouched, so a dotted uid would make the quota
+ * read AND the quota write fail silently — dbGet swallows the error to null and
+ * recordUsage is best-effort — leaving the daily limit unenforceable for that
+ * account. Firebase's own uids are alphanumeric, but `sub` is accepted as any
+ * 1..128-character string, which includes custom-token uids. The spend ledger
+ * has always used safeKey; this is the same key by the same rule.
+ * encodeURIComponent still wraps it so characters that are legal in an RTDB key
+ * but not in a URL path (% ? &) cannot deform the request. Mirrors tts.js.
+ */
+function usagePathFor(uid, key) {
+  return 'aiUsage/' + encodeURIComponent(safeKey(uid)) + '/' + key;
+}
+
 // Best-effort: never fail the user's request because the counter write failed.
 // Instructor / owner accounts ARE counted now — their calls are the most likely
 // to be expensive, and a Usage tab that reads 0 for the biggest spender is worse
 // than useless. `limit < 0` only means "no quota", never "do not measure".
+//
+// Resolves with the post-increment total RTDB reports, so the caller can tell
+// whether the reservation overshot the cap. Called BEFORE the upstream request.
 function recordUsage(uid, key, currentCount, limit, idToken) {
-  var path = 'aiUsage/' + encodeURIComponent(uid) + '/' + key;
+  var path = usagePathFor(uid, key);
   // Prefer the RTDB atomic server-side increment so parallel calls cannot race.
   return dbPut(path, { '.sv': { increment: 1 } }, idToken).then(function (r) {
-    // The non-atomic fallback needs a trustworthy current count. Unlimited tiers
-    // skip the read, so there is nothing safe to fall back to — leave it alone
-    // rather than clobber the day with 1.
-    if (r === null && limit >= 0) return dbPut(path, currentCount + 1, idToken);
+    // ONLY a real transport failure earns the non-atomic absolute rewrite, and
+    // only when the pre-read count is trustworthy (unlimited tiers skip the
+    // read, so there is nothing safe to fall back to — leave it alone rather
+    // than clobber the day with 1). A successful write that reported null —
+    // RTDB does that for several shapes, and for 204/print=silent — used to
+    // land here too, and the absolute value it wrote clobbered every concurrent
+    // request's ticks.
+    if (dbWriteFailed(r) && limit >= 0) return dbPut(path, currentCount + 1, idToken);
     return r;
   }).catch(function (e) {
     logErr('recordUsage', e);
     return null;
   });
+}
+
+/**
+ * Give back a call reserved for a request that never cost anything. Atomic and
+ * best-effort, exactly like the reservation it undoes.
+ */
+function refundUsage(uid, key, idToken) {
+  if (!uid) return Promise.resolve(null);
+  return dbPut(usagePathFor(uid, key), { '.sv': { increment: -1 } }, idToken)
+    .catch(function (e) {
+      logErr('refundUsage', e);
+      return null;
+    });
 }
 
 // RTDB keys cannot contain . # $ / [ ]
@@ -1977,5 +2260,10 @@ exports._internals = {
   rejectsResponseFormat: rejectsResponseFormat,
   promptHash: promptHash,
   imageFromOpenRouter: imageFromOpenRouter,
-  looksLikeImageModel: looksLikeImageModel
+  looksLikeImageModel: looksLikeImageModel,
+  safeKey: safeKey,
+  safeAction: safeAction,
+  isOwnerUser: isOwnerUser,
+  usagePathFor: usagePathFor,
+  resolveTier: resolveTier
 };

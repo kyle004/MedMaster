@@ -27,6 +27,25 @@
  *   { action:'quota', idToken }        OWNER ONLY
  *     Proxies GET /v1/user/subscription -> characters used / limit / reset date.
  *
+ * WHO IS THE OWNER
+ *   OWNER_EMAIL *and* a verified email claim. `email` on a Firebase ID token is
+ *   only as trustworthy as the sign-in provider that put it there, so the
+ *   `email_verified` flag is load-bearing everywhere the owner is granted
+ *   something — see isOwnerUser() below. ai.js applies the identical rule.
+ *
+ * ERROR CODES  (the documented set five client modules branch on; unchanged)
+ *   no-auth | tier-denied | quota-exceeded | ai-disabled | network | server
+ *   Machine-readable `reason` values that ride along with them:
+ *     elevenlabs-quota | bad-key | bad-voice | bad-voice-or-model |
+ *     upstream-rate-limit | provider-down | bad-request | too-long |
+ *     no-voice-configured | browser-voice-plan | spend-cap | voice-disabled |
+ *     not-configured | empty-audio |
+ *     not-audio     (502/server: upstream 200 whose content-type is not audio/*;
+ *                    NEVER relabelled, because the client caches what it is given
+ *                    into shared Firebase Storage)
+ *     quota-race    (429/quota-exceeded: the atomic reservation overshot the
+ *                    daily character cap — see "RESERVE THEN SPEND" below)
+ *
  * WHO MAY CALL speak
  *   Only `pro` and `instructor` (the owner is always allowed). Everyone else
  *   gets `tier-denied` with a message that says, in as many words, that browser
@@ -52,6 +71,18 @@
  *     /voiceSpend/<day>/byUser/<uid>/{usd6,chars,n}
  *   Written with ONE multi-path PATCH. Every write here is best-effort: a failed
  *   ledger write must never cost a student their audio.
+ *
+ *   RESERVE THEN SPEND  —  the daily character cap is enforced by INCREMENTING
+ *   /voiceUsage/<uid>/<day> BEFORE the ElevenLabs call and reading the value the
+ *   increment returned, not by reading first and writing after. A read-then-write
+ *   gate is a TOCTOU hole: N parallel tabs all read the same stale total and all
+ *   pass, so the cap multiplies by N. See reserveCharacters() in handleSpeak.
+ *
+ *   SPEND is recorded separately from QUOTA and asks a different question:
+ *   "did ElevenLabs bill us" (spend) versus "how much of today's allowance has
+ *   this student used" (quota). A 200 with an unusable body still cost money and
+ *   is still recorded to /voiceSpend; a 4xx did not, and the reservation is
+ *   handed back.
  *
  * ELEVENLABS FACTS THIS FILE DEPENDS ON (verified against their docs):
  *   POST /v1/text-to-speech/{voice_id}   header xi-api-key, body
@@ -155,8 +186,24 @@ function corsHeaders(origin) {
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Expose-Headers': 'X-MM-Tier, X-MM-Voice, X-MM-Model, X-MM-Chars, X-MM-Used, X-MM-Limit',
     'Access-Control-Max-Age': '86400',
-    'Vary': 'Origin'
+    'Vary': 'Origin',
+    // Defence in depth. Every response this file produces is JSON (or empty),
+    // and some of them contain caller-influenced strings; nosniff stops a
+    // browser deciding for itself that one of them is HTML. Set here rather
+    // than in json() so the 204 preflight and warmup replies carry it too.
+    'X-Content-Type-Options': 'nosniff'
   };
+}
+
+/**
+ * A caller-supplied `action` that is about to be echoed back in an error.
+ * Reduced to a short, boring charset: the diagnostic value is "which word did
+ * you send", and no part of that needs punctuation, markup or 200 characters.
+ * The untouched value is already in the server log if it is ever needed.
+ */
+function safeAction(v) {
+  var s = String(v == null ? '' : v).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+  return s || 'unknown';
 }
 
 function json(status, obj, origin, extra) {
@@ -381,9 +428,23 @@ function dbGet(path, idToken) {
   });
 }
 
+/**
+ * Sentinel for "the write did not happen" — a transport error or a non-2xx.
+ *
+ * It has to be distinguishable from a successful write that simply has no
+ * payload to report: RTDB answers 204/empty for ?print=silent, and `null` is
+ * also a perfectly legitimate JSON body. Collapsing both onto `null` is what
+ * made recordUsage follow a SUCCESSFUL atomic increment with a non-atomic
+ * absolute overwrite, clobbering every other in-flight request's characters.
+ * Identity comparison (r === DB_FAILED) is the only correct test.
+ */
+var DB_FAILED = { dbWriteFailed: true };
+
+function dbWriteFailed(r) { return r === DB_FAILED; }
+
 function dbPut(path, value, idToken) {
   var base = dbBase();
-  if (!base) return Promise.resolve(null);
+  if (!base) return Promise.resolve(DB_FAILED);
   var url = base + '/' + path + '.json?' + dbAuthParam(idToken);
   return fetchWithTimeout(url, {
     method: 'PUT',
@@ -392,12 +453,14 @@ function dbPut(path, value, idToken) {
   }, 10000).then(function (res) {
     if (!res.ok) {
       logErr('dbPut ' + path, new Error('status ' + res.status));
-      return null;
+      return DB_FAILED;
     }
+    // The write landed. An unreadable/absent body (204, print=silent) is a
+    // success with nothing to report, NOT a failure.
     return res.json().catch(function () { return null; });
   }).catch(function (e) {
     logErr('dbPut ' + path, e);
-    return null;
+    return DB_FAILED;
   });
 }
 
@@ -405,7 +468,7 @@ function dbPut(path, value, idToken) {
 // ledger for one call is one request.
 function dbPatch(path, obj, idToken) {
   var base = dbBase();
-  if (!base) return Promise.resolve(null);
+  if (!base) return Promise.resolve(DB_FAILED);
   var url = base + '/' + (path ? path : '') + '.json?' + dbAuthParam(idToken);
   return fetchWithTimeout(url, {
     method: 'PATCH',
@@ -414,12 +477,12 @@ function dbPatch(path, obj, idToken) {
   }, 10000).then(function (res) {
     if (!res.ok) {
       logErr('dbPatch ' + path, new Error('status ' + res.status));
-      return null;
+      return DB_FAILED;
     }
     return res.json().catch(function () { return null; });
   }).catch(function (e) {
     logErr('dbPatch ' + path, e);
-    return null;
+    return DB_FAILED;
   });
 }
 
@@ -428,6 +491,24 @@ function dbPatch(path, obj, idToken) {
 // RTDB keys cannot contain . # $ / [ ]
 function safeKey(s) {
   return String(s == null ? '' : s).replace(/[.#$/[\]]/g, '_').slice(0, 120) || 'unknown';
+}
+
+/**
+ * Is this verified token the owner?
+ *
+ * BOTH halves are required, and the second half is the security-relevant one.
+ * `email` is a claim, not an identity: Firebase will happily mint a token
+ * carrying any address for sign-in methods that never prove control of the
+ * mailbox (custom tokens, an admin-created account, some federated providers,
+ * anything that ends up unverified). Comparing the address alone hands a
+ * stranger the owner's powers here — the tier gate, the character cap, the site
+ * spend cap, both kill switches, arbitrary voiceId/modelId, and the two
+ * owner-only admin endpoints. `email_verified` is what turns the claim into
+ * evidence, so it is checked at EVERY owner comparison in this file, and ai.js
+ * does exactly the same.
+ */
+function isOwnerUser(u) {
+  return !!u && u.email === OWNER_EMAIL && u.emailVerified === true;
 }
 
 function normalizeProfile(v) {
@@ -564,6 +645,13 @@ function normalizeConfig(raw) {
   return cfg;
 }
 
+/**
+ * `email` here means "an email this function has already accepted as proof of
+ * identity". Call sites pass the address ONLY when isOwnerUser() said yes (see
+ * handleSpeak); an unverified owner-email claim arrives as '' and resolves like
+ * anybody else's, which keeps the owner shortcut from becoming a second, softer
+ * owner check that skips the verified flag.
+ */
 function resolveTier(cfg, email, tierRecord) {
   if (email && email === OWNER_EMAIL) return 'instructor';
   var t = 'free';
@@ -620,6 +708,12 @@ function elevenHeaders(apiKey, extra) {
  */
 function isQuotaExhausted(status, bodyText) {
   if (status !== 401 && status !== 402 && status !== 403) return false;
+  // 402 needs no corroboration from the body. Payment Required has exactly one
+  // meaning — the plan will not pay for this call — and ElevenLabs sends it with
+  // whatever wording it likes. Making the billing message conditional on five
+  // English substrings turned the clearest status code in the protocol into the
+  // vaguest message in this file.
+  if (status === 402) return true;
   var s = String(bodyText == null ? '' : bodyText).toLowerCase();
   return s.indexOf('quota_exceeded') !== -1 ||
          s.indexOf('quota exceeded') !== -1 ||
@@ -763,7 +857,7 @@ function handleListVoices(idToken, projectId, apiKey, origin) {
     logErr('token verify (listVoices)', e);
     throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again.' };
   }).then(function (u) {
-    if (u.email !== OWNER_EMAIL) {
+    if (!isOwnerUser(u)) {   // verified owner email only — see isOwnerUser()
       throw { httpStatus: 403, code: 'tier-denied', message: 'The ElevenLabs voice catalog is owner only.' };
     }
     return getElevenVoices(apiKey);
@@ -801,7 +895,7 @@ function handleQuota(idToken, projectId, apiKey, origin) {
     logErr('token verify (quota)', e);
     throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again.' };
   }).then(function (u) {
-    if (u.email !== OWNER_EMAIL) {
+    if (!isOwnerUser(u)) {   // verified owner email only — see isOwnerUser()
       throw { httpStatus: 403, code: 'tier-denied', message: 'The ElevenLabs subscription details are owner only.' };
     }
     return fetchWithTimeout(ELEVEN_SUB_URL, {
@@ -845,6 +939,34 @@ function handleQuota(idToken, projectId, apiKey, origin) {
   });
 }
 
+/* ------------------------------------------------------- in-flight reservations
+ *
+ * Characters this CONTAINER has already reserved against a student's day but
+ * has not finished spending, keyed <safe uid>/<YYYY-MM-DD>.
+ *
+ * The durable record is the atomic RTDB increment; this map exists only because
+ * the increment's RESULT is not knowable to the requests that are already past
+ * their own read. Two requests handled by the same warm lambda would otherwise
+ * both read the same stale daily total and both pass the gate. Entries are
+ * added the instant the gate is passed (synchronously, so there is no await
+ * between the check and the reservation) and removed when the request ends.
+ * ------------------------------------------------------------------------- */
+var charHolds = Object.create(null);
+
+function heldChars(k) {
+  var n = charHolds[k];
+  return (typeof n === 'number' && isFinite(n) && n > 0) ? n : 0;
+}
+
+function holdChars(k, n) {
+  charHolds[k] = heldChars(k) + (n > 0 ? n : 0);
+}
+
+function releaseChars(k, n) {
+  var left = heldChars(k) - (n > 0 ? n : 0);
+  if (left > 0) charHolds[k] = left; else delete charHolds[k];
+}
+
 /* ------------------------------------------------------------ action: speak */
 
 /**
@@ -868,6 +990,26 @@ function handleSpeak(body, idToken, projectId, apiKey, origin) {
   var voiceId = '', modelId = DEFAULT_MODEL_ID, settings = null;
   var text = (typeof body.text === 'string') ? body.text.replace(/\s+/g, ' ').trim() : '';
   var chars = 0;
+  // The in-flight reservation this request owns, if it got as far as taking one.
+  var holdKey = '', held = false;
+
+  function releaseHold() {
+    if (!held) return;
+    held = false;
+    releaseChars(holdKey, chars);
+  }
+
+  /**
+   * Hand the reserved characters back. Called only when ElevenLabs did NOT bill
+   * us — a 4xx/5xx, a network failure, or a 200 that was not audio at all. A
+   * request that reached synthesis keeps its reservation even when the bytes
+   * turn out to be unusable, because the characters really were consumed.
+   */
+  function refundHold() {
+    if (!held) return Promise.resolve(null);
+    releaseHold();
+    return refundUsage(user && user.uid, key, chars, idToken);
+  }
 
   if (!text) {
     return Promise.resolve(fail(400, 'server', 'No text supplied to speak.', origin));
@@ -887,7 +1029,9 @@ function handleSpeak(body, idToken, projectId, apiKey, origin) {
     throw { httpStatus: 401, code: 'no-auth', message: 'Your session expired. Sign in again.' };
   }).then(function (u) {
     user = u;
-    isOwner = (u.email === OWNER_EMAIL);
+    // A verified owner email, never the bare claim — see isOwnerUser().
+    isOwner = isOwnerUser(u);
+    holdKey = safeKey(u.uid) + '/' + key;
     return Promise.all([
       dbGet('userTiers/' + encodeURIComponent(u.uid), idToken),
       dbGet('appConfig/aiConfig', idToken),
@@ -895,7 +1039,9 @@ function handleSpeak(body, idToken, projectId, apiKey, origin) {
     ]);
   }).then(function (trio) {
     cfg = normalizeConfig(trio[1]);
-    tier = resolveTier(cfg, user.email, trio[0]);
+    // Only a VERIFIED owner email earns the instructor shortcut inside
+    // resolveTier; anything else resolves from the tier record like normal.
+    tier = resolveTier(cfg, isOwner ? user.email : '', trio[0]);
     spent6 = typeof trio[2] === 'number' ? trio[2] : 0;
 
     /* ---- global kill switch (owner bypasses) ------------------------------ */
@@ -985,20 +1131,65 @@ function handleSpeak(body, idToken, projectId, apiKey, origin) {
       };
     }
     if (limit < 0) return 0;   // unlimited — skip the read
-    return dbGet('voiceUsage/' + encodeURIComponent(user.uid) + '/' + key, idToken);
+    return dbGet(usagePathFor(user.uid, key), idToken);
   }).then(function (count) {
     usedToday = typeof count === 'number' ? count : 0;
-    if (limit >= 0 && usedToday + chars > limit) {
+
+    /* ---- RESERVE, then check ---------------------------------------------
+     * The old shape read the counter here and wrote it after the render, which
+     * is a textbook TOCTOU: every concurrent request read the same stale total,
+     * every one of them passed, and the daily cap multiplied by the number of
+     * open tabs.
+     *
+     * The budget is now taken BEFORE the money is spent, in two layers:
+     *
+     *   1. `charHolds` covers requests this container is already handling. The
+     *      check and the hold happen in the same synchronous block, so a second
+     *      request cannot slip between them.
+     *   2. The RTDB increment below is the cross-container answer. It is atomic
+     *      and it RETURNS the post-increment total, so a request that only finds
+     *      out it lost the race after incrementing can hand the characters back
+     *      and deny before calling ElevenLabs.
+     *
+     * Residual window: between two containers' increments both may still be
+     * issued, but the loser sees its own post-increment value exceed the limit
+     * and refunds, so the overshoot is bounded by one request per racing
+     * container rather than unbounded. Fail-open is deliberate everywhere the
+     * counter is unreadable — a broken counter must not silence the tutor.
+     */
+    var inflight = heldChars(holdKey);
+    if (limit >= 0 && usedToday + inflight + chars > limit) {
       throw {
         httpStatus: 429, code: 'quota-exceeded',
-        message: 'You have used ' + usedToday + ' of your ' + limit + ' studio-voice characters for today, and ' +
+        message: 'You have used ' + (usedToday + inflight) + ' of your ' + limit + ' studio-voice characters for today, and ' +
                  'this line needs ' + chars + ' more. It resets at midnight Eastern — until then everything is ' +
                  'still read aloud in your device\'s own voice.',
         extra: {
-          used: usedToday, limit: limit, needed: chars, kind: 'voice',
+          used: usedToday + inflight, limit: limit, needed: chars, kind: 'voice',
           tier: tier, resetsAt: nextResetMs(QUOTA_TZ)
         }
       };
+    }
+    holdChars(holdKey, chars);
+    held = true;
+    return recordUsage(user.uid, key, chars, usedToday, limit, idToken);
+  }).then(function (afterIncrement) {
+    // What the atomic increment says the student's day now totals. A number is
+    // authoritative; DB_FAILED or a payload-less success tells us nothing, and
+    // "nothing" must not become a denial.
+    if (limit >= 0 && typeof afterIncrement === 'number' && isFinite(afterIncrement) && afterIncrement > limit) {
+      return refundHold().then(function () {
+        throw {
+          httpStatus: 429, code: 'quota-exceeded',
+          message: 'You have used all ' + limit + ' of your studio-voice characters for today. ' +
+                   'It resets at midnight Eastern — until then everything is still read aloud in your ' +
+                   'device\'s own voice.',
+          extra: {
+            used: afterIncrement - chars, limit: limit, needed: chars, kind: 'voice',
+            tier: tier, reason: 'quota-race', resetsAt: nextResetMs(QUOTA_TZ)
+          }
+        };
+      });
     }
 
     /* ---- upstream --------------------------------------------------------- */
@@ -1042,26 +1233,58 @@ function handleSpeak(body, idToken, projectId, apiKey, origin) {
     }
 
     return sendUpstream(true).then(function (res) {
-      return res.arrayBuffer().then(function (buf) {
-        var bytes = Buffer.from(buf);
-        // ElevenLabs answers 200 with an empty body if a voice is mid-deletion.
-        // An empty clip would be cached forever as silence, so treat it as a
-        // failure and let the client fall back to the browser voice.
-        if (!bytes || bytes.length < 256) {
+      /* ---- is this actually audio? -----------------------------------------
+       * A 200 whose content-type is not audio/* is a Cloudflare interstitial, a
+       * maintenance page, or a JSON error some proxy decided to serve with a
+       * 200 — it is never a clip. The old code REWROTE the label to audio/mpeg,
+       * which is the worst available answer: the client base64-decodes it,
+       * plays silence, and then (see the header) uploads it to Firebase Storage
+       * where every other student on earth reads the same poisoned entry
+       * forever. Reject instead, and never relabel. Nothing was synthesized, so
+       * the reservation goes back and no spend is recorded.
+       */
+      var ctype = String(res.headers.get('content-type') || '').toLowerCase().trim();
+      if (ctype && ctype.slice(0, 6) !== 'audio/') {
+        logWarn('upstream content-type', 'ElevenLabs returned 200 with "' + ctype.slice(0, 60) +
+          '" for voice ' + voiceId + ' - refusing to serve it as audio');
+        return refundHold().then(function () {
           throw {
             httpStatus: 502, code: 'server',
-            message: 'ElevenLabs returned an empty clip for that line.',
-            extra: { reason: 'empty-audio', voiceId: voiceId }
+            message: 'The voice service answered with something that is not audio, so nothing was played. ' +
+                     'Try again in a moment.',
+            extra: { reason: 'not-audio', voiceId: voiceId }
           };
-        }
-        var mime = res.headers.get('content-type') || 'audio/mpeg';
-        if (mime.indexOf('audio/') !== 0) mime = 'audio/mpeg';
+        });
+      }
+
+      return res.arrayBuffer().then(function (buf) {
+        var bytes = Buffer.from(buf);
         var cost = estimateCostUsd(chars, cfg.usdPer1kChars);
 
-        return Promise.all([
-          recordUsage(user.uid, key, chars, usedToday, limit, idToken),
-          recordSpend(user.uid, key, chars, cost, profile, idToken)
-        ]).then(function () {
+        /* ---- SPEND is recorded before the clip is judged ---------------------
+         * ElevenLabs deducts characters at synthesis, not at download: by the
+         * time these bytes arrive the site has been billed whether or not they
+         * are usable. Recording spend only on success left the ledger flat for
+         * calls that really cost money, so the dollar ceiling under-counted and
+         * a client retrying an empty clip looped for free.
+         *
+         * QUOTA is a different question and is already answered: the characters
+         * were reserved up front, before the call, and a request that reached
+         * synthesis does not get them back. Spend asks "what did this cost the
+         * site"; quota asks "how much of today's allowance did this student
+         * commit". Both are yes here; only the audio is missing.
+         */
+        return recordSpend(user.uid, key, chars, cost, profile, idToken).then(function () {
+          // ElevenLabs answers 200 with an empty body if a voice is mid-deletion.
+          // An empty clip would be cached forever as silence, so treat it as a
+          // failure and let the client fall back to the browser voice.
+          if (!bytes || bytes.length < 256) {
+            throw {
+              httpStatus: 502, code: 'server',
+              message: 'ElevenLabs returned an empty clip for that line.',
+              extra: { reason: 'empty-audio', voiceId: voiceId }
+            };
+          }
           return json(200, {
             ok: true,
             b64: bytes.toString('base64'),
@@ -1088,7 +1311,19 @@ function handleSpeak(body, idToken, projectId, apiKey, origin) {
           });
         });
       });
+    }, function (e) {
+      // sendUpstream itself failed: a 4xx/5xx or a network error, so ElevenLabs
+      // never synthesized anything and never billed for it. Give the student
+      // their reserved characters back before reporting the failure — a
+      // misconfigured voice must not quietly eat a day's allowance.
+      return refundHold().then(function () { throw e; });
     });
+  }).then(function (out) {
+    releaseHold();
+    return out;
+  }, function (e) {
+    releaseHold();
+    throw e;
   }).catch(function (e) {
     if (e && e.code && e.httpStatus) return fail(e.httpStatus, e.code, e.message, origin, e.extra);
     logErr('speak unhandled', e);
@@ -1154,29 +1389,71 @@ exports.handler = function (event) {
   if (action === 'quota')      return handleQuota(idToken, projectId, apiKey, origin);
   if (action === 'speak')      return handleSpeak(body, idToken, projectId, apiKey, origin);
 
-  return Promise.resolve(fail(400, 'server', 'Unknown action "' + String(action).slice(0, 40) + '".', origin));
+  // The echo is sanitized, not raw: see safeAction(). The full value is in the
+  // server log if anyone ever needs it.
+  logWarn('action', 'unknown action "' + String(action).slice(0, 120) + '"');
+  return Promise.resolve(fail(400, 'server', 'Unknown action "' + safeAction(action) + '".', origin));
 };
 
 /* --------------------------------------------------------- usage + spend write */
+
+/**
+ * /voiceUsage/<uid>/<day>, built in ONE place so the read and the write can
+ * never disagree about the key.
+ *
+ * safeKey, not encodeURIComponent: this path segment is an RTDB KEY. RTDB
+ * rejects a key containing . # $ / [ ] with a 400, and encodeURIComponent
+ * leaves '.' (and ! ~ * ' ( )) untouched, so a dotted uid used to make the
+ * quota read AND the quota write fail silently — dbGet swallows the error to
+ * null and recordUsage is best-effort — leaving the daily cap unenforceable for
+ * that account. Firebase's own uids are alphanumeric, but `sub` is accepted as
+ * any 1..128-character string, which includes custom-token uids. The ledger at
+ * recordSpend() has always used safeKey; this is the same key by the same rule.
+ * encodeURIComponent still wraps it so characters that are legal in an RTDB key
+ * but not in a URL path (% ? &) cannot deform the request.
+ */
+function usagePathFor(uid, key) {
+  return 'voiceUsage/' + encodeURIComponent(safeKey(uid)) + '/' + key;
+}
 
 /**
  * Characters, not calls. Best-effort: never fail the student's audio because a
  * counter write failed. Owner and instructor accounts ARE counted — `limit < 0`
  * means "no quota", never "do not measure", and the unlimited accounts are the
  * ones most likely to spend real money.
+ *
+ * Resolves with the post-increment total RTDB reports, so the caller can tell
+ * whether the reservation overshot the cap. Called BEFORE the ElevenLabs
+ * request: see the RESERVE-THEN-SPEND note in the file header.
  */
 function recordUsage(uid, key, chars, currentCount, limit, idToken) {
   if (!(chars > 0)) return Promise.resolve(null);
-  var path = 'voiceUsage/' + encodeURIComponent(uid) + '/' + key;
+  var path = usagePathFor(uid, key);
   return dbPut(path, { '.sv': { increment: chars } }, idToken).then(function (r) {
-    // The non-atomic fallback needs a trustworthy current count. Unlimited tiers
-    // skip the read, so there is nothing safe to fall back to.
-    if (r === null && limit >= 0) return dbPut(path, currentCount + chars, idToken);
+    // ONLY a real transport failure earns the non-atomic absolute rewrite, and
+    // only when the pre-read count is trustworthy (unlimited tiers skip the
+    // read). A successful write that reported null — RTDB does that for several
+    // shapes, and for 204/print=silent — used to land here too, and the
+    // absolute value it wrote clobbered every concurrent request's characters.
+    if (dbWriteFailed(r) && limit >= 0) return dbPut(path, currentCount + chars, idToken);
     return r;
   }).catch(function (e) {
     logErr('recordUsage', e);
     return null;
   });
+}
+
+/**
+ * Give back characters reserved for a call that never cost anything. Atomic and
+ * best-effort, exactly like the reservation it undoes.
+ */
+function refundUsage(uid, key, chars, idToken) {
+  if (!(chars > 0) || !uid) return Promise.resolve(null);
+  return dbPut(usagePathFor(uid, key), { '.sv': { increment: -chars } }, idToken)
+    .catch(function (e) {
+      logErr('refundUsage', e);
+      return null;
+    });
 }
 
 /**
@@ -1256,5 +1533,8 @@ exports._internals = {
   trimVoice: trimVoice,
   modelCatalog: modelCatalog,
   dayKey: dayKey,
-  safeKey: safeKey
+  safeKey: safeKey,
+  safeAction: safeAction,
+  isOwnerUser: isOwnerUser,
+  usagePathFor: usagePathFor
 };

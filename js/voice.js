@@ -232,6 +232,9 @@
     { re: /(\d{2,3})\s*\/\s*(\d{2,3})(?!\d)/g, to: '$1 over $2' },
 
     /* -- frequency / schedule --------------------------------------------- */
+    /* q1h is "every hour", never "every one hours". Must precede the generic
+       rule below, which cannot know that 1 is the singular. */
+    { re: /\bq\s*1\s*(?:h|hr|hrs|hours?)\b/gi,     to: 'every hour' },
     { re: /\bq\s*(\d+)\s*(?:h|hr|hrs|hours?)\b/gi, to: 'every $1 hours' },
     { re: /\bq\s*(\d+)\s*min\b/gi,                 to: 'every $1 minutes' },
     { re: /\bq\s*(?:d|day|daily)\b/gi,             to: 'daily' },
@@ -623,7 +626,12 @@
       .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
       .replace(/\[([^\]]*)\]\(([^)]*)\)/g, '$1')
       .replace(/^\s{0,3}#{1,6}\s*/gm, '')
-      .replace(/^\s{0,3}>\s?/gm, '')
+      /* A blockquote marker, but NEVER a comparison. "> 100 mL/hr" and ">= 95%"
+         start a line constantly in hold parameters and goals, and stripping the
+         ">" there makes the app speak the OPPOSITE of the order. The lookahead
+         keeps any ">" that introduces a number (with or without "=" and spaces)
+         so CLINICAL_PRE / SPEECH_EXPANSIONS can turn it into "greater than". */
+      .replace(/^\s{0,3}>\s?(?![=\s]*\d)/gm, '')
       .replace(/^\s{0,3}[-*+]\s+/gm, '')
       .replace(/^\s{0,3}\d+\.\s+/gm, '')
       .replace(/\*\*([^*]+)\*\*/g, '$1')
@@ -754,8 +762,26 @@
     } catch (e) { return false; }
   }
 
+  /**
+   * isSupported() -> {stt, tts}
+   *
+   * `tts` must answer "can this device speak?", not "does this device have the
+   * Web Speech API?". Those stopped being the same question when the studio
+   * engine landed: a browser with no speechSynthesis but a working ElevenLabs
+   * voice DOES produce audio. Every UI gate reads this flag - SpeakButton,
+   * VoiceSettings, the sim's speakTurn and hint speech, the voice toggle - so
+   * reporting false there told a paying student "voice unavailable" while the
+   * voice they pay for worked fine.
+   *
+   * premiumReasonFor('') returns '' only when a studio clip could actually be
+   * produced right now, and it is synchronous and re-evaluated per call, so
+   * this flips on by itself the moment the tier resolves.
+   */
   function isSupported() {
-    return { stt: !!SR_CTOR, tts: !!(getSynth() && getUtteranceCtor()) };
+    var browserTts = !!(getSynth() && getUtteranceCtor());
+    var studioTts = false;
+    try { studioTts = (premiumReasonFor('') === ''); } catch (e) { studioTts = false; }
+    return { stt: !!SR_CTOR, tts: browserTts || studioTts };
   }
 
   function browserName() {
@@ -1156,7 +1182,12 @@
       var m = intWords(Math.floor(v / 1000000)) + ' million', r4 = v % 1000000;
       return r4 ? m + ' ' + intWords(r4) : m;
     }
-    return String(v);
+    /* Past a billion this is not a quantity: it is an MRN, an accession number
+       or a phone number, and a human reads those digit by digit. Returning
+       String(v) here let raw digits reach the model, which reads them as a
+       screen reader would (or not at all). */
+    var raw = String(n).replace(/[^0-9]/g, '');
+    return digitWords(raw || String(v));
   }
 
   /* Decimals are spoken digit by digit after the point - "zero point two five",
@@ -1276,6 +1307,9 @@
     ['mg\\s*\\/\\s*dL', 'milligram per deciliter', 'milligrams per deciliter', false],
     ['g\\s*\\/\\s*dL', 'gram per deciliter', 'grams per deciliter', false],
     ['mEq\\s*\\/\\s*L', 'milliequivalent per liter', 'milliequivalents per liter', false],
+    /* mmol BEFORE mm, or the shorter entry wins the alternation and "2 mmol/L"
+       reads as "two millimeter ol slash L". */
+    ['mmol\\s*\\/\\s*L', 'millimole per liter', 'millimoles per liter', false],
     ['mL\\s*\\/\\s*h(?:rs?|ours?)?', 'milliliter per hour', 'milliliters per hour', false],
     ['mL\\s*\\/\\s*min', 'milliliter per minute', 'milliliters per minute', false],
     ['L\\s*\\/\\s*min', 'liter per minute', 'liters per minute', false],
@@ -1285,6 +1319,7 @@
     ['mcg\\s*\\/\\s*min', 'microgram per minute', 'micrograms per minute', false],
     ['mcg\\s*\\/\\s*h(?:rs?|ours?)?', 'microgram per hour', 'micrograms per hour', false],
     ['mmHg', 'millimeter of mercury', 'millimeters of mercury', false],
+    ['mmol', 'millimole', 'millimoles', false],
     ['mcg', 'microgram', 'micrograms', false],
     ['mg', 'milligram', 'milligrams', false],
     ['mL', 'milliliter', 'milliliters', false],
@@ -1360,6 +1395,10 @@
 
   /* ---- step 3: rules that must see the digits ---------------------------- */
   var CLINICAL_PRE = [
+    /* The micro sign, in both of its Unicode spellings (U+00B5 MICRO SIGN and
+       U+03BC GREEK SMALL LETTER MU). Folded to "mcg" first so the whole unit
+       table below - including mcg/kg/min - covers it for free. */
+    { re: /[µμ]\s?g\b/g, to: 'mcg' },
     /* dates BEFORE the blood-pressure fraction, or 06/26/1954 becomes
        "six over twenty six over 1954" */
     { re: /\b(0?[1-9]|1[0-2])\s*\/\s*(0?[1-9]|[12]\d|3[01])\s*\/\s*((?:19|20)\d{2})\b/g, to: dateWords },
@@ -1398,11 +1437,19 @@
        five..." - a pause in the middle of a drug name.
        PTT is listed before PT so the alternation cannot eat the first two
        letters and leave a stray T behind. */
+    /* Cr is the one label in that list that is not readable as letters ("see
+       arr, six point four"), so it gets its own expansion. Gated on a number
+       following, exactly like the comma rule, so "Cr" in any other position -
+       and every ordinary word starting with those letters - is untouched. */
+    { re: /\bCr\b\s*(?=\d)/g, to: 'creatinine, ' },
     { re: /\b(PTT|BUN|WBC|RBC|INR|PT|HCO3|Hgb|Hct|Cr|Na|Cl|Mg|Ca|K)([+-]?)\s+(?=\d)/g, to: '$1$2, ' },
     /* ratios: 1:1000 epinephrine, 1:4 dilutions */
     { re: /\b(\d{1,4})\s*:\s*(\d{1,7})\b/g, to: '$1 to $2' },
-    /* body surface area */
-    { re: /\s*\bm2\b/g, to: ' square meters' },
+    /* body surface area lives in CLINICAL_POST, NOT here: rewriting "1.73 m2"
+       this early makes the eGFR compound in TTS_UNITS unmatchable, and
+       "60 mL/min/1.73 m2" then reads as "... per minute slash one point seven
+       three square meters" while the same value written without the space
+       reads correctly. */
     /* comparison symbols in front of a number */
     { re: /<\s*(?=\d)/g, to: 'less than ' },
     { re: />\s*(?=\d)/g, to: 'greater than ' }
@@ -1410,6 +1457,11 @@
 
   /* ---- step 6: after the shared abbreviation table ----------------------- */
   var CLINICAL_POST = [
+    /* Body surface area, AFTER expandUnits() so the mL/min/1.73 m2 compound got
+       its chance first. Two forms: glued to the number ("1.73m2", where there
+       is no word boundary between the digit and the m) and standing alone. */
+    { re: /(\d)\s*m2\b/g, to: '$1 square meters' },
+    { re: /\s*\bm2\b/g, to: ' square meters' },
     { re: /\b(\d{1,2})(?:st|nd|rd|th)\b/gi, to: function (m, d) {
       var n = parseInt(d, 10);
       return (n >= 1 && n <= 31 && ORDINALS_W[n]) ? ORDINALS_W[n] : m;
@@ -1418,9 +1470,25 @@
     { re: /(\S)\s*\/\s*(\S)/g, to: '$1 slash $2' }
   ];
 
+  /**
+   * Every digit run that survived the pipeline becomes words.
+   *
+   * A digit run welded to letters is a TOKEN, not a number: D5W, S1/S2, HCO3,
+   * A1C, G2P1, B12, T2DM. Replacing the digits in place with no separator
+   * invents words - "DfiveW", "Sone", "HCOthree" - that the model reads as
+   * garbage. Padding with a space on whichever side touches a letter gives the
+   * spoken form nurses actually use ("D five W", "B twelve", "H C O three"),
+   * and the tidy step in normalizeClinicalForTTS collapses the doubles.
+   */
   function numeralsToWords(text) {
-    return String(text == null ? '' : text).replace(/\d+(?:\.\d+)?/g, function (m) {
-      return numberWords(m);
+    var src = String(text == null ? '' : text);
+    return src.replace(/\d+(?:\.\d+)?/g, function (m, off) {
+      var out = numberWords(m);
+      var before = off > 0 ? src.charAt(off - 1) : '';
+      var after = src.charAt(off + m.length);
+      if (before && /[A-Za-z]/.test(before)) out = ' ' + out;
+      if (after && /[A-Za-z]/.test(after)) out = out + ' ';
+      return out;
     });
   }
 
@@ -1511,6 +1579,7 @@
 
   var _clipMem = {};        /* hash -> {url, mime, chars, ...}   */
   var _clipInflight = {};   /* hash -> Promise (de-duplication)  */
+  var _clipMemOrder = [];   /* hashes, least recently used first (LRU bound)   */
   var _clipData = {};       /* hash -> 'data:audio/mpeg;base64,' (for the export) */
   var _clipDataOrder = [];
   var _currentAudio = null;
@@ -2075,9 +2144,58 @@
     }
   }
 
+  /**
+   * The in-memory clip map, bounded the same way _clipData is.
+   *
+   * An entry holds a whole base64 mp3 (roughly 25 KB for one short line), so an
+   * unbounded map is tens of megabytes of phone memory over a long session -
+   * and bounding _clipData alone frees nothing, because the same string is
+   * still reachable through _clipMem[hash].url. Least recently used goes first:
+   * an evicted clip is not lost, it is one index read away.
+   */
   function rememberClip(hash, entry) {
     if (!hash || !entry) return;
+    if (!_clipMem[hash]) _clipMemOrder.push(hash);
+    else touchClip(hash);
     _clipMem[hash] = entry;
+    while (_clipMemOrder.length > MAX_MEM_CLIPS) {
+      var drop = _clipMemOrder.shift();
+      if (drop !== hash) delete _clipMem[drop];
+    }
+  }
+
+  /**
+   * Hand one entry's base64 back to the garbage collector once the clip has
+   * been heard AND has a Storage url to be re-fetched from. Roughly 25 KB per
+   * short line; keeping it after the first play is what turned this map into
+   * tens of megabytes on a phone. If Storage is unreachable later, the clip
+   * simply misses and the student hears the browser voice, like any other
+   * premium failure.
+   */
+  function releaseClipData(entry) {
+    if (!entry || typeof entry.storageUrl !== 'string' || !entry.storageUrl) return;
+    if (String(entry.url).indexOf('data:') === 0) entry.url = entry.storageUrl;
+    if (entry.dataUrl) delete entry.dataUrl;
+  }
+
+  /** Mark a hash as the most recently used one. */
+  function touchClip(hash) {
+    var i = indexOfIn(_clipMemOrder, hash);
+    if (i >= 0) _clipMemOrder.splice(i, 1);
+    _clipMemOrder.push(hash);
+  }
+
+  /** Drop one clip from memory (a dead url, an admin reset). */
+  function forgetClip(hash) {
+    if (!hash) return;
+    delete _clipMem[hash];
+    var i = indexOfIn(_clipMemOrder, hash);
+    if (i >= 0) _clipMemOrder.splice(i, 1);
+  }
+
+  function indexOfIn(list, v) {
+    for (var i = 0; i < list.length; i++) { if (list[i] === v) return i; }
+    return -1;
   }
 
   /* --- calling the server ------------------------------------------------ */
@@ -2227,6 +2345,8 @@
       _voiceStats.hits++;
       _voiceStats.charsSaved += normText.length;
       var hit = _clipMem[hash], copy = {}, k;
+      touchClip(hash);
+      releaseClipData(hit);
       for (k in hit) { if (Object.prototype.hasOwnProperty.call(hit, k)) copy[k] = hit[k]; }
       copy.source = 'memory';
       copy.cached = true;
@@ -2304,10 +2424,28 @@
           if (!up) return null;
           entry.shared = true;
           entry.storageUrl = up.url;
-          return writeClipIndex(hash, {
+          /* The mp3 is in Storage now, so the second reference to the base64 is
+             pure memory cost. entry.url keeps the data URL until this playback
+             is over and releaseClipData() swaps it for the Storage url - a live
+             <audio> element and the "no round trip through Storage" guarantee
+             for the student who paid both depend on it. */
+          delete entry.dataUrl;
+          /* THE ROW MUST DESCRIBE ITS OWN KEY.
+             The hash is clipHash(text, voiceId, modelId) using the voice this
+             client ASKED for, but netlify/functions/tts.js ignores that voice
+             for everybody except the owner and answers with the one it assigned
+             (data.voiceId). Publishing the server's voice in a row filed under
+             the requested voice's hash makes the shared index self-contradicting
+             for every student, with no invalidation path. So the row carries the
+             voice and model the hash was computed from, and the substitution is
+             recorded separately for the admin panel.
+             (Re-keying to clipHash(normText, data.voiceId, data.modelId) instead
+             would strand the row: nothing ever looks that hash up, because the
+             client only ever computes the key from the voice it requested.) */
+          var rec = {
             url: up.url,
-            voiceId: entry.voiceId,
-            modelId: entry.modelId,
+            voiceId: voiceId,
+            modelId: modelId,
             profile: profile,
             chars: chars,
             bytes: bytes,
@@ -2315,7 +2453,10 @@
             hits: 0,
             createdAt: Date.now(),
             createdBy: currentUid() || 'anon'
-          });
+          };
+          if (entry.voiceId !== voiceId) rec.servedVoiceId = entry.voiceId;
+          if (entry.modelId !== modelId) rec.servedModelId = entry.modelId;
+          return writeClipIndex(hash, rec);
         })['catch'](function (e) { setPremiumError(e); return null; });
 
         return entry;
@@ -2381,6 +2522,8 @@
         if (token !== _speakToken) return { spoken: false, reason: 'cancelled' };
         return playClipUrl(entry.url, opts, token).then(function (r) {
           if (r && r.spoken) {
+            /* Heard it. The base64 can go now that Storage has a copy. */
+            releaseClipData(_clipMem[entry.hash]);
             return { spoken: true, premium: true, source: entry.source, chars: entry.chars, hash: entry.hash };
           }
           return r;
@@ -2389,7 +2532,7 @@
              shared index the URL may be dead (a cleared bucket), so drop it from
              memory - the next attempt re-reads the index or regenerates. */
           setPremiumError(e);
-          if (entry.source === 'index' || entry.source === 'static') delete _clipMem[entry.hash];
+          if (entry.source === 'index' || entry.source === 'static') forgetClip(entry.hash);
           return { spoken: false, reason: 'playback-failed' };
         });
       });
@@ -2645,6 +2788,7 @@
   /** Session reset, for the admin panel after a config change. Never clears Firebase. */
   function resetPremium() {
     _clipMem = {};
+    _clipMemOrder = [];
     _clipInflight = {};
     _clipData = {};
     _clipDataOrder = [];
@@ -2731,7 +2875,18 @@
     var Utt = getUtteranceCtor();
     if (!synth || !Utt) {
       if (token === _speakToken && _speaking) { _speaking = false; emitSpeakState(); }
-      return Promise.reject(new Error('Text-to-speech is not supported in ' + browserName() + '.'));
+      /* RESOLVE, never reject. This is the last stop in the chain: if the
+         studio path already missed and this browser has no Web Speech API
+         (Firefox on Linux with no speech-dispatcher, several Android WebViews
+         and in-app browsers), there is simply no audio to be had. That is a
+         normal outcome, not an exception - the contract at the top of the
+         premium section says a student never sees an error because of it.
+         Rejecting here produced unhandled rejections on every patient line;
+         sim-engine.js carries a local .catch() workaround for exactly this,
+         and ai-scenario.js's applyHint uses a bare try/catch that CANNOT
+         catch a rejected promise. Callers already treat {spoken:false} as
+         routine, so resolving fixes every one of them at once. */
+      return Promise.resolve({ spoken: false, reason: 'unsupported' });
     }
     var prefs = getPrefs();
 
