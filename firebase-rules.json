@@ -156,6 +156,25 @@
       }
     },
 
+    "simprep": {
+      "overrides": {
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
+          ".write": "auth != null && auth.uid === $uid",
+          "$discId": {
+            ".validate": "newData.hasChildren(['discrepancyId','topicId','originalText','at'])"
+          }
+        }
+      },
+      "results": {
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
+          ".write": "auth != null && auth.uid === $uid",
+          ".indexOn": ["date"]
+        }
+      }
+    },
+
     "ms2lab": {
       "results": {
         "$uid": {

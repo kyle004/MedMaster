@@ -105,6 +105,8 @@
 <script defer src="data/scenarios-peds.js"></script>
 <script defer src="data/medadmin.js"></script>
 <script defer src="data/ms2lab.js"></script>
+<script defer src="data/nur2212-scenarios.js"></script>
+<script defer src="data/nur2212-study.js"></script>
 
 <!-- FEATURE MODULES (core first, then consumers) -->
 <script defer src="js/ai.js"></script>
@@ -117,6 +119,9 @@
 <script defer src="js/ai-scenario.js"></script>
 <script defer src="js/codeblue.js"></script>
 <script defer src="js/ms2lab.js"></script>
+<script defer src="js/simprep-partner.js"></script>
+<script defer src="js/simprep.js"></script>
+<script defer src="js/simprep-sim.js"></script>
 
 <!-- ==========================================================
      ON-DEMAND MODULE LOADER
@@ -3755,6 +3760,11 @@ const NAV_SECTIONS = [
       {id:'aiscenario',  icon:'🧑‍⚕️', label:'Live AI Patient', since:24},
       {id:'codeblue',    icon:'🚨', label:'Code Blue Team', since:32},
       {id:'medadmin',    icon:'💉',   label:'Med Admin Signoff', since:24} ]},
+  { id:'simprep', label:'Clinical Simulation Prep', items:[
+      {id:'simprep',        icon:'📚', label:'Sim Prep Home', since:40},
+      {id:'simprepsim',     icon:'🎬', label:'Simulation Mode', since:40},
+      {id:'simprepcoach',   icon:'⏱️', label:'Checkoff Coach', since:40},
+      {id:'simpreppartner', icon:'👥', label:'Partner Practice', since:40} ]},
   { id:'exams', label:'Exams', items:[
       {id:'labday',      icon:'🧪',   label:'Lab Day Exam'},
       {id:'test',        icon:'📝',   label:'Test Mode'} ]},
@@ -3766,7 +3776,10 @@ const NAV_SECTIONS = [
 const NAV_FOOTER = [{id:'dashboard', icon:'📊', label:'My Stats'}];
 const NAV_EXTRA  = [
   {id:'settings', icon:'⚙️', label:'Settings'},
-  {id:'admin',    icon:'🔒', label:'Admin Panel'}
+  {id:'admin',    icon:'🔒', label:'Admin Panel'},
+  // Reachable by route but not its own sidebar row: the Sim Prep hub is the
+  // way in, and a per-topic lesson without a topic picked is a dead end.
+  {id:'simprepstudy', icon:'📖', label:'Sim Prep Study Guide'}
 ];
 const NAV_INDEX = {};
 NAV_SECTIONS.forEach(s => s.items.forEach(i => { NAV_INDEX[i.id] = i; }));
@@ -10969,6 +10982,11 @@ function App() {
       case 'aiscenario': return modulePage('AIScenarioMode', 'Live AI Patient', {progress, setProgress, authUser});
       case 'codeblue': return modulePage('CodeBlueMode', 'Code Blue Team', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
       case 'ms2lab': return modulePage('MS2LabMode', 'MS2 Simulation Lab', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
+      case 'simprep': return modulePage('SimPrepHub', 'Clinical Simulation Prep', {progress, setProgress, authUser, isAdmin, isSuperAdmin, onNav: navTo});
+      case 'simprepstudy': return modulePage('SimPrepStudy', 'Sim Prep Study Guide', {progress, setProgress, authUser, isAdmin, isSuperAdmin, onNav: navTo});
+      case 'simprepsim': return modulePage('SimPrepSimMode', 'Simulation Mode', {progress, setProgress, authUser, isAdmin, isSuperAdmin, onNav: navTo});
+      case 'simprepcoach': return modulePage('SimPrepCoachMode', 'Checkoff Coach', {progress, setProgress, authUser, isAdmin, isSuperAdmin, onNav: navTo});
+      case 'simpreppartner': return modulePage('SimPrepPartner', 'Partner Practice', {progress, setProgress, authUser, isAdmin, isSuperAdmin, onNav: navTo});
       case 'medadmin': return modulePage('MedAdminTrainer', 'Med Admin Trainer', {progress, setProgress, authUser});
       case 'community': return modulePage('CommunityHub', 'Community', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
       case 'tutor': return modulePage('AITutorPage', 'AI Tutor', {progress, setProgress, authUser});
