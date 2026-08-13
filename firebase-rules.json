@@ -146,6 +146,30 @@
       }
     },
 
+    "voiceCache": {
+      ".read": "auth != null",
+      ".write": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".indexOn": ["createdAt"],
+      "$hash": {
+        ".write": "auth != null && (!data.exists() || auth.token.email === 'codingky@gmail.com')",
+        ".validate": "newData.hasChildren(['url','voiceId','modelId'])",
+        "hits": { ".write": "auth != null" }
+      }
+    },
+
+    "voiceSpend": {
+      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".write": false
+    },
+
+    "voiceUsage": {
+      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
+        "$day": { ".write": "auth != null && auth.uid === $uid" }
+      }
+    },
+
     "imageCache": {
       ".read": "auth != null",
       ".write": "auth != null && auth.token.email === 'codingky@gmail.com'",

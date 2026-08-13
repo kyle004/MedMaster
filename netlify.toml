@@ -19,6 +19,15 @@
   # Long-form generations (case debriefs, question sets) can take a while.
   included_files = []
 
+# Friendly URL the client calls for ElevenLabs text-to-speech: POST /api/tts
+# Separate from /api/ai because it is a different provider, a different key,
+# and returns audio rather than JSON.
+[[redirects]]
+  from = "/api/tts"
+  to = "/.netlify/functions/tts"
+  status = 200
+  force = true
+
 # Friendly URL the client calls: POST /api/ai
 [[redirects]]
   from = "/api/ai"

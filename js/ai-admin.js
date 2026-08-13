@@ -69,6 +69,119 @@
    * ------------------------------------------------------------------------ */
   var IMAGE_FEATURES = ['image', 'mnemonic', 'avatar'];
 
+  /* ------------------------------------------------------- studio voices ---
+   * Mirrors js/voice.js (PROFILE_ORDER, DEFAULT_TTS_MODEL) and
+   * netlify/functions/tts.js (DEFAULT_VOICE_LIMITS, DEFAULT_USD_PER_1K_CHARS).
+   * Only ever used as a FALLBACK - MM.voice is asked first everywhere below, so
+   * the live module always wins and these cannot drift into being authoritative.
+   * ------------------------------------------------------------------------ */
+  var VOICE_PROFILE_ORDER = ['patient', 'nurse', 'instructor', 'child', 'family'];
+  var VOICE_PROFILE_LABEL = {
+    patient: 'Patient', nurse: 'Nurse', instructor: 'Instructor',
+    child: 'Child', family: 'Family member'
+  };
+  // What each role is actually used for, so the owner is casting rather than
+  // guessing from a one-word label.
+  var VOICE_PROFILE_USE = {
+    patient: 'Every scripted patient line in the 18 simulations, and the AI patient in conversation mode. Far and away the most heard voice in the app.',
+    nurse: 'Handoff, SBAR playback and the med-admin trainer\'s prompts.',
+    instructor: 'Debriefs, rationales and the AI tutor reading an explanation.',
+    child: 'Peds scenarios. A voice that sounds like an adult doing a child impression is worse than the device voice.',
+    family: 'Family-member lines in the simulations - usually the hardest, most emotional speech in the app.'
+  };
+  /* What a good cast looks like per role, scored against the LIVE catalog's
+     own labels rather than hardcoded voice IDs. Hardcoding IDs is how the
+     model slugs went stale; matching on metadata survives ElevenLabs adding,
+     renaming or retiring voices. `want` scores +2 each, `avoid` scores -3,
+     and a `category` of "premade" gets +1 as a stability tiebreak. */
+  var VOICE_PROFILE_CAST = {
+    patient:    { want: ['female', 'middle aged', 'american', 'calm', 'conversational'],
+                  avoid: ['child', 'young', 'news', 'narration', 'british', 'australian'] },
+    nurse:      { want: ['female', 'young', 'american', 'conversational', 'professional'],
+                  avoid: ['child', 'elderly', 'narration'] },
+    instructor: { want: ['male', 'middle aged', 'american', 'calm', 'narration', 'authoritative'],
+                  avoid: ['child', 'young', 'excited'] },
+    child:      { want: ['child', 'young', 'kid'],
+                  avoid: ['middle aged', 'old', 'elderly', 'deep', 'narration'] },
+    family:     { want: ['male', 'middle aged', 'american', 'conversational', 'emotional'],
+                  avoid: ['child', 'narration', 'news'] }
+  };
+
+  /**
+   * autoCast(voices) -> {profile: voiceId}
+   * Greedy best-match, no voice used twice (five identical voices would defeat
+   * the point). Any role with no positive-scoring candidate is left unset, so
+   * it keeps using the device voice rather than being mis-cast.
+   */
+  function autoCast(voices) {
+    var list = arr(voices), out = {}, taken = {};
+    var order = ['child', 'patient', 'instructor', 'family', 'nurse']; // scarcest role first
+    for (var i = 0; i < order.length; i++) {
+      var role = order[i], spec = VOICE_PROFILE_CAST[role];
+      if (!spec) continue;
+      var best = null, bestScore = 0;
+      for (var j = 0; j < list.length; j++) {
+        var v = obj(list[j]);
+        var id = str(v.voice_id || v.id);
+        if (!id || taken[id]) continue;
+        var lab = obj(v.labels);
+        var hay = [v.name, v.category, v.description, lab.accent, lab.age,
+                   lab.gender, lab.description, lab.use_case, lab.useCase]
+                  .join(' ').toLowerCase();
+        var score = 0, k;
+        for (k = 0; k < spec.want.length; k++) if (hay.indexOf(spec.want[k]) !== -1) score += 2;
+        for (k = 0; k < spec.avoid.length; k++) if (hay.indexOf(spec.avoid[k]) !== -1) score -= 3;
+        if (str(v.category) === 'premade') score += 1;
+        if (score > bestScore) { bestScore = score; best = id; }
+      }
+      if (best) { out[role] = best; taken[best] = true; }
+    }
+    return out;
+  }
+
+  var DEFAULT_TTS_MODEL = 'eleven_flash_v2_5';
+  var DEFAULT_VOICE_LIMITS = { free: 0, plus: 0, pro: 20000, instructor: -1 };
+  var DEFAULT_USD_PER_1K_CHARS = 0.22;
+  var TTS_MODELS_FALLBACK = [
+    { id: 'eleven_flash_v2_5', label: 'Flash v2.5', latency: '~75 ms', maxChars: 40000 },
+    { id: 'eleven_turbo_v2_5', label: 'Turbo v2.5', latency: '~250-300 ms', maxChars: 40000 },
+    { id: 'eleven_multilingual_v2', label: 'Multilingual v2', latency: 'slowest', maxChars: 10000 }
+  ];
+  var VOICE_SPEND_PATH = 'voiceSpend';
+  // How many days of the voice ledger the tab reads. Bounded so the panel never
+  // pulls a year of history to render two numbers.
+  var VOICE_SPEND_DAYS = 14;
+
+  // Pasted verbatim into the Firebase rules editor. Surfaced in the Voices tab
+  // because an unreadable /voiceCache does not fail loudly - it just silently
+  // makes every student pay again for a line somebody already bought.
+  var VOICE_CACHE_RULES = [
+    '"voiceCache": {',
+    '  ".read":  "auth != null",',
+    '  ".write": "auth != null && auth.token.email === \'codingky@gmail.com\'",',
+    '  ".indexOn": ["createdAt"],',
+    '  "$hash": {',
+    '    ".write":    "auth != null && (!data.exists() || auth.token.email === \'codingky@gmail.com\')",',
+    '    ".validate": "newData.hasChildren([\'url\',\'voiceId\',\'modelId\'])",',
+    '    "hits": { ".write": "auth != null" }',
+    '  }',
+    '}'
+  ].join('\n');
+
+  var VOICE_STORAGE_RULES = [
+    'rules_version = \'2\';',
+    'service firebase.storage {',
+    '  match /b/{bucket}/o {',
+    '    match /voice/{profile}/{name} {',
+    '      allow read: if true;',
+    '      allow write: if request.auth != null',
+    '                   && request.resource.size < 4 * 1024 * 1024',
+    '                   && request.resource.contentType == \'audio/mpeg\';',
+    '    }',
+    '  }',
+    '}'
+  ].join('\n');
+
   // Every feature id the server will route (mirror of KNOWN_FEATURES in js/ai.js).
   // Only used if MM.ai is somehow absent; the live list always wins.
   var FEATURES_FALLBACK = [
@@ -289,11 +402,33 @@
       'transition:width var(--dur-data,.3s) linear}',
       '.aia-featrow{border-top:1px solid var(--border,var(--surface2));padding-top:14px;margin-top:14px}',
       '.aia-featrow.first{border-top:none;padding-top:0;margin-top:0}',
+      /* --- voice picker -------------------------------------------------
+       * A grid of cards rather than a <select>, because choosing a voice is a
+       * listening task: every card carries its own preview button, and the
+       * gender / age / accent labels have to be readable at a glance next to
+       * the one that is currently assigned.
+       * ------------------------------------------------------------------ */
+      '.aia-vpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));',
+      'gap:var(--sp-2,8px);margin-top:10px}',
+      '.aia-vcard{border:1px solid var(--border,var(--surface2));border-radius:var(--r-md,10px);',
+      'background:var(--bg);padding:10px;min-width:0;display:flex;flex-direction:column;gap:4px}',
+      '.aia-vcard.on{border-color:var(--accent);background:var(--tint-accent,rgba(59,130,246,.10))}',
+      '.aia-vcard b{font-size:var(--fs-base,14px);color:var(--text);overflow-wrap:anywhere}',
+      '.aia-vcard .vid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;',
+      'font-size:var(--fs-xs,12px);color:var(--text3);overflow-wrap:anywhere}',
+      '.aia-vbtns{display:flex;gap:var(--sp-1,6px);flex-wrap:wrap;margin-top:auto;padding-top:6px}',
+      '.aia-vgroup{font-size:var(--fs-xs,12px);font-weight:700;text-transform:uppercase;',
+      'letter-spacing:.04em;color:var(--text3);margin-top:14px}',
+      '.aia-spoken{font-size:var(--fs-sm,13px);line-height:var(--lh-normal,1.55);color:var(--text2);',
+      'background:var(--bg);border:1px dashed var(--border-str,#475569);border-radius:var(--r-sm,8px);',
+      'padding:9px 11px;margin-top:8px;overflow-wrap:anywhere}',
+      '.aia-spoken b{color:var(--text);font-weight:700}',
       '@media (max-width:860px){.aia-mx{grid-template-columns:repeat(2,minmax(0,1fr))}}',
       /* One narrow block, after the 860px one so the single-column matrix wins
        * the cascade at 360px. Everything phone-sized lives here. */
       '@media (max-width:640px){',
       '.aia-mx{grid-template-columns:1fr}',
+      '.aia-vpick{grid-template-columns:1fr}',
       '.aia-select{font-size:16px}',
       '.aia-card{padding:13px}',
       '.aia-models{grid-template-columns:1fr}',
@@ -330,6 +465,64 @@
   function ai() { return (window.MM && window.MM.ai) ? window.MM.ai : window.MM_AI; }
 
   function images() { return (window.MM && window.MM.images) ? window.MM.images : window.MM_IMAGES; }
+
+  /* js/voice.js, or null. Every voice feature below feature-detects it: the
+     panel must still open on a page that loaded an older voice.js. */
+  function voiceMod() {
+    var v = (window.MM && window.MM.voice) ? window.MM.voice : null;
+    return (v && typeof v.normalizeClinicalForTTS === 'function') ? v : null;
+  }
+
+  function ttsModels() {
+    var v = voiceMod();
+    if (v && Array.isArray(v.TTS_MODELS) && v.TTS_MODELS.length) return v.TTS_MODELS;
+    return TTS_MODELS_FALLBACK;
+  }
+
+  function voiceProfileOrder() {
+    var v = voiceMod();
+    if (v && Array.isArray(v.PROFILE_ORDER) && v.PROFILE_ORDER.length) return v.PROFILE_ORDER;
+    return VOICE_PROFILE_ORDER;
+  }
+
+  function voiceTestLine() {
+    var v = voiceMod();
+    if (v && typeof v.TEST_LINE === 'string' && v.TEST_LINE) return v.TEST_LINE;
+    return 'BP 92/58, HR 118, SpO2 88% on 2 L. Temp 101.6 F. Give 0.25 mg IV push q4h PRN.';
+  }
+
+  /* The 172 scripted dialogue lines, defensively. js/voice.js builds this out of
+     window.ALL_SCENARIOS, which may be absent or half-loaded on whatever page
+     the panel happens to be open on, so it can throw and can hand back holes. */
+  function dialogueItems() {
+    var v = voiceMod();
+    if (!v || typeof v.dialogueList !== 'function') return [];
+    var list;
+    try { list = v.dialogueList(); } catch (e) { return []; }
+    if (!Array.isArray(list)) return [];
+    var out = [], i;
+    for (i = 0; i < list.length; i++) {
+      if (list[i] && typeof list[i] === 'object' && typeof list[i].text === 'string' && list[i].text) {
+        out.push(list[i]);
+      }
+    }
+    return out;
+  }
+
+  function fmtChars(n) {
+    var v = (typeof n === 'number' && isFinite(n)) ? Math.round(n) : 0;
+    if (v < 1000) return String(v);
+    if (v < 1000000) return (v / 1000).toFixed(v < 10000 ? 1 : 0) + 'k';
+    return (v / 1000000).toFixed(2) + 'M';
+  }
+
+  function voiceLimitPhrase(v) {
+    if (typeof v !== 'number' || !isFinite(v)) return 'not set';
+    if (v < -1) return 'invalid - use -1 for unlimited';
+    if (v === -1) return 'unlimited';
+    if (v === 0) return 'device voices only';
+    return fmtChars(v) + ' characters a day (~' + Math.round(v / 165) + ' min of speech)';
+  }
 
   /* The two fixed image sets, defensively. js/images.js builds this list out of
    * window.MEDADMIN_DRUGS and window.ALL_SCENARIOS, either of which may be
@@ -1366,7 +1559,8 @@
     return ce('div', { className: 'aia-wrap' },
       ce('div', { className: 'aia-tabs', role: 'tablist' },
         [['spend', 'Spend'], ['settings', 'Settings'], ['models', 'Models'],
-         ['routing', 'Routing'], ['tiers', 'Tiers'], ['users', 'People']].map(function (t) {
+         ['routing', 'Routing'], ['voices', 'Voices'], ['tiers', 'Tiers'],
+         ['users', 'People']].map(function (t) {
           return ce('button', {
             key: t[0], type: 'button', role: 'tab',
             'aria-selected': tab === t[0] ? 'true' : 'false',
@@ -1386,6 +1580,7 @@
       tab === 'routing' && ce(RoutingTab, {
         config: config, writeCfg: writeCfg, catalogs: catalogs, loadCatalog: loadCatalog
       }),
+      tab === 'voices' && ce(VoicesTab, { config: config, writeCfg: writeCfg }),
       tab === 'tiers' && ce(TiersTab, {
         config: config, writeCfg: writeCfg, live: live, loadModels: loadModels
       }),
@@ -1439,8 +1634,23 @@
       modelMeta: normalizeModelMeta(raw ? raw.modelMeta : null),
       modelMetaImportedAt: (raw && typeof raw.modelMetaImportedAt === 'number' &&
         isFinite(raw.modelMetaImportedAt) && raw.modelMetaImportedAt > 0) ? raw.modelMetaImportedAt : 0,
+      /* ---- ElevenLabs studio voices (see the Voices tab) ------------------
+       * MM.ai.getConfig() deliberately drops these - the text layer does not
+       * enforce them and never will - so the Voices tab is the only place in
+       * the app that reads them out of the merged config, and js/voice.js
+       * reads /appConfig/aiConfig/voiceProfiles from Firebase directly. Kept
+       * here so an assignment shows up the instant the write lands rather than
+       * on the next full config push. */
+      voiceEnabled: !(raw && raw.voiceEnabled === false),
+      voiceProfiles: normalizeVoiceProfileCfg(raw ? raw.voiceProfiles : null),
+      voiceLimits: {},
+      voiceUsdPer1kChars: (raw && typeof raw.voiceUsdPer1kChars === 'number' &&
+        isFinite(raw.voiceUsdPer1kChars) && raw.voiceUsdPer1kChars >= 0 && raw.voiceUsdPer1kChars < 100)
+        ? raw.voiceUsdPer1kChars : DEFAULT_USD_PER_1K_CHARS,
       tiers: {}
     };
+    var rawVLimits = (raw && raw.voiceLimits && typeof raw.voiceLimits === 'object' && !Array.isArray(raw.voiceLimits))
+      ? raw.voiceLimits : null;
     var defLimits = (d && d.imageLimits && typeof d.imageLimits === 'object' && !Array.isArray(d.imageLimits))
       ? d.imageLimits : builtinDefaults().imageLimits;
     var defTiers = (d && d.tiers && typeof d.tiers === 'object' && !Array.isArray(d.tiers))
@@ -1484,6 +1694,39 @@
       out.imageLimits[name] = (typeof lim === 'number' && isFinite(lim))
         ? Math.floor(lim)
         : (typeof defLimits[name] === 'number' ? defLimits[name] : 0);
+
+      var vlim = rawVLimits ? rawVLimits[name] : undefined;
+      out.voiceLimits[name] = (typeof vlim === 'number' && isFinite(vlim))
+        ? Math.floor(vlim)
+        : (typeof DEFAULT_VOICE_LIMITS[name] === 'number' ? DEFAULT_VOICE_LIMITS[name] : 0);
+    }
+    return out;
+  }
+
+  /**
+   * aiConfig.voiceProfiles, defensively. Same filter the Netlify function
+   * applies on read (netlify/functions/tts.js normalizeVoiceProfiles), so what
+   * this panel shows as assigned is what the server will actually send. A voice
+   * id that would not survive there is shown as unassigned here rather than as
+   * a working assignment that silently never speaks.
+   */
+  function normalizeVoiceProfileCfg(raw) {
+    var out = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    var k, id, v, voiceId;
+    for (k in raw) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+      id = String(k == null ? '' : k).toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+      if (!id || VOICE_PROFILE_ORDER.indexOf(id) === -1) continue;
+      v = raw[k];
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      voiceId = String(v.voiceId || v.voice_id || '').trim();
+      if (!/^[A-Za-z0-9_-]{8,64}$/.test(voiceId)) continue;
+      out[id] = {
+        voiceId: voiceId,
+        modelId: (typeof v.modelId === 'string' && v.modelId) ? v.modelId : DEFAULT_TTS_MODEL,
+        name: (typeof v.name === 'string') ? v.name.slice(0, 80) : ''
+      };
     }
     return out;
   }
@@ -3640,6 +3883,1023 @@
             'And the matching Cloud Storage rules, which live in a different console tab (Storage -> Rules):'),
           ce('div', { className: 'aia-pre' }, im.STORAGE_RULES_SNIPPET)
         ) : null
+      )
+    );
+  }
+
+  /* ==========================================================================
+   * TAB: VOICES   (ElevenLabs studio voices)
+   * --------------------------------------------------------------------------
+   * Five things, in the order the owner needs them:
+   *
+   *   1. IS IT ON, and what does ElevenLabs say the monthly bundle looks like
+   *   2. CASTING - one studio voice per speaker role, chosen by listening to
+   *      previews, with a "Test this voice" that speaks a real clinical line
+   *      through the SAME normalizer students hear, so what he auditions is
+   *      literally what they get
+   *   3. LIMITS - characters a day per plan, and the blended rate the estimate
+   *      is built from
+   *   4. WHAT IT HAS COST and what the shared cache has saved
+   *   5. PRE-GENERATE the 172 scripted dialogue lines once, then export them as
+   *      a static bundle so scripted speech costs nothing forever
+   *
+   * Nothing here is reachable by a student. Every read is feature-detected: the
+   * panel must still open if js/voice.js is an older build or absent entirely.
+   * ======================================================================== */
+
+  function VoicesTab(props) {
+    var config = props.config, writeCfg = props.writeCfg;
+    var v = voiceMod();
+    var profiles = config.voiceProfiles || {};
+    var models = ttsModels();
+    var order = voiceProfileOrder();
+
+    /* ---- state ---- */
+    var catState = useState({ status: 'idle', voices: [], error: '', fetchedAt: 0, cached: false });
+    var cat = catState[0], setCat = catState[1];
+
+    var quotaState = useState({ status: 'idle', error: '' });
+    var quota = quotaState[0], setQuota = quotaState[1];
+
+    var cacheState = useState({ status: 'idle', count: 0, chars: 0, hits: 0, bytes: 0, saved: 0, error: '' });
+    var cache = cacheState[0], setCache = cacheState[1];
+
+    var spendState = useState({ status: 'idle', today: null, week: 0, weekChars: 0, error: '' });
+    var spend = spendState[0], setSpend = spendState[1];
+
+    var openState = useState('');            /* which profile's picker is expanded */
+    var openFor = openState[0], setOpenFor = openState[1];
+
+    var filterState = useState('');
+    var filter = filterState[0], setFilter = filterState[1];
+
+    var testState = useState({ profile: '', status: '', msg: '' });
+    var test = testState[0], setTest = testState[1];
+
+    var runState = useState({
+      running: false, idx: 0, total: 0, done: 0, generated: 0, skipped: 0,
+      chars: 0, costUsd: 0, errors: [], label: '', finished: false, stopped: false, started: false
+    });
+    var run = runState[0], setRun = runState[1];
+
+    var expState = useState({ busy: false, done: 0, total: 0, msg: '', text: '', count: 0, skipped: [], bytes: 0 });
+    var exp = expState[0], setExp = expState[1];
+
+    /* Refs, not state: the pre-generate loop must never be restarted by a
+       re-render, and a stop has to be visible to an in-flight iteration now. */
+    var busyRef = useRef(false);
+    var stopRef = useRef(false);
+    var itemsRef = useRef(null);
+    var cursorRef = useRef(0);
+    var aliveRef = useRef(true);
+    var previewRef = useRef(null);
+    useEffect(function () {
+      return function () {
+        aliveRef.current = false;
+        stopRef.current = true;
+        try { if (previewRef.current) previewRef.current.pause(); } catch (e) { /* noop */ }
+        try { if (v && typeof v.stopSpeaking === 'function') v.stopSpeaking(); } catch (e) { /* noop */ }
+      };
+    }, [v]);
+
+    /* ---- loaders ---- */
+
+    var loadVoices = useCallback(function () {
+      var vm2 = voiceMod();
+      if (!vm2 || typeof vm2.listElevenVoices !== 'function') {
+        setCat({ status: 'error', voices: [], fetchedAt: 0, cached: false,
+          error: 'js/voice.js is not loaded (or is an older build), so the catalog cannot be fetched.' });
+        return;
+      }
+      setCat(function (p) { return { status: 'loading', voices: p.voices, error: '', fetchedAt: p.fetchedAt, cached: p.cached }; });
+      vm2.listElevenVoices().then(function (d) {
+        if (!aliveRef.current) return;
+        setCat({
+          status: 'loaded',
+          voices: Array.isArray(d.voices) ? d.voices : [],
+          error: '', fetchedAt: d.fetchedAt || Date.now(), cached: d.cached === true
+        });
+      }, function (e) {
+        if (!aliveRef.current) return;
+        setCat({ status: 'error', voices: [], fetchedAt: 0, cached: false,
+          error: (e && e.message) ? e.message : 'The voice catalog would not load.' });
+      });
+    }, []);
+
+    var loadQuota = useCallback(function () {
+      var vm2 = voiceMod();
+      if (!vm2 || typeof vm2.elevenQuota !== 'function') {
+        setQuota({ status: 'error', error: 'js/voice.js is not loaded.' });
+        return;
+      }
+      setQuota({ status: 'loading', error: '' });
+      vm2.elevenQuota().then(function (d) {
+        if (!aliveRef.current) return;
+        setQuota({
+          status: 'loaded', error: '',
+          used: d.used || 0, limit: d.limit || 0, remaining: d.remaining || 0,
+          pct: d.pct || 0, resetsAt: d.resetsAt || 0, plan: d.tier || '', state: d.status || ''
+        });
+      }, function (e) {
+        if (!aliveRef.current) return;
+        setQuota({ status: 'error', error: (e && e.message) ? e.message : 'Could not read the ElevenLabs subscription.' });
+      });
+    }, []);
+
+    var loadCache = useCallback(function () {
+      var vm2 = voiceMod();
+      if (!vm2 || typeof vm2.listClipCache !== 'function') {
+        setCache({ status: 'error', count: 0, chars: 0, hits: 0, bytes: 0, saved: 0,
+          error: 'js/voice.js is not loaded.' });
+        return;
+      }
+      setCache(function (p) { return { status: 'loading', count: p.count, chars: p.chars, hits: p.hits, bytes: p.bytes, saved: p.saved, error: '' }; });
+      vm2.listClipCache().then(function (res) {
+        if (!aliveRef.current) return;
+        if (!res.ok) {
+          setCache({ status: 'error', count: 0, chars: 0, hits: 0, bytes: 0, saved: 0, error: res.error || 'unreadable' });
+          return;
+        }
+        var e = res.entries || {}, k, r, count = 0, chars = 0, hits = 0, bytes = 0, saved = 0;
+        for (k in e) {
+          if (!Object.prototype.hasOwnProperty.call(e, k)) continue;
+          r = e[k] || {};
+          count++;
+          var c = (typeof r.chars === 'number') ? r.chars : 0;
+          var h = (typeof r.hits === 'number') ? r.hits : 0;
+          chars += c;
+          hits += h;
+          bytes += (typeof r.bytes === 'number') ? r.bytes : 0;
+          /* Characters the cache stopped anybody paying for: every hit after the
+             one that created the clip is a line nobody was billed twice for. */
+          saved += c * h;
+        }
+        setCache({ status: 'loaded', count: count, chars: chars, hits: hits, bytes: bytes, saved: saved, error: '' });
+      }, function (e) {
+        if (!aliveRef.current) return;
+        setCache({ status: 'error', count: 0, chars: 0, hits: 0, bytes: 0, saved: 0,
+          error: (e && e.message) ? e.message : 'unreadable' });
+      });
+    }, []);
+
+    var loadSpend = useCallback(function () {
+      var d = db();
+      if (!d) { setSpend({ status: 'error', today: null, week: 0, weekChars: 0, error: 'Firebase is not connected.' }); return; }
+      setSpend(function (p) { return { status: 'loading', today: p.today, week: p.week, weekChars: p.weekChars, error: '' }; });
+      /* limitToLast orders by key, and the keys are YYYY-MM-DD, so this is the
+         last N days. Guarded because a stub / older SDK may not expose it, and
+         a missing analytic must never take the tab down. */
+      var ref = d.ref(VOICE_SPEND_PATH);
+      try {
+        if (typeof ref.limitToLast === 'function') ref = ref.limitToLast(VOICE_SPEND_DAYS);
+      } catch (e) { ref = d.ref(VOICE_SPEND_PATH); }
+      ref.once('value').then(function (snap) {
+        if (!aliveRef.current) return;
+        var val = null;
+        try { val = (snap && typeof snap.val === 'function') ? snap.val() : null; } catch (e) { val = null; }
+        var days = (val && typeof val === 'object') ? val : {};
+        var key = todayKey();
+        var week = 0, weekChars = 0, k;
+        for (k in days) {
+          if (!Object.prototype.hasOwnProperty.call(days, k)) continue;
+          week += num6(days[k] && days[k].total6);
+          weekChars += num6(days[k] && days[k].chars);
+        }
+        setSpend({ status: 'loaded', today: days[key] || null, week: week, weekChars: weekChars, error: '' });
+      }, function (e) {
+        if (!aliveRef.current) return;
+        setSpend({ status: 'denied', today: null, week: 0, weekChars: 0,
+          error: (e && e.message) ? e.message : 'permission denied' });
+      });
+    }, []);
+
+    /* Everything loads once, on open. Three upstream calls, all cached server
+       side for ten minutes, so re-opening the tab is close to free. */
+    useEffect(function () {
+      if (cat.status === 'idle') loadVoices();
+      if (quota.status === 'idle') loadQuota();
+      if (cache.status === 'idle') loadCache();
+      if (spend.status === 'idle') loadSpend();
+    }, [cat.status, quota.status, cache.status, spend.status, loadVoices, loadQuota, loadCache, loadSpend]);
+
+    /* ---- preview player ---- */
+
+    function stopPreview() {
+      try {
+        if (previewRef.current) {
+          previewRef.current.pause();
+          previewRef.current.src = '';
+        }
+      } catch (e) { /* noop */ }
+      previewRef.current = null;
+    }
+
+    function playPreview(url) {
+      stopPreview();
+      if (!url || typeof window.Audio !== 'function') {
+        toast('This voice has no preview clip.', 'info');
+        return;
+      }
+      try {
+        var el = new window.Audio(url);
+        previewRef.current = el;
+        var p = el.play();
+        if (p && typeof p['catch'] === 'function') {
+          p['catch'](function () { toast('The browser would not play the preview. Tap again.', 'info'); });
+        }
+      } catch (e) {
+        toast('Could not play the preview.', 'error');
+      }
+    }
+
+    /* ---- writes ---- */
+
+    function assign(profile, voice) {
+      var cur = profiles[profile];
+      writeCfg('voiceProfiles/' + profile, {
+        voiceId: voice.voice_id,
+        modelId: (cur && cur.modelId) ? cur.modelId : DEFAULT_TTS_MODEL,
+        name: voice.name || ''
+      }).then(function (okWrite) {
+        if (okWrite) setOpenFor('');
+      });
+    }
+
+    function unassign(profile) {
+      writeCfg('voiceProfiles/' + profile, null);
+    }
+
+    /* One-click casting. Scores the LIVE catalog against each role's wanted /
+       unwanted label words (see VOICE_PROFILE_CAST) and fills every role that
+       gets a positive match, never reusing a voice. Roles it cannot cast
+       confidently are left on the device voice rather than mis-cast. Purely a
+       starting point - every assignment stays individually editable. */
+    function autoAssignAll() {
+      var voices = arr(cat.voices);
+      if (!voices.length) { toast('Load the voice catalog first.', 'info'); return; }
+      var picks = autoCast(voices);
+      var roles = keys(picks);
+      if (!roles.length) { toast('No confident matches in this catalog - assign manually.', 'info'); return; }
+      var byId = {};
+      for (var i = 0; i < voices.length; i++) byId[str(obj(voices[i]).voice_id)] = voices[i];
+      var writes = [];
+      for (var r = 0; r < roles.length; r++) {
+        var role = roles[r], v = obj(byId[picks[role]]);
+        var prev = profiles[role];
+        writes.push(writeCfg('voiceProfiles/' + role, {
+          voiceId: str(v.voice_id),
+          modelId: (prev && prev.modelId) ? prev.modelId : DEFAULT_TTS_MODEL,
+          name: str(v.name)
+        }));
+      }
+      Promise.all(writes).then(function (res) {
+        var okCount = 0;
+        for (var i = 0; i < res.length; i++) if (res[i]) okCount++;
+        var skipped = VOICE_PROFILE_ORDER.length - roles.length;
+        toast('Cast ' + okCount + ' of ' + VOICE_PROFILE_ORDER.length + ' roles' +
+          (skipped ? ' - ' + skipped + ' left on the device voice' : '') +
+          '. Preview each one and change any you do not like.', okCount ? 'success' : 'error');
+      });
+    }
+
+    function setProfileModel(profile, modelId) {
+      var cur = profiles[profile];
+      if (!cur) { toast('Assign a voice to this role first.', 'info'); return; }
+      writeCfg('voiceProfiles/' + profile, {
+        voiceId: cur.voiceId, modelId: modelId, name: cur.name || ''
+      });
+    }
+
+    function setVoiceLimit(tier, raw) {
+      var n = parseInt(raw, 10);
+      if (!isFinite(n)) { toast('Enter a whole number of characters (-1 for unlimited).', 'error'); return; }
+      if (n < -1) { toast('Use -1 for unlimited, or 0 for device voices only.', 'error'); return; }
+      writeCfg('voiceLimits/' + tier, n);
+    }
+
+    function setRate(raw) {
+      var n = parseFloat(raw);
+      if (!isFinite(n) || n < 0 || n >= 100) { toast('Enter dollars per 1000 characters, e.g. 0.22.', 'error'); return; }
+      writeCfg('voiceUsdPer1kChars', n);
+    }
+
+    /* ---- test ---- */
+
+    /**
+     * Speak a real clinical line, through the real normalizer, on the real
+     * server path. Two routes on purpose:
+     *   assigned role  -> MM.voice.speak(), i.e. byte for byte the student path
+     *   auditioning    -> a direct clip request with an explicit voiceId, which
+     *                     only the owner is allowed to send
+     */
+    function testProfile(profile) {
+      var vm2 = voiceMod();
+      if (!vm2) { toast('js/voice.js is not loaded.', 'error'); return; }
+      var line = voiceTestLine();
+      setTest({ profile: profile, status: 'busy', msg: 'Rendering...' });
+      try { vm2.stopSpeaking(); } catch (e) { /* noop */ }
+      try { if (typeof vm2.prime === 'function') vm2.prime(); } catch (e) { /* noop */ }
+
+      Promise.resolve()
+        .then(function () { return vm2.speak(line, { voice: profile, force: true }); })
+        .then(function (r) {
+          if (!aliveRef.current) return;
+          if (r && r.premium) {
+            setTest({ profile: profile, status: 'ok',
+              msg: 'Spoken in the studio voice (' + (r.source === 'generated' ? 'newly rendered' : 'from the ' + r.source + ' cache') + ').' });
+          } else {
+            setTest({ profile: profile, status: 'warn',
+              msg: 'That played in your DEVICE voice, not the studio voice: ' + vm2.premiumReasonFor(profile) });
+          }
+          loadCache();
+        }, function (e) {
+          if (!aliveRef.current) return;
+          setTest({ profile: profile, status: 'err', msg: (e && e.message) ? e.message : 'The test failed.' });
+        });
+    }
+
+    /** Audition ONE catalog voice without assigning it. Owner-only server side. */
+    function auditionVoice(profile, voice) {
+      var vm2 = voiceMod();
+      if (!vm2 || typeof vm2.getClip !== 'function') { toast('js/voice.js is not loaded.', 'error'); return; }
+      var cur = profiles[profile];
+      var modelId = (cur && cur.modelId) ? cur.modelId : DEFAULT_TTS_MODEL;
+      var text = vm2.normalizeClinicalForTTS(voiceTestLine());
+      var item = {
+        text: text, profile: profile, voiceId: voice.voice_id, modelId: modelId,
+        hash: vm2.clipHash(text, voice.voice_id, modelId)
+      };
+      setTest({ profile: profile, status: 'busy', msg: 'Rendering ' + voice.name + ' on the clinical line...' });
+      vm2.getClip(item).then(function (entry) {
+        if (!aliveRef.current) return;
+        if (!entry || !entry.url) {
+          setTest({ profile: profile, status: 'err',
+            msg: 'ElevenLabs did not return a clip for ' + voice.name + '. ' +
+                 (vm2.stats().lastError || 'Check the key and the plan.') });
+          return;
+        }
+        setTest({ profile: profile, status: 'ok', msg: 'Playing ' + voice.name + ' reading the clinical line.' });
+        stopPreview();
+        playPreview(entry.url);
+      }, function (e) {
+        if (!aliveRef.current) return;
+        setTest({ profile: profile, status: 'err', msg: (e && e.message) ? e.message : 'Audition failed.' });
+      });
+    }
+
+    /* ---- pre-generate ---- */
+
+    function patchRun(patch) {
+      if (!aliveRef.current) return;
+      setRun(function (prev) {
+        var next = {}, k;
+        for (k in prev) { if (Object.prototype.hasOwnProperty.call(prev, k)) next[k] = prev[k]; }
+        for (k in patch) { if (Object.prototype.hasOwnProperty.call(patch, k)) next[k] = patch[k]; }
+        return next;
+      });
+    }
+
+    function bumpRun(d) {
+      if (!aliveRef.current) return;
+      setRun(function (prev) {
+        return {
+          running: prev.running, idx: prev.idx, total: prev.total,
+          done: prev.done + (d.done || 0),
+          generated: prev.generated + (d.generated || 0),
+          skipped: prev.skipped + (d.skipped || 0),
+          chars: prev.chars + (d.chars || 0),
+          costUsd: prev.costUsd + (d.costUsd || 0),
+          errors: d.error ? prev.errors.concat([d.error]) : prev.errors,
+          label: d.label !== undefined ? d.label : prev.label,
+          finished: prev.finished, stopped: prev.stopped, started: prev.started
+        };
+      });
+    }
+
+    function finishRun() {
+      busyRef.current = false;
+      var items = itemsRef.current || [];
+      var incomplete = cursorRef.current < items.length;
+      patchRun({ running: false, label: '', finished: !incomplete, stopped: incomplete });
+      loadCache();
+      loadQuota();
+    }
+
+    function stepRun() {
+      var vm2 = voiceMod();
+      var items = itemsRef.current || [];
+      if (!vm2 || stopRef.current || cursorRef.current >= items.length) { finishRun(); return; }
+
+      var i = cursorRef.current;
+      var it = items[i];
+      patchRun({ idx: i, label: it.label });
+
+      Promise.resolve().then(function () { return vm2.lookupClip(it); }).then(function (entry) {
+        if (entry) {
+          /* Already in the shared cache or the static bundle. Not paid for
+             again, not re-uploaded, not re-indexed. This is what makes the run
+             resumable and re-runnable for free. */
+          cursorRef.current = i + 1;
+          bumpRun({ done: 1, skipped: 1 });
+          return null;
+        }
+        return Promise.resolve(vm2.getClip(it)).then(function (made) {
+          cursorRef.current = i + 1;
+          if (made) {
+            bumpRun({
+              done: 1, generated: 1, chars: it.chars,
+              costUsd: (typeof made.cost === 'number' && isFinite(made.cost)) ? made.cost : 0
+            });
+          } else {
+            var s = vm2.stats();
+            bumpRun({ done: 1, error: it.label + ' - ' + (s.lastError || 'no clip came back') });
+            /* A permanent condition (the daily cap, the monthly bundle, a bad
+               key) means every remaining item is one more failed round trip. */
+            if (s.disabled) {
+              stopRef.current = true;
+              bumpRun({ error: 'Stopped: ' + s.disabledReason });
+            }
+          }
+          return null;
+        });
+      })['catch'](function (e) {
+        cursorRef.current = i + 1;
+        bumpRun({ done: 1, error: it.label + ' - ' + ((e && e.message) ? e.message : 'failed') });
+      }).then(function () { stepRun(); });
+    }
+
+    function startRun(resume) {
+      var vm2 = voiceMod();
+      if (!vm2) { toast('js/voice.js is not loaded, so there is nothing to pre-generate.', 'error'); return; }
+      if (busyRef.current) return;                 /* never two runs at once, ever */
+      var items = itemsRef.current;
+      if (!resume || !items || !items.length) {
+        items = dialogueItems().filter(function (it) { return !!it.voiceId; });
+        itemsRef.current = items;
+        cursorRef.current = 0;
+      }
+      if (!items.length) {
+        toast('No dialogue lines with an assigned voice. Cast the roles above first.', 'error');
+        return;
+      }
+      busyRef.current = true;
+      stopRef.current = false;
+      if (resume) {
+        patchRun({ running: true, total: items.length, idx: cursorRef.current, finished: false, stopped: false, started: true });
+      } else {
+        patchRun({
+          running: true, idx: 0, total: items.length, done: 0, generated: 0, skipped: 0,
+          chars: 0, costUsd: 0, errors: [], label: '', finished: false, stopped: false, started: true
+        });
+      }
+      stepRun();
+    }
+
+    function stopRun() {
+      stopRef.current = true;
+      patchRun({ label: 'stopping after this one...' });
+    }
+
+    function exportBundle() {
+      var vm2 = voiceMod();
+      if (!vm2 || typeof vm2.exportStaticVoice !== 'function') { toast('js/voice.js is not loaded.', 'error'); return; }
+      var items = itemsRef.current;
+      if (!items || !items.length) {
+        items = dialogueItems().filter(function (it) { return !!it.voiceId; });
+        itemsRef.current = items;
+      }
+      if (!items.length) { toast('Nothing to export.', 'error'); return; }
+
+      setExp({ busy: true, done: 0, total: items.length, msg: 'Finding cached clips...', text: '', count: 0, skipped: [], bytes: 0 });
+
+      var found = [], i = 0;
+      function next() {
+        if (i >= items.length) return Promise.resolve();
+        var it = items[i++];
+        return Promise.resolve().then(function () { return vm2.lookupClip(it); }).then(function (entry) {
+          if (entry && entry.url) found.push({ hash: entry.hash || it.hash, url: entry.url, label: it.label });
+          if (aliveRef.current) {
+            setExp(function (p) {
+              return { busy: true, done: i, total: items.length, msg: it.label, text: p.text, count: p.count, skipped: p.skipped, bytes: p.bytes };
+            });
+          }
+          return next();
+        }, function () { return next(); });
+      }
+
+      next().then(function () {
+        return vm2.exportStaticVoice(found, function (d, t, label) {
+          if (aliveRef.current) {
+            setExp(function (p) {
+              return { busy: true, done: d, total: t, msg: 'Encoding ' + label, text: p.text, count: p.count, skipped: p.skipped, bytes: p.bytes };
+            });
+          }
+        });
+      }).then(function (res) {
+        if (!aliveRef.current) return;
+        var okDl = downloadText('static-voice.js', res.text);
+        setExp({
+          busy: false, done: res.count, total: found.length, count: res.count,
+          skipped: res.skipped || [], bytes: res.bytes || res.text.length,
+          msg: okDl
+            ? 'Downloaded static-voice.js with ' + res.count + ' clip' + (res.count === 1 ? '' : 's') +
+              ' (' + fmtBytes(res.text.length) + ').'
+            : 'This browser blocked the download - copy the text below into data/static-voice.js instead.',
+          text: okDl ? '' : res.text
+        });
+        if (okDl) toast('Static voice bundle downloaded. Commit it as data/static-voice.js.', 'success');
+      })['catch'](function (e) {
+        if (!aliveRef.current) return;
+        setExp({ busy: false, done: 0, total: 0, count: 0, skipped: [], text: '', bytes: 0,
+          msg: 'Export failed: ' + ((e && e.message) ? e.message : 'unknown error') });
+      });
+    }
+
+    /* ---- derived ---- */
+
+    var allItems = dialogueItems();
+    var castItems = allItems.filter(function (it) { return !!it.voiceId; });
+    var totalChars = castItems.reduce(function (n, it) { return n + it.chars; }, 0);
+    var rate = (typeof config.voiceUsdPer1kChars === 'number') ? config.voiceUsdPer1kChars : DEFAULT_USD_PER_1K_CHARS;
+    var assignedCount = order.filter(function (p) { return !!profiles[p]; }).length;
+    var pctRun = run.total > 0 ? Math.round((run.done / run.total) * 100) : 0;
+    var normalizedTest = v ? v.normalizeClinicalForTTS(voiceTestLine()) : '';
+
+    var voiceById = useMemo(function () {
+      var m = {}, i;
+      for (i = 0; i < cat.voices.length; i++) m[cat.voices[i].voice_id] = cat.voices[i];
+      return m;
+    }, [cat.voices]);
+
+    /* Grouped for the picker: premade / professional / cloned / generated. The
+       group is the single most useful sort - a cloned voice is one the owner
+       made, and it should never be buried among two hundred stock voices. */
+    var grouped = useMemo(function () {
+      var q = String(filter || '').toLowerCase().trim();
+      var groups = {}, orderKeys = [], i, vv, key, hay;
+      for (i = 0; i < cat.voices.length; i++) {
+        vv = cat.voices[i];
+        if (q) {
+          hay = [vv.name, vv.category, vv.labels.accent, vv.labels.age, vv.labels.gender,
+                 vv.labels.description, vv.labels.useCase, vv.description].join(' ').toLowerCase();
+          if (hay.indexOf(q) === -1) continue;
+        }
+        key = vv.category || 'other';
+        if (!groups[key]) { groups[key] = []; orderKeys.push(key); }
+        groups[key].push(vv);
+      }
+      orderKeys.sort(function (a, b) {
+        var rank = { cloned: 0, professional: 1, premade: 2, generated: 3 };
+        var ra = (rank[a] === undefined) ? 9 : rank[a];
+        var rb = (rank[b] === undefined) ? 9 : rank[b];
+        return ra - rb;
+      });
+      return { keys: orderKeys, map: groups };
+    }, [cat.voices, filter]);
+
+    var shownCount = grouped.keys.reduce(function (n, k) { return n + grouped.map[k].length; }, 0);
+
+    /* ---- render helpers ---- */
+
+    function voiceCard(profile, vv) {
+      var cur = profiles[profile];
+      var isOn = !!(cur && cur.voiceId === vv.voice_id);
+      var bits = [vv.labels.gender, vv.labels.age, vv.labels.accent, vv.labels.useCase]
+        .filter(function (s) { return !!s; });
+      return ce('div', { className: 'aia-vcard' + (isOn ? ' on' : ''), key: vv.voice_id },
+        ce('b', null, vv.name),
+        ce('div', { className: 'vid' }, vv.voice_id),
+        bits.length ? ce('div', { className: 'aia-meta' },
+          bits.map(function (b, i) { return ce('span', { className: 'aia-chip', key: i }, b); })
+        ) : null,
+        vv.labels.description ? ce('div', { className: 'aia-eff' }, vv.labels.description) : null,
+        ce('div', { className: 'aia-vbtns' },
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            disabled: !vv.preview_url,
+            title: vv.preview_url ? 'Play the ElevenLabs sample' : 'This voice has no sample clip',
+            onClick: function () { playPreview(vv.preview_url); }
+          }, 'Preview'),
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            title: 'Render the clinical test line in this voice, without assigning it',
+            onClick: function () { auditionVoice(profile, vv); }
+          }, 'Hear the clinical line'),
+          ce('button', {
+            type: 'button', className: 'btn ' + (isOn ? 'btn-outline' : 'btn-primary') + ' btn-sm',
+            disabled: isOn,
+            onClick: function () { assign(profile, vv); }
+          }, isOn ? 'Assigned' : 'Assign')
+        )
+      );
+    }
+
+    function profileRow(profile, idx) {
+      var cur = profiles[profile];
+      var known = cur ? voiceById[cur.voiceId] : null;
+      var open = openFor === profile;
+      var testMine = test.profile === profile ? test : null;
+
+      return ce('div', { className: 'aia-featrow' + (idx === 0 ? ' first' : ''), key: profile },
+        ce('div', { className: 'aia-row' },
+          ce('div', { style: { minWidth: 0 } },
+            ce('div', { className: 'aia-featname' }, VOICE_PROFILE_LABEL[profile] || profile),
+            ce('div', { className: 'aia-featid' }, profile)
+          ),
+          cur
+            ? ce('span', { className: 'aia-chip verified' }, 'studio voice')
+            : ce('span', { className: 'aia-chip unknown' }, 'device voice')
+        ),
+        ce('p', { className: 'aia-desc' }, VOICE_PROFILE_USE[profile] || ''),
+
+        cur ? ce('div', { className: 'aia-eff' },
+          ce('b', null, (cur.name || (known ? known.name : '') || 'unnamed')),
+          ' · ', ce('span', { className: 'aia-code' }, cur.voiceId),
+          (cat.status === 'loaded' && !known)
+            ? ce('span', { className: 'aia-cellwarn bad' },
+                'This voice id is not in the ElevenLabs catalog any more. It will 404 and every line in this role ' +
+                'will fall back to the device voice. Pick another one.')
+            : null
+        ) : ce('div', { className: 'aia-eff' },
+          'No studio voice assigned, so this role uses the student\'s own device voice. That is a working ' +
+          'state, not a broken one - it is exactly what Free and Plus hear.'),
+
+        ce('div', { className: 'aia-run' },
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            onClick: function () { setOpenFor(open ? '' : profile); setFilter(''); }
+          }, open ? 'Close the voice list' : (cur ? 'Change voice' : 'Choose a voice')),
+          cur ? ce('button', {
+            type: 'button', className: 'btn btn-primary btn-sm',
+            disabled: test.status === 'busy',
+            onClick: function () { testProfile(profile); }
+          }, (testMine && testMine.status === 'busy') ? 'Rendering...' : 'Test this voice') : null,
+          cur ? ce('select', {
+            className: 'aia-select', style: { width: 'auto', minWidth: 170 },
+            value: cur.modelId || DEFAULT_TTS_MODEL,
+            'aria-label': 'ElevenLabs model for the ' + profile + ' role',
+            onChange: function (e) { setProfileModel(profile, e.target.value); }
+          }, models.map(function (m) {
+            return ce('option', { key: m.id, value: m.id }, m.label + ' (' + m.latency + ')');
+          })) : null,
+          cur ? ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            onClick: function () { unassign(profile); }
+          }, 'Use the device voice') : null
+        ),
+
+        testMine && testMine.msg ? ce('div', {
+          className: 'aia-note ' + (testMine.status === 'ok' ? 'ok' : testMine.status === 'err' ? 'err' : testMine.status === 'warn' ? 'warn' : 'info'),
+          role: 'status'
+        }, testMine.msg) : null,
+
+        open ? ce('div', null,
+          ce('div', { className: 'aia-row', style: { marginTop: 10 } },
+            ce('input', {
+              className: 'aia-input', style: { flex: '1 1 200px' }, type: 'search',
+              placeholder: 'Filter by name, accent, age, gender...',
+              value: filter, 'aria-label': 'Filter voices',
+              onChange: function (e) { setFilter(e.target.value); }
+            }),
+            ce('button', {
+              type: 'button', className: 'btn btn-outline btn-sm',
+              disabled: cat.status === 'loading',
+              onClick: loadVoices
+            }, cat.status === 'loading' ? 'Loading...' : 'Reload')
+          ),
+          cat.status === 'loading' ? ce('p', { className: 'aia-empty' }, 'Loading the ElevenLabs catalog...') : null,
+          cat.status === 'error' ? ce('div', { className: 'aia-note err' }, cat.error) : null,
+          cat.status === 'loaded' && shownCount === 0
+            ? ce('p', { className: 'aia-empty' }, 'No voice matches "' + filter + '".') : null,
+          grouped.keys.map(function (k) {
+            return ce('div', { key: k },
+              ce('div', { className: 'aia-vgroup' }, k + ' (' + grouped.map[k].length + ')'),
+              ce('div', { className: 'aia-vpick' },
+                grouped.map[k].map(function (vv) { return voiceCard(profile, vv); }))
+            );
+          })
+        ) : null
+      );
+    }
+
+    /* ---- render ---- */
+
+    if (!v) {
+      return ce('div', null, ce('div', { className: 'aia-card alert' },
+        ce('p', { className: 'aia-h' }, 'js/voice.js is not loaded'),
+        ce('p', { className: 'aia-desc' },
+          'Studio voices live behind ', ce('span', { className: 'aia-code' }, 'MM.voice.speak()'),
+          ', so this tab needs js/voice.js on the page. Everything else in the panel still works, and ' +
+          'students are unaffected: with no voice layer at all the app simply never speaks.')
+      ));
+    }
+
+    return ce('div', null,
+
+      /* ---- 1. WHAT THIS IS + THE MASTER SWITCH ---- */
+      ce('div', { className: 'aia-card' },
+        ce('div', { className: 'aia-row' },
+          ce('p', { className: 'aia-h' }, 'Studio voices (ElevenLabs)'),
+          Toggle(config.voiceEnabled !== false, function (on) { writeCfg('voiceEnabled', on); },
+            'Studio voices on or off site-wide')
+        ),
+        ce('p', { className: 'aia-desc' },
+          'Pro and Instructor hear ElevenLabs. Free and Plus hear their own device\'s voices, which cost nothing ' +
+          'and always work - so turning this off, running out of characters, or never casting a role is never a ' +
+          'broken feature for anybody. It just means the device voice reads the line.'),
+        ce('p', { className: 'aia-desc' },
+          'Every line is rendered ONCE and shared: it is uploaded to Storage and published to ',
+          ce('span', { className: 'aia-code' }, '/voiceCache/<hash>'),
+          ', so the second student to hear a sentence pays nothing, on any device, forever.'),
+        ce('div', { className: 'aia-meta' },
+          ce('span', { className: 'aia-chip' + (assignedCount ? ' verified' : ' unknown') },
+            assignedCount + ' of ' + order.length + ' roles cast'),
+          ce('span', { className: 'aia-chip' }, allItems.length + ' scripted lines'),
+          ce('span', { className: 'aia-chip' }, fmtChars(totalChars) + ' characters to voice them all'),
+          ce('span', { className: 'aia-chip' }, '~' + fmtUsd(totalChars / 1000 * rate) + ' one time')
+        ),
+        config.enabled === false ? ce('div', { className: 'aia-note warn' },
+          'The master AI switch on the Settings tab is OFF, which also stops studio voices for everyone except you.') : null,
+        config.voiceEnabled === false ? ce('div', { className: 'aia-note info' },
+          'Studio voices are paused. Students hear their device voices; the text AI is unaffected.') : null
+      ),
+
+      /* ---- 2. THE ELEVENLABS MONTHLY BUNDLE ---- */
+      ce('div', { className: 'aia-card' },
+        ce('div', { className: 'aia-row' },
+          ce('p', { className: 'aia-h' }, 'ElevenLabs monthly characters'),
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            disabled: quota.status === 'loading', onClick: loadQuota
+          }, quota.status === 'loading' ? 'Checking...' : 'Refresh')
+        ),
+        quota.status === 'loaded' ? ce('div', null,
+          ce('div', { className: 'aia-money' },
+            fmtChars(quota.used) + ' / ' + (quota.limit ? fmtChars(quota.limit) : 'unknown')),
+          ce('div', { className: 'aia-bar tall' },
+            ce('i', {
+              style: {
+                width: Math.min(100, quota.pct) + '%',
+                background: quota.pct >= 90 ? 'var(--red)' : quota.pct >= 70 ? 'var(--orange)' : 'var(--accent)'
+              }
+            })),
+          ce('div', { className: 'aia-meta' },
+            ce('span', { className: 'aia-chip' }, quota.pct + '% used'),
+            ce('span', { className: 'aia-chip' }, fmtChars(quota.remaining) + ' left'),
+            quota.plan ? ce('span', { className: 'aia-chip' }, quota.plan + ' plan') : null,
+            quota.resetsAt ? ce('span', { className: 'aia-chip' }, 'resets ' + fmtDate(quota.resetsAt)) : null
+          ),
+          quota.pct >= 90 ? ce('div', { className: 'aia-note warn' },
+            'Nearly out. When the bundle runs dry every student silently falls back to their device voice and the ' +
+            'app keeps working - but nothing new gets rendered until it resets or you top it up.') : null
+        ) : null,
+        quota.status === 'loading' ? ce('p', { className: 'aia-empty' }, 'Asking ElevenLabs...') : null,
+        quota.status === 'error' ? ce('div', { className: 'aia-note err' }, quota.error) : null,
+        ce('p', { className: 'aia-desc' },
+          'This is the SITE\'s monthly bundle, which is a different thing from a student\'s daily character cap ' +
+          'below. Running out of one says nothing about the other, and the two produce deliberately different ' +
+          'messages so nobody is told off for your billing.')
+      ),
+
+      /* ---- 3. CASTING ---- */
+      ce('div', { className: 'aia-card' },
+        ce('div', { className: 'aia-row' },
+          ce('p', { className: 'aia-h' }, 'Cast a voice for each speaker'),
+          ce('button', {
+            type: 'button', className: 'btn btn-primary btn-sm',
+            disabled: cat.status !== 'loaded' || !arr(cat.voices).length,
+            onClick: autoAssignAll,
+            title: cat.status === 'loaded'
+              ? 'Score every catalog voice against what each role needs and fill them all in'
+              : 'Load the voice catalog first'
+          }, 'Auto-cast all roles')
+        ),
+        ce('p', { className: 'aia-desc' },
+          'Writes to ', ce('span', { className: 'aia-code' }, 'aiConfig.voiceProfiles.<role>'),
+          '. Nothing is hardcoded: a role with no voice here uses the device voice, and that is a perfectly good ' +
+          'answer for four of the five if the budget only stretches to the patient.'),
+        ce('p', { className: 'aia-desc' },
+          'Auto-cast is a starting point, not a verdict. It matches each role against the live catalog\'s own ' +
+          'gender / age / accent labels, never picks the same voice twice, and leaves a role alone rather than ' +
+          'mis-cast it. Preview each one afterwards - the patient voice is the one students hear most, so it is ' +
+          'worth being fussy about.'),
+        normalizedTest ? ce('div', { className: 'aia-spoken' },
+          ce('b', null, 'The test line, as the model will actually receive it: '),
+          normalizedTest
+        ) : null,
+        ce('p', { className: 'aia-desc' },
+          'That is the clinical normalizer at work. Flash v2.5 turns its own number handling off for speed, so ' +
+          'every line is spelled out before it is sent - "92/58" becomes "ninety two over fifty eight" here, not ' +
+          '"June fifty eighth" at the bedside.'),
+        order.map(profileRow)
+      ),
+
+      /* ---- 4. DAILY CAPS + RATE ---- */
+      ce('div', { className: 'aia-card' },
+        ce('p', { className: 'aia-h' }, 'Daily character limit per plan'),
+        ce('p', { className: 'aia-desc' },
+          'Counted server side at ', ce('span', { className: 'aia-code' }, '/voiceUsage/<uid>/<day>'),
+          ' and completely separate from the message and image allowances. A student who runs out keeps every ' +
+          'feature - the lines just come out in their device\'s voice for the rest of the day.'),
+        ce('div', { className: 'aia-nums', style: { marginTop: 10 } },
+          TIER_ORDER.map(function (t) {
+            var val = (config.voiceLimits && typeof config.voiceLimits[t] === 'number')
+              ? config.voiceLimits[t] : 0;
+            var premium = (t === 'pro' || t === 'instructor');
+            return ce('div', { className: 'aia-field', key: t },
+              ce('label', { htmlFor: 'aia-vl-' + t, style: { color: TIER_COLOR[t] } }, TIER_LABEL[t]),
+              ce('input', {
+                id: 'aia-vl-' + t, className: 'aia-input', type: 'number', step: 100, min: -1,
+                defaultValue: val, key: t + '-' + val, disabled: !premium,
+                onBlur: function (e) { setVoiceLimit(t, e.target.value); },
+                onKeyDown: function (e) { if (e.key === 'Enter') e.target.blur(); }
+              }),
+              ce('div', {
+                style: {
+                  color: val < -1 ? 'var(--orange-fg,var(--orange))' : 'var(--text3)',
+                  fontSize: 'var(--fs-xs,12px)', marginTop: 4
+                }
+              }, premium ? voiceLimitPhrase(val)
+                         : 'device voices only - the server refuses studio voices on this plan whatever this says')
+            );
+          })
+        ),
+        ce('div', { className: 'aia-nums', style: { marginTop: 14 } },
+          ce('div', { className: 'aia-field' },
+            ce('label', { htmlFor: 'aia-vrate' }, 'Dollars per 1000 characters'),
+            ce('input', {
+              id: 'aia-vrate', className: 'aia-input', type: 'number', step: 0.01, min: 0,
+              defaultValue: rate, key: 'rate-' + rate,
+              onBlur: function (e) { setRate(e.target.value); },
+              onKeyDown: function (e) { if (e.key === 'Enter') e.target.blur(); }
+            }),
+            ce('div', { style: { color: 'var(--text3)', fontSize: 'var(--fs-xs,12px)', marginTop: 4 } },
+              'Creator ~0.22, Pro ~0.20, Scale ~0.17')
+          )
+        ),
+        ce('p', { className: 'aia-desc' },
+          'ElevenLabs bills characters against a monthly bundle and returns no per-request price, so unlike the ' +
+          'text AI every dollar figure on this tab is an ESTIMATE from this rate. The character counts are exact.')
+      ),
+
+      /* ---- 5. SPEND + CACHE ---- */
+      ce('div', { className: 'aia-card' },
+        ce('div', { className: 'aia-row' },
+          ce('p', { className: 'aia-h' }, 'What it has cost, and what the cache has saved'),
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            disabled: cache.status === 'loading',
+            onClick: function () { loadCache(); loadSpend(); }
+          }, cache.status === 'loading' ? 'Loading...' : 'Refresh')
+        ),
+        ce('div', { className: 'aia-nums' },
+          ce('div', { className: 'stat-box' },
+            ce('div', { className: 'stat-value' }, cache.status === 'loaded' ? String(cache.count) : '-'),
+            ce('div', { className: 'stat-label' }, 'clips in the shared cache')),
+          ce('div', { className: 'stat-box' },
+            ce('div', { className: 'stat-value' }, cache.status === 'loaded' ? fmtChars(cache.saved) : '-'),
+            ce('div', { className: 'stat-label' }, 'characters saved by cache hits')),
+          ce('div', { className: 'stat-box' },
+            ce('div', { className: 'stat-value' },
+              cache.status === 'loaded' ? fmtUsd(cache.saved / 1000 * rate) : '-'),
+            ce('div', { className: 'stat-label' }, 'not spent, because of the cache')),
+          ce('div', { className: 'stat-box' },
+            ce('div', { className: 'stat-value' }, cache.status === 'loaded' ? fmtBytes(cache.bytes) : '-'),
+            ce('div', { className: 'stat-label' }, 'audio stored'))
+        ),
+        cache.status === 'error' ? ce('div', { className: 'aia-note warn' },
+          'The clip index could not be read (' + cache.error + '). Nothing breaks visibly when that happens - ' +
+          'every student just silently pays again for lines somebody already bought. The rule is at the bottom of ' +
+          'this tab.') : null,
+
+        spend.status === 'loaded' ? ce('div', null,
+          ce('div', { className: 'aia-srow' },
+            ce('span', { className: 'lbl' }, 'Today'),
+            ce('span', null, fmtChars(num6(spend.today && spend.today.chars)) + ' chars · ' +
+              fmtUsd(micro2usd(num6(spend.today && spend.today.total6))) + ' est · ' +
+              num6(spend.today && spend.today.calls) + ' rendered')),
+          ce('div', { className: 'aia-srow' },
+            ce('span', { className: 'lbl' }, 'Last 14 days'),
+            ce('span', null, fmtChars(spend.weekChars) + ' chars · ' + fmtUsd(micro2usd(spend.week)) + ' est')),
+          (spend.today && spend.today.byProfile) ? ce('div', null,
+            Object.keys(spend.today.byProfile).map(function (p) {
+              return ce('div', { className: 'aia-srow', key: p },
+                ce('span', { className: 'lbl' }, VOICE_PROFILE_LABEL[p] || p),
+                ce('span', null, fmtChars(num6(spend.today.byProfile[p].chars)) + ' chars'));
+            })
+          ) : null
+        ) : null,
+        spend.status === 'denied' ? ce('div', { className: 'aia-note warn' },
+          'The voice spend ledger is unreadable (' + spend.error + '). The feature is unaffected - only this ' +
+          'number is. The ledger is written by the Netlify function, which needs FIREBASE_DB_SECRET set to get ' +
+          'past the "write: false" rule on /voiceSpend.') : null,
+
+        ce('p', { className: 'aia-desc' },
+          'This session, in this tab: ',
+          (function () {
+            var s = v.stats();
+            return s.hits + ' cache hits, ' + s.generated + ' rendered, ' + s.fallbacks +
+              ' fell back to the device voice' + (s.uploadFailures ? ', ' + s.uploadFailures + ' uploads failed' : '') + '.';
+          })())
+      ),
+
+      /* ---- 6. PRE-GENERATE ---- */
+      ce('div', { className: 'aia-card' },
+        ce('p', { className: 'aia-h' }, 'Pre-generate every scripted line'),
+        ce('p', { className: 'aia-desc' },
+          'The 18 simulations contain ' + allItems.length + ' scripted dialogue lines, and they are the same ' +
+          'lines for every student who ever installs this app. Render them once here and every student reads ' +
+          'them out of the shared cache for free. Export them afterwards and they cost nothing even to look up.'),
+        ce('p', { className: 'aia-desc' },
+          castItems.length
+            ? (castItems.length + ' of ' + allItems.length + ' lines have a voice cast for their speaker (' +
+               fmtChars(totalChars) + ' characters, about ' + fmtUsd(totalChars / 1000 * rate) +
+               ' at your rate). Anything already cached is skipped without spending a character, so re-running ' +
+               'is safe and the run is resumable.')
+            : 'No lines can be rendered yet: cast at least one speaker role above. (Scripted dialogue in this ' +
+              'app is spoken by the patient and by family members.)'),
+
+        ce('div', { className: 'aia-run' },
+          ce('button', {
+            type: 'button', className: 'btn btn-primary btn-sm',
+            disabled: run.running || !castItems.length,
+            onClick: function () { startRun(false); }
+          }, run.running ? 'Running...' : run.started ? 'Start over' : 'Start'),
+          (run.stopped && !run.running) ? ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            onClick: function () { startRun(true); }
+          }, 'Resume from ' + (cursorRef.current + 1)) : null,
+          run.running ? ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm', onClick: stopRun
+          }, 'Stop') : null,
+          ce('button', {
+            type: 'button', className: 'btn btn-outline btn-sm',
+            disabled: run.running || exp.busy || !castItems.length,
+            onClick: exportBundle
+          }, exp.busy ? 'Exporting...' : 'Export as static bundle')
+        ),
+
+        run.started ? ce('div', null,
+          ce('div', { className: 'aia-runbar' }, ce('i', { style: { width: pctRun + '%' } })),
+          ce('div', { className: 'aia-row', style: { marginTop: 8, fontSize: 'var(--fs-sm,13px)' } },
+            ce('span', { style: { color: 'var(--text2)' } },
+              run.done + ' of ' + run.total + (run.label ? ' · ' + run.label : '')),
+            ce('span', { style: { fontWeight: 700 } },
+              fmtChars(run.chars) + ' chars · ' + fmtUsd(run.costUsd))
+          ),
+          ce('div', { className: 'aia-meta' },
+            ce('span', { className: 'aia-chip' }, run.generated + ' rendered'),
+            ce('span', { className: 'aia-chip' }, run.skipped + ' already cached'),
+            run.errors.length ? ce('span', { className: 'aia-chip warn' }, run.errors.length + ' failed') : null
+          ),
+          run.finished && !run.running ? ce('div', { className: 'aia-note ok' },
+            'Done. ' + run.generated + ' rendered for about ' + fmtUsd(run.costUsd) + ', ' + run.skipped +
+            ' were already cached. Export the bundle now so this never has to run again.') : null,
+          run.stopped && !run.running ? ce('div', { className: 'aia-note warn' },
+            'Stopped at item ' + (cursorRef.current + 1) + ' of ' + run.total +
+            '. Nothing already rendered was lost - Resume picks up from here, and anything cached is skipped.') : null,
+          run.errors.length ? ce('div', {
+            className: 'aia-errlist', tabIndex: 0, role: 'region', 'aria-label': 'Pre-generate errors'
+          }, run.errors.map(function (msg, i2) { return ce('div', { key: i2 }, msg); })) : null
+        ) : null,
+
+        exp.busy ? ce('div', null,
+          ce('div', { className: 'aia-runbar' },
+            ce('i', { style: { width: (exp.total ? Math.round((exp.done / exp.total) * 100) : 0) + '%' } })),
+          ce('p', { className: 'aia-desc' }, exp.msg)
+        ) : (exp.msg ? ce('div', { className: 'aia-note ' + (exp.count ? 'ok' : 'warn') }, exp.msg) : null),
+
+        exp.skipped && exp.skipped.length ? ce('div', { className: 'aia-note warn' },
+          exp.skipped.length + ' line' + (exp.skipped.length === 1 ? ' was' : 's were') +
+          ' left out because no cached clip could be read for them: ' + exp.skipped.slice(0, 6).join(', ') +
+          (exp.skipped.length > 6 ? '...' : '')) : null,
+
+        exp.text ? ce('div', { className: 'aia-pre', style: { maxHeight: 200, overflow: 'auto' } },
+          exp.text.slice(0, 2000) + '\n... (truncated for display - use the download button)') : null,
+
+        ce('p', { className: 'aia-desc' },
+          'The export writes ', ce('span', { className: 'aia-code' }, 'window.MM_STATIC_VOICE'),
+          ' keyed by clip hash. Save it as ', ce('span', { className: 'aia-code' }, 'data/static-voice.js'),
+          ' and load it before ', ce('span', { className: 'aia-code' }, 'js/voice.js'), '. ',
+          'Be warned that mp3 base64 is heavy - budget 20-30 KB a line, so all ' + allItems.length +
+          ' lines is a multi-megabyte file. Exporting only the most-heard scenarios is often the better trade.')
+      ),
+
+      /* ---- 7. THE RULES THAT MAKE THE SHARED CACHE WORK ---- */
+      ce('div', { className: 'aia-card' },
+        ce('p', { className: 'aia-h' }, 'The /voiceCache security rule'),
+        ce('p', { className: 'aia-desc' },
+          'The shared index is what stops the second student paying for a line the first one already bought. ' +
+          'If it is not readable nothing breaks visibly - every student silently renders their own copy. ' +
+          'Paste this into Firebase -> Realtime Database -> Rules:'),
+        ce('div', { className: 'aia-pre' }, VOICE_CACHE_RULES),
+        ce('p', { className: 'aia-desc' },
+          'Read is open to any signed-in user on purpose: a cache nobody can read is not a cache. Writing a new ' +
+          'entry is allowed only where one does not already exist, so a student can publish a clip they just ' +
+          'paid for but can never overwrite or poison somebody else\'s.'),
+        ce('p', { className: 'aia-desc', style: { marginTop: 12 } },
+          'And the matching Cloud Storage rules, which live in a different console tab (Storage -> Rules):'),
+        ce('div', { className: 'aia-pre' }, VOICE_STORAGE_RULES)
       )
     );
   }

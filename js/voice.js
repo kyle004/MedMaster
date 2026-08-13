@@ -276,6 +276,17 @@
     { re: /\bmmHg\b/gi, to: 'millimeters of mercury' },
     { re: /\bdL\b/g,  to: 'deciliter' },
 
+    /* -- oxygen delivery ----------------------------------------------------
+       Spoken constantly in these scenarios ("2 L via NC", "15 L NRB"). Without
+       these the device reads the letters, which is exactly the screen-reader
+       effect the normalizer exists to avoid. Case-sensitive so a lowercase
+       "nc" inside an ordinary word is never touched. */
+    { re: /\bNRB\b/g,  to: 'non-rebreather' },
+    { re: /\bNC\b/g,   to: 'nasal cannula' },
+    { re: /\bHFNC\b/g, to: 'high flow nasal cannula' },
+    { re: /\bBVM\b/g,  to: 'bag valve mask' },
+    { re: /\bRA\b/g,   to: 'room air' },
+
     /* -- routes / orders ---------------------------------------------------- */
     { re: /\bIVPB\b/g, to: 'I V piggyback' },
     { re: /\bIVP\b/g,  to: 'I V push' },
@@ -788,10 +799,16 @@
 
   var PREFS_KEY = 'mm_voice_prefs';
   var DEFAULT_PREFS = {
-    enabled: true,     /* master mute for TTS                       */
-    rate: 1,           /* global rate multiplier applied to profiles */
-    voiceName: '',     /* preferred SpeechSynthesisVoice.name        */
-    autoSpeak: false   /* auto-read new content aloud                */
+    enabled: true,      /* master mute for TTS                        */
+    rate: 1,            /* global rate multiplier applied to profiles  */
+    voiceName: '',      /* preferred SpeechSynthesisVoice.name         */
+    autoSpeak: false,   /* auto-read new content aloud                 */
+    /* Opt OUT of the ElevenLabs studio voices, for a student on a paid plan who
+       prefers the device voice (or is on a metered connection - an mp3 is a few
+       tens of KB where the browser synth is zero bytes). Default on; only
+       consulted for tiers that have premium voices at all, so flipping it does
+       nothing at all on Free/Plus. */
+    premiumVoice: true
   };
   var _prefs = null;
   var _prefsListeners = [];
@@ -799,7 +816,8 @@
   function readPrefs() {
     var p = {
       enabled: DEFAULT_PREFS.enabled, rate: DEFAULT_PREFS.rate,
-      voiceName: DEFAULT_PREFS.voiceName, autoSpeak: DEFAULT_PREFS.autoSpeak
+      voiceName: DEFAULT_PREFS.voiceName, autoSpeak: DEFAULT_PREFS.autoSpeak,
+      premiumVoice: DEFAULT_PREFS.premiumVoice
     };
     try {
       var raw = window.localStorage.getItem(PREFS_KEY);
@@ -809,6 +827,7 @@
           if (typeof o.enabled === 'boolean') p.enabled = o.enabled;
           if (typeof o.autoSpeak === 'boolean') p.autoSpeak = o.autoSpeak;
           if (typeof o.voiceName === 'string') p.voiceName = o.voiceName;
+          if (typeof o.premiumVoice === 'boolean') p.premiumVoice = o.premiumVoice;
           if (o.rate !== undefined) p.rate = clamp(o.rate, 0.5, 2);
         }
       }
@@ -820,7 +839,8 @@
     if (!_prefs) _prefs = readPrefs();
     return {
       enabled: _prefs.enabled, rate: _prefs.rate,
-      voiceName: _prefs.voiceName, autoSpeak: _prefs.autoSpeak
+      voiceName: _prefs.voiceName, autoSpeak: _prefs.autoSpeak,
+      premiumVoice: _prefs.premiumVoice
     };
   }
 
@@ -830,6 +850,7 @@
     if (typeof patch.enabled === 'boolean') cur.enabled = patch.enabled;
     if (typeof patch.autoSpeak === 'boolean') cur.autoSpeak = patch.autoSpeak;
     if (typeof patch.voiceName === 'string') cur.voiceName = patch.voiceName;
+    if (typeof patch.premiumVoice === 'boolean') cur.premiumVoice = patch.premiumVoice;
     if (patch.rate !== undefined) cur.rate = clamp(patch.rate, 0.5, 2);
     _prefs = cur;
     try { window.localStorage.setItem(PREFS_KEY, JSON.stringify(cur)); } catch (e) { }
@@ -1005,14 +1026,22 @@
   }
 
   function isSpeaking() {
+    /* An ElevenLabs clip plays through an <audio> element, which the synth knows
+       nothing about, so the synth can be idle while the app is very much
+       speaking. Ask the audio element first. */
+    if (premiumAudioBusy()) return true;
     var synth = getSynth();
-    if (!synth) return false;
+    if (!synth) return _speaking;
     try { return !!(synth.speaking || synth.pending) && _speaking; } catch (e) { return _speaking; }
   }
 
   function stopSpeaking() {
     _speakToken++;
     stopKeepalive();
+    /* Both engines, always, in this order. Bumping the token first means any
+       in-flight ElevenLabs fetch that lands after this point sees a stale token
+       and drops its audio on the floor instead of talking over the next line. */
+    stopPremiumAudio();
     var synth = getSynth();
     if (synth) { try { synth.cancel(); } catch (e) { } }
     if (_speaking) { _speaking = false; emitSpeakState(); }
@@ -1025,6 +1054,24 @@
   var _primed = false;
   function prime() {
     if (_primed) return;
+    /* TWO engines to unlock, and iOS locks them separately.
+       1. speechSynthesis, via a silent utterance (the original behaviour).
+       2. the ONE <audio> element the ElevenLabs path reuses - see getAudioEl().
+          Touching it inside the gesture is what stops every studio clip on
+          iPhone from being blocked and silently falling back to the browser
+          voice. Best-effort: if it does not take, the fallback still speaks. */
+    try {
+      var el = getAudioEl();
+      if (el) {
+        el.muted = true;
+        if (typeof el.load === 'function') el.load();
+        var pr = el.play ? el.play() : null;
+        if (pr && typeof pr['catch'] === 'function') pr['catch'](function () { /* expected with no src */ });
+        try { el.pause(); } catch (e2) { /* noop */ }
+        el.muted = false;
+      }
+    } catch (e3) { /* noop */ }
+
     var synth = getSynth();
     var Utt = getUtteranceCtor();
     if (!synth || !Utt) { _primed = true; return; }
@@ -1037,30 +1084,1656 @@
     } catch (e) { _primed = true; }
   }
 
+  /* ======================================================================
+   * 8b. CLINICAL TEXT NORMALIZER FOR STUDIO TTS
+   * ----------------------------------------------------------------------
+   * WHY THIS EXISTS, in one paragraph:
+   *
+   * ElevenLabs Flash v2.5 turns its own number normalization OFF to hit ~75ms,
+   * and ElevenLabs' documented advice is to normalize the text yourself before
+   * sending. This app is nothing BUT numbers - "BP 92/58", "0.25 mg", "125
+   * mL/hr", "101.6 F", "1:1000". A raw model reads "92/58" as a date, "0.25" as
+   * "point twenty five" and "1:1000" as a clock time. That is the difference
+   * between a nurse and a screen reader, and it is exactly the content a
+   * student is trying to memorise, so it has to be right.
+   *
+   * normalizeForSpeech() (section 4) is NOT enough on its own: it expands
+   * abbreviations but leaves every numeral as a numeral, because the browser
+   * synth reads numerals correctly by itself. This pipeline adds the number
+   * work on top of it, and is used ONLY on the ElevenLabs path.
+   *
+   * THE PIPELINE, in order (each step assumes the one before it ran):
+   *   1. stripMarkdown            shared with normalizeForSpeech
+   *   2. thousands separators     10,000 -> 10000, so later rules see one number
+   *   3. CLINICAL_PRE             everything where the DIGITS carry meaning that
+   *                               is lost once they are words: dates, clock
+   *                               times, temperatures, BP fractions, pain
+   *                               scores, ratios, lab shorthand, ranges
+   *   4. expandUnits()            number + unit together, so "1 mg/mL" can be
+   *                               singular and "2 mg/mL" plural
+   *   5. SPEECH_EXPANSIONS        the existing shared abbreviation table
+   *   6. CLINICAL_POST            ordinals and leftovers
+   *   7. numeralsToWords()        every digit that survived becomes words
+   *   8. tidy                     punctuation spacing, double spaces
+   *
+   * Order is load-bearing. Units run BEFORE the generic table so the generic
+   * "mg -> milligrams" rule only ever sees a bare unit with no quantity, and
+   * numbers run LAST so no earlier rule has to cope with words where it
+   * expected digits.
+   * ==================================================================== */
+
+  var ONES_W = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+    'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+  var TENS_W = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+  var MONTHS_W = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  var ORDINALS_W = ['', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth',
+    'ninth', 'tenth', 'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth', 'sixteenth',
+    'seventeenth', 'eighteenth', 'nineteenth', 'twentieth', 'twenty first', 'twenty second',
+    'twenty third', 'twenty fourth', 'twenty fifth', 'twenty sixth', 'twenty seventh',
+    'twenty eighth', 'twenty ninth', 'thirtieth', 'thirty first'];
+
+  /* No "and" ("one hundred twenty five", not "one hundred and twenty five") -
+     US clinical speech, and it is what every vitals string in this app reads
+     like when a nurse says it out loud. */
+  function intWords(n) {
+    var v = Math.floor(Math.abs(Number(n)));
+    if (!isFinite(v)) return '';
+    if (v < 20) return ONES_W[v];
+    if (v < 100) {
+      var t = TENS_W[Math.floor(v / 10)], r = v % 10;
+      return r ? t + ' ' + ONES_W[r] : t;
+    }
+    if (v < 1000) {
+      var h = ONES_W[Math.floor(v / 100)] + ' hundred', r2 = v % 100;
+      return r2 ? h + ' ' + intWords(r2) : h;
+    }
+    if (v < 1000000) {
+      var k = intWords(Math.floor(v / 1000)) + ' thousand', r3 = v % 1000;
+      return r3 ? k + ' ' + intWords(r3) : k;
+    }
+    if (v < 1000000000) {
+      var m = intWords(Math.floor(v / 1000000)) + ' million', r4 = v % 1000000;
+      return r4 ? m + ' ' + intWords(r4) : m;
+    }
+    return String(v);
+  }
+
+  /* Decimals are spoken digit by digit after the point - "zero point two five",
+     never "zero point twenty five", because 0.25 mg and 0.025 mg differ by a
+     factor of ten and a misheard dose is the worst thing this file could do. */
+  function digitWords(s) {
+    var out = [], i, c;
+    for (i = 0; i < s.length; i++) {
+      c = s.charAt(i);
+      if (c >= '0' && c <= '9') out.push(ONES_W[Number(c)]);
+    }
+    return out.join(' ');
+  }
+
+  function numberWords(raw) {
+    var s = String(raw == null ? '' : raw).trim();
+    if (!s) return '';
+    var neg = false;
+    if (s.charAt(0) === '-') { neg = true; s = s.slice(1); }
+    var dot = s.indexOf('.');
+    var out;
+    if (dot === -1) {
+      out = intWords(s);
+    } else {
+      var ip = s.slice(0, dot), fp = s.slice(dot + 1);
+      out = (ip === '' ? 'zero' : intWords(ip)) + ' point ' + digitWords(fp);
+    }
+    return neg ? 'negative ' + out : out;
+  }
+
+  /* Temperatures are the one place nurses do NOT say the number the way the
+     number is written: 101.6 is "one oh one point six", not "one hundred one
+     point six". Only 101-109 get this treatment; 100 is "one hundred" and
+     everything under 100 is ordinary. */
+  function tempIntWords(n) {
+    if (n > 100 && n < 110) return 'one oh ' + ONES_W[n - 100];
+    return intWords(n);
+  }
+
+  function tempWords(m, num, unit) {
+    var v = parseFloat(num);
+    if (!isFinite(v)) return m;
+    /* Plausibility gate. Without it "12 F" in some unrelated sentence, or a
+       stray "5 C", becomes "twelve degrees Fahrenheit" in the middle of a
+       handoff report. Body temperature only. */
+    if (unit === 'F' && !(v >= 89 && v <= 112)) return m;
+    if (unit === 'C' && !(v >= 30 && v <= 45)) return m;
+    var s = String(num), dot = s.indexOf('.'), words;
+    if (dot === -1) words = tempIntWords(parseInt(s, 10));
+    else words = tempIntWords(parseInt(s.slice(0, dot), 10)) + ' point ' + digitWords(s.slice(dot + 1));
+    return words + ' degrees ' + (unit === 'F' ? 'Fahrenheit' : 'Celsius');
+  }
+
+  function yearWords(y) {
+    var n = parseInt(y, 10);
+    if (!isFinite(n)) return String(y);
+    if (n >= 2000 && n <= 2009) return 'two thousand' + (n % 10 ? ' ' + ONES_W[n % 10] : '');
+    var hi = Math.floor(n / 100), lo = n % 100;
+    if (lo === 0) return intWords(hi) + ' hundred';
+    if (lo < 10) return intWords(hi) + ' oh ' + ONES_W[lo];
+    return intWords(hi) + ' ' + intWords(lo);
+  }
+
+  function dateWords(m, mo, da, yr) {
+    var mi = parseInt(mo, 10), di = parseInt(da, 10);
+    if (!(mi >= 1 && mi <= 12) || !(di >= 1 && di <= 31)) return m;
+    return MONTHS_W[mi] + ' ' + (ORDINALS_W[di] || intWords(di)) + ', ' + yearWords(yr);
+  }
+
+  function clockWords(m, h, mi) {
+    var H = parseInt(h, 10), M = parseInt(mi, 10);
+    if (!isFinite(H) || !isFinite(M)) return m;
+    var hw = intWords(H);
+    if (M === 0) return hw + ' o clock';
+    if (M < 10) return hw + ' oh ' + ONES_W[M];
+    return hw + ' ' + intWords(M);
+  }
+
+  /* "given today 0900" -> "given today oh nine hundred". Only fires after a
+     time word, because a bare 4-digit number is far more often a lab value or a
+     volume than a military time. */
+  function militaryWords(m, lead, hh, mm) {
+    var H = parseInt(hh, 10), M = parseInt(mm, 10);
+    if (!isFinite(H) || !isFinite(M)) return m;
+    var hw = (H < 10) ? 'oh ' + ONES_W[H] : intWords(H);
+    var mw = (M === 0) ? 'hundred' : (M < 10 ? 'oh ' + ONES_W[M] : intWords(M));
+    return lead + ' ' + hw + ' ' + mw;
+  }
+
+  function overWords(m, a, b) { return intWords(a) + ' over ' + intWords(b); }
+  function painWords(m, a) { return intWords(a) + ' out of ten'; }
+
+  /* ---------------------------------------------------------------- units ---
+   * [pattern source, singular, plural, needsNumber]
+   *
+   * COMPOUNDS FIRST - regex alternation takes the first match, so "mg/mL" has to
+   * be listed before "mg" or "1 mg/mL" reads as "one milligram slash mL".
+   *
+   * needsNumber = true means the token is too short or too ambiguous to expand
+   * on its own: a bare "g" or "L" or "cm" is left exactly as written unless a
+   * quantity is sitting in front of it.
+   *
+   * MATCHING IS CASE SENSITIVE, on purpose. "Mg" is magnesium and "mg" is
+   * milligrams, and a case-insensitive table turns "Mg 2.0" into "milligrams
+   * two point zero" in the middle of an eclampsia scenario.
+   * ------------------------------------------------------------------------ */
+  var TTS_UNITS = [
+    ['mL\\s*\\/\\s*min\\s*\\/\\s*1\\.73\\s*m2', 'milliliter per minute per one point seven three square meters', 'milliliters per minute per one point seven three square meters', false],
+    ['mcg\\s*\\/\\s*kg\\s*\\/\\s*min', 'microgram per kilogram per minute', 'micrograms per kilogram per minute', false],
+    ['mcg\\s*\\/\\s*kg\\s*\\/\\s*h(?:rs?|ours?)?', 'microgram per kilogram per hour', 'micrograms per kilogram per hour', false],
+    ['mg\\s*\\/\\s*kg\\s*\\/\\s*day', 'milligram per kilogram per day', 'milligrams per kilogram per day', false],
+    ['mg\\s*\\/\\s*kg\\s*\\/\\s*dose', 'milligram per kilogram per dose', 'milligrams per kilogram per dose', false],
+    ['mg\\s*\\/\\s*kg', 'milligram per kilogram', 'milligrams per kilogram', false],
+    ['mL\\s*\\/\\s*kg\\s*\\/\\s*h(?:rs?|ours?)?', 'milliliter per kilogram per hour', 'milliliters per kilogram per hour', false],
+    ['mL\\s*\\/\\s*kg', 'milliliter per kilogram', 'milliliters per kilogram', false],
+    ['mg\\s*\\/\\s*mL', 'milligram per milliliter', 'milligrams per milliliter', false],
+    ['mg\\s*\\/\\s*dL', 'milligram per deciliter', 'milligrams per deciliter', false],
+    ['g\\s*\\/\\s*dL', 'gram per deciliter', 'grams per deciliter', false],
+    ['mEq\\s*\\/\\s*L', 'milliequivalent per liter', 'milliequivalents per liter', false],
+    ['mL\\s*\\/\\s*h(?:rs?|ours?)?', 'milliliter per hour', 'milliliters per hour', false],
+    ['mL\\s*\\/\\s*min', 'milliliter per minute', 'milliliters per minute', false],
+    ['L\\s*\\/\\s*min', 'liter per minute', 'liters per minute', false],
+    ['gtts?\\s*\\/\\s*min', 'drop per minute', 'drops per minute', false],
+    ['[Uu]nits?\\s*\\/\\s*h(?:rs?|ours?)?', 'unit per hour', 'units per hour', false],
+    ['[Uu]nits?\\s*\\/\\s*kg', 'unit per kilogram', 'units per kilogram', false],
+    ['mcg\\s*\\/\\s*min', 'microgram per minute', 'micrograms per minute', false],
+    ['mcg\\s*\\/\\s*h(?:rs?|ours?)?', 'microgram per hour', 'micrograms per hour', false],
+    ['mmHg', 'millimeter of mercury', 'millimeters of mercury', false],
+    ['mcg', 'microgram', 'micrograms', false],
+    ['mg', 'milligram', 'milligrams', false],
+    ['mL', 'milliliter', 'milliliters', false],
+    ['ml', 'milliliter', 'milliliters', false],
+    ['mEq', 'milliequivalent', 'milliequivalents', false],
+    ['kg', 'kilogram', 'kilograms', false],
+    ['dL', 'deciliter', 'deciliters', false],
+    ['gtts?', 'drop', 'drops', false],
+    ['lbs?', 'pound', 'pounds', true],
+    ['cm', 'centimeter', 'centimeters', true],
+    ['mm', 'millimeter', 'millimeters', true],
+    ['[Uu]nits?', 'unit', 'units', true],
+    ['g', 'gram', 'grams', true],
+    ['L', 'liter', 'liters', true]
+  ];
+
+  var UNIT_ENTRIES = (function () {
+    var out = [], i;
+    for (i = 0; i < TTS_UNITS.length; i++) {
+      out.push({
+        re: new RegExp('^(?:' + TTS_UNITS[i][0] + ')$'),
+        one: TTS_UNITS[i][1],
+        many: TTS_UNITS[i][2],
+        needsNum: TTS_UNITS[i][3] === true
+      });
+    }
+    return out;
+  })();
+
+  /* Two alternations, deliberately:
+       A)  <number><optional space><unit>     1mg, 1 mg, 0.5mL, 110mmHg
+       B)  <word boundary><unit>              a bare "mg" with no number
+     A single `\b` between the number and the unit CANNOT work: there is no
+     word boundary between "1" and "mg" (both are word characters), so "1mg"
+     matched neither branch and came out as "onemg". Real MARs are written
+     without the space constantly - the Eric Doe case says "Dilaudid 1mg
+     (2mg/mL)" - so this is the common form, not the edge case.
+     Branch B keeps its `\b` so "gmg" or "xmL" are never mistaken for units. */
+  var UNIT_RE = (function () {
+    var src = [], i;
+    for (i = 0; i < TTS_UNITS.length; i++) src.push(TTS_UNITS[i][0]);
+    var u = src.join('|');
+    return new RegExp(
+      '(\\d+(?:\\.\\d+)?)\\s*(' + u + ')\\b' +   // 1: number   2: unit
+      '|\\b(' + u + ')\\b',                       // 3: bare unit
+      'g'
+    );
+  })();
+
+  function unitEntryFor(tok) {
+    for (var i = 0; i < UNIT_ENTRIES.length; i++) {
+      UNIT_ENTRIES[i].re.lastIndex = 0;
+      if (UNIT_ENTRIES[i].re.test(tok)) return UNIT_ENTRIES[i];
+    }
+    return null;
+  }
+
+  /** Quantity-aware unit expansion: "1 mg/mL" is singular, "2 mg/mL" is not. */
+  function expandUnits(text) {
+    return String(text == null ? '' : text).replace(UNIT_RE,
+      function (m, num, tokWithNum, bareTok) {
+        var tok = (tokWithNum !== undefined && tokWithNum !== null && tokWithNum !== '')
+          ? tokWithNum : bareTok;
+        var e = unitEntryFor(tok);
+        if (!e) return m;
+        var hasNum = (num !== undefined && num !== null && num !== '');
+        if (!hasNum) return e.needsNum ? m : e.many;
+        /* "1" is the only singular; "1.0" and "0.5" both take the plural, which
+           is what a nurse says out loud ("zero point five milliliters"). */
+        return numberWords(num) + ' ' + (num === '1' ? e.one : e.many);
+      });
+  }
+
+  /* ---- step 3: rules that must see the digits ---------------------------- */
+  var CLINICAL_PRE = [
+    /* dates BEFORE the blood-pressure fraction, or 06/26/1954 becomes
+       "six over twenty six over 1954" */
+    { re: /\b(0?[1-9]|1[0-2])\s*\/\s*(0?[1-9]|[12]\d|3[01])\s*\/\s*((?:19|20)\d{2})\b/g, to: dateWords },
+    /* clock times BEFORE ratios, or 09:45 becomes "nine to forty five" */
+    { re: /\b([01]?\d|2[0-3]):([0-5]\d)\b/g, to: clockWords },
+    /* military time, only after a time word */
+    { re: /\b(at|by|today|tonight|yesterday|since|given|started|charted|around|until|from|about)\s+([01]\d|2[0-3])([0-5]\d)\b/gi, to: militaryWords },
+    /* frequency ranges the shared table does not cover: q4-6h. MUST come before
+       the generic range rule below, or "q4-6h" becomes "q4 to 6h" and the
+       shared q-rule can no longer see it. */
+    { re: /\bq\s*(\d+)\s*-\s*(\d+)\s*(?:h|hr|hrs|hours?)\b/gi, to: 'every $1 to $2 hours' },
+    { re: /\bq\s*(\d+)\s*-\s*(\d+)\s*min\b/gi, to: 'every $1 to $2 minutes' },
+    /* numeric ranges: 4-7 mEq/L, HR 110-160, temp 97.7-99.5 F. Digit on both
+       sides only, so "72-year-old" and "C-section" are untouched. MUST come
+       before the temperature rule: that rule consumes "99.5 F" and would leave
+       the hyphen in "97.7-99.5" stranded between two spelled-out numbers. */
+    { re: /(\d)\s*-\s*(?=\d)/g, to: '$1 to ' },
+    /* temperatures BEFORE the generic number pass, for the "one oh one" form */
+    { re: /\b(\d{2,3}(?:\.\d+)?)\s*(?:°)?\s*([FC])\b/g, to: tempWords },
+    /* pain and rating scales BEFORE blood pressure - 4/10 is "out of", not "over" */
+    { re: /\b([0-9]|10)\s*\/\s*10\b/g, to: painWords },
+    /* blood pressure and any other two-number vital fraction */
+    { re: /\b(\d{2,3})\s*\/\s*(\d{2,3})(?!\s*\/|\d)/g, to: overWords },
+    /* SpO2 is SPOKEN as letters here rather than expanded to "oxygen
+       saturation" like the browser path does: it is the single most repeated
+       token in the app, and "S P O two, eighty eight percent" is how a nurse
+       actually says it at the bedside. The comma is what stops the model
+       running the label into the value. */
+    { re: /\bSpO(?:2|₂)\s*(?=[<>]?\s*\d)/gi, to: 'S P O two, ' },
+    { re: /\bSpO(?:2|₂)\b/gi, to: 'S P O two' },
+    /* Lab shorthand: a comma between the label and the value. Without it the
+       model runs "BUN 62" together and "K+ 4.0" comes out as one word.
+       ABBREVIATIONS ONLY, deliberately. The spelled-out names read perfectly
+       well without a comma, and putting them in this list turns the fluid order
+       "Sodium Chloride 125 mL/hr" into "Sodium Chloride, one hundred twenty
+       five..." - a pause in the middle of a drug name.
+       PTT is listed before PT so the alternation cannot eat the first two
+       letters and leave a stray T behind. */
+    { re: /\b(PTT|BUN|WBC|RBC|INR|PT|HCO3|Hgb|Hct|Cr|Na|Cl|Mg|Ca|K)([+-]?)\s+(?=\d)/g, to: '$1$2, ' },
+    /* ratios: 1:1000 epinephrine, 1:4 dilutions */
+    { re: /\b(\d{1,4})\s*:\s*(\d{1,7})\b/g, to: '$1 to $2' },
+    /* body surface area */
+    { re: /\s*\bm2\b/g, to: ' square meters' },
+    /* comparison symbols in front of a number */
+    { re: /<\s*(?=\d)/g, to: 'less than ' },
+    { re: />\s*(?=\d)/g, to: 'greater than ' }
+  ];
+
+  /* ---- step 6: after the shared abbreviation table ----------------------- */
+  var CLINICAL_POST = [
+    { re: /\b(\d{1,2})(?:st|nd|rd|th)\b/gi, to: function (m, d) {
+      var n = parseInt(d, 10);
+      return (n >= 1 && n <= 31 && ORDINALS_W[n]) ? ORDINALS_W[n] : m;
+    } },
+    /* a slash that survived every rule above is read, not swallowed */
+    { re: /(\S)\s*\/\s*(\S)/g, to: '$1 slash $2' }
+  ];
+
+  function numeralsToWords(text) {
+    return String(text == null ? '' : text).replace(/\d+(?:\.\d+)?/g, function (m) {
+      return numberWords(m);
+    });
+  }
+
+  /**
+   * MM.voice.normalizeClinicalForTTS(text) -> string
+   *
+   * Everything normalizeForSpeech() does, plus every number spoken the way a
+   * nurse says it. Used ONLY on the ElevenLabs path - the browser synth reads
+   * numerals correctly on its own and does not need (or want) this.
+   *
+   * Also the cache key: two callers whose raw text differs only in markdown or
+   * whitespace normalize to the same string and therefore share one clip.
+   */
+  function normalizeClinicalForTTS(text) {
+    var t = stripMarkdown(str(text));
+    if (!t) return '';
+    t = t.replace(/(\d),(?=\d{3}(?!\d))/g, '$1');   /* 10,000 -> 10000 */
+    t = applyRules(t, CLINICAL_PRE);
+    t = expandUnits(t);
+    t = applyRules(t, SPEECH_EXPANSIONS);
+    t = applyRules(t, CLINICAL_POST);
+    t = numeralsToWords(t);
+    return t
+      .replace(/\s+([,.;:!?])/g, '$1')
+      .replace(/,\s*,/g, ',')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  /* ======================================================================
+   * 8c. ELEVENLABS STUDIO VOICES  (behind speak(); never in front of it)
+   * ----------------------------------------------------------------------
+   * THE ONE RULE THIS SECTION EXISTS FOR:
+   *   A FAILED ELEVENLABS CALL MUST BE INVISIBLE TO THE STUDENT.
+   *
+   * Every path in here - no config, wrong tier, expired token, 401, 429, a
+   * malformed body, a blocked autoplay, an offline phone - ends in the browser
+   * voice saying the line. Nothing here throws, and nothing here is allowed to
+   * leave the app silent. speak()'s contract does not change at all.
+   *
+   * LOOKUP ORDER for one clip, each step cheaper than the one below it (the
+   * same architecture as js/images.js, because it is the same problem):
+   *   1. in-memory map          this page session, free, instant
+   *   2. window.MM_STATIC_VOICE clips bundled into the repo, zero network ever
+   *   3. /voiceCache/<hash>     the SHARED index. One student anywhere in the
+   *                             world paid for this line once; everybody else
+   *                             streams an mp3 off Storage. This is the whole
+   *                             economic argument for the feature.
+   *   4. POST /api/tts, then upload to Storage and publish the index so this is
+   *                             the last time anyone pays for that sentence.
+   *
+   * The app has 172 scripted dialogue lines. Pre-generated and exported once
+   * (Admin -> AI -> Voices), the recurring cost of studio voices for scripted
+   * content is zero forever.
+   * ==================================================================== */
+
+  var TTS_ENDPOINT_DEFAULT = '/api/tts';
+  var VOICE_CACHE_PATH  = 'voiceCache';       /* /voiceCache/<hash>            */
+  var VOICE_STORAGE_ROOT = 'voice';           /* voice/<profile>/<hash>.mp3    */
+  var PREMIUM_TIERS = ['pro', 'instructor'];
+  var DEFAULT_TTS_MODEL = 'eleven_flash_v2_5';
+  var TIER_WAIT_MS = 8000;                    /* ceiling on "tier still resolving" */
+  var MAX_PREMIUM_CHARS = 5000;               /* mirrors MAX_TEXT_CHARS server-side */
+  var MAX_MEM_CLIPS = 300;                    /* bounded: an mp3 data URL is real memory */
+
+  /* Mirror of TTS_MODELS in netlify/functions/tts.js. Exported for the admin
+     picker so the owner is choosing from what the server will actually send. */
+  var TTS_MODELS = [
+    { id: 'eleven_flash_v2_5', label: 'Flash v2.5', latency: '~75 ms', maxChars: 40000,
+      note: 'Cheapest and fastest. Its own number normalization is off, which is exactly why every line goes through normalizeClinicalForTTS first.' },
+    { id: 'eleven_turbo_v2_5', label: 'Turbo v2.5', latency: '~250-300 ms', maxChars: 40000,
+      note: 'Balanced. Noticeably warmer than Flash on long patient speech.' },
+    { id: 'eleven_multilingual_v2', label: 'Multilingual v2', latency: 'slowest', maxChars: 10000,
+      note: 'Highest quality and the most expensive. Worth it only for the handful of lines students hear most.' }
+  ];
+
+  var PROFILE_ORDER = ['patient', 'nurse', 'instructor', 'child', 'family'];
+
+  /* The line the admin "Test this voice" button speaks. Deliberately stuffed
+     with every hard case at once - a BP fraction, a saturation, a decimal dose,
+     a rate, a temperature, a frequency and a route - so one press tells the
+     owner whether the normalizer and the voice are both right. */
+  var TEST_LINE = 'BP 92/58, HR 118, SpO2 88% on 2 L. Temp 101.6 F. ' +
+    'I gave the 0.25 mg IV push and hung the drip at 125 mL/hr, 1 mg/mL. ' +
+    'K+ 3.2, BUN 62. Next dose is q4h PRN.';
+
+  /* --- session state ---------------------------------------------------- */
+
+  var _clipMem = {};        /* hash -> {url, mime, chars, ...}   */
+  var _clipInflight = {};   /* hash -> Promise (de-duplication)  */
+  var _clipData = {};       /* hash -> 'data:audio/mpeg;base64,' (for the export) */
+  var _clipDataOrder = [];
+  var _currentAudio = null;
+
+  var _premium = {
+    /* Set by anything that cannot un-fail before a reload: no key on the
+       server, wrong tier, the site-wide switch, the ElevenLabs monthly quota.
+       Once set, speak() stops even trying, so a student never pays 40 failed
+       round trips for one permanent condition. */
+    disabled: false,
+    reason: '',
+    lastError: null
+  };
+
+  var _voiceStats = {
+    hits: 0, misses: 0, generated: 0, chars: 0, charsSaved: 0,
+    indexReads: 0, uploads: 0, uploadFailures: 0, plays: 0, fallbacks: 0
+  };
+
+  /* --- tiny, all feature-detected, none may throw ----------------------- */
+
+  function mmObj() {
+    if (!window.MM) window.MM = {};
+    return window.MM;
+  }
+
+  function aiMod() {
+    var m = mmObj();
+    if (m.ai) return m.ai;
+    if (window.MM_AI) return window.MM_AI;
+    return null;
+  }
+
+  function voiceDb() {
+    var m = mmObj();
+    if (m.db) return m.db;
+    try {
+      if (window.firebase && window.firebase.apps && window.firebase.apps.length &&
+          typeof window.firebase.database === 'function') {
+        return window.firebase.database();
+      }
+    } catch (e) { /* noop */ }
+    return null;
+  }
+
+  function voiceStorage() {
+    var m = mmObj();
+    if (m.storage) return m.storage;
+    try {
+      if (window.firebase && window.firebase.apps && window.firebase.apps.length &&
+          typeof window.firebase.storage === 'function') {
+        return window.firebase.storage();
+      }
+    } catch (e) { /* noop */ }
+    return null;
+  }
+
+  function ttsEndpoint() {
+    if (window.MM_TTS_ENDPOINT) return window.MM_TTS_ENDPOINT;
+    return TTS_ENDPOINT_DEFAULT;
+  }
+
+  function currentUid() {
+    var m = mmObj();
+    if (m.authUser && m.authUser.uid) return m.authUser.uid;
+    return '';
+  }
+
+  function setPremiumError(e) {
+    _premium.lastError = e || null;
+    return e;
+  }
+
+  function blockPremium(reason) {
+    _premium.disabled = true;
+    _premium.reason = reason || 'unavailable';
+  }
+
+  /* --- sha256, only used when js/ai.js is missing ------------------------
+   * MM.ai.promptHash is the one true algorithm and the server computes the same
+   * one. This local copy exists so voice.js still caches correctly on a page
+   * that loaded it without js/ai.js (a test harness, a stripped build). Byte
+   * for byte the same function as sha256Hex() in js/ai.js.
+   * ---------------------------------------------------------------------- */
+  var SHA256_K_V = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+
+  function utf8BytesV(s) {
+    var out = [], i, c;
+    for (i = 0; i < s.length; i++) {
+      c = s.charCodeAt(i);
+      if (c < 0x80) out.push(c);
+      else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+      else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+        var c2 = s.charCodeAt(i + 1);
+        if (c2 >= 0xdc00 && c2 <= 0xdfff) {
+          var cp = 0x10000 + ((c - 0xd800) << 10) + (c2 - 0xdc00);
+          out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+          i++;
+        } else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+      } else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    }
+    return out;
+  }
+
+  function rotr32V(x, n) { return ((x >>> n) | (x << (32 - n))) >>> 0; }
+
+  function hex8V(n) {
+    var s = (n >>> 0).toString(16);
+    while (s.length < 8) s = '0' + s;
+    return s;
+  }
+
+  function sha256HexV(input) {
+    var bytes = utf8BytesV(String(input == null ? '' : input));
+    var len = bytes.length;
+    var hi = Math.floor(len / 536870912);
+    var lo = (len << 3) >>> 0;
+    bytes.push(0x80);
+    while (bytes.length % 64 !== 56) bytes.push(0);
+    bytes.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255,
+               (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
+
+    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var w = new Array(64);
+    var i, j, a, b, c, d, e, f, g, h, s0, s1, ch, maj, t1, t2, p;
+
+    for (i = 0; i < bytes.length; i += 64) {
+      for (j = 0; j < 16; j++) {
+        p = i + j * 4;
+        w[j] = ((bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3]) >>> 0;
+      }
+      for (j = 16; j < 64; j++) {
+        s0 = (rotr32V(w[j - 15], 7) ^ rotr32V(w[j - 15], 18) ^ (w[j - 15] >>> 3)) >>> 0;
+        s1 = (rotr32V(w[j - 2], 17) ^ rotr32V(w[j - 2], 19) ^ (w[j - 2] >>> 10)) >>> 0;
+        w[j] = (((w[j - 16] + s0) >>> 0) + ((w[j - 7] + s1) >>> 0)) >>> 0;
+      }
+      a = H[0]; b = H[1]; c = H[2]; d = H[3]; e = H[4]; f = H[5]; g = H[6]; h = H[7];
+      for (j = 0; j < 64; j++) {
+        s1 = (rotr32V(e, 6) ^ rotr32V(e, 11) ^ rotr32V(e, 25)) >>> 0;
+        ch = ((e & f) ^ (~e & g)) >>> 0;
+        t1 = (h + s1) >>> 0;
+        t1 = (t1 + ch) >>> 0;
+        t1 = (t1 + SHA256_K_V[j]) >>> 0;
+        t1 = (t1 + w[j]) >>> 0;
+        s0 = (rotr32V(a, 2) ^ rotr32V(a, 13) ^ rotr32V(a, 22)) >>> 0;
+        maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+        t2 = (s0 + maj) >>> 0;
+        h = g; g = f; f = e;
+        e = (d + t1) >>> 0;
+        d = c; c = b; b = a;
+        a = (t1 + t2) >>> 0;
+      }
+      H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+      H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+    }
+    return H.map(hex8V).join('');
+  }
+
+  /**
+   * The clip cache key: sha256(normalizedText + voiceId + modelId), first 32 hex
+   * chars. Uses MM.ai.promptHash when present so there is exactly ONE hashing
+   * implementation in the app; promptHash(a,b,c) is sha256(a.trim().toLowerCase()
+   * + '\n' + b + '\n' + c).slice(0,32), which is precisely what we want here.
+   */
+  function clipHash(normText, voiceId, modelId) {
+    var a = aiMod();
+    if (a && typeof a.promptHash === 'function') {
+      try {
+        var h = a.promptHash(normText, voiceId, modelId);
+        if (typeof h === 'string' && h) return h;
+      } catch (e) { /* fall through to the local copy */ }
+    }
+    return sha256HexV(
+      String(normText == null ? '' : normText).trim().toLowerCase() + '\n' +
+      String(voiceId == null ? '' : voiceId) + '\n' +
+      String(modelId == null ? '' : modelId)
+    ).slice(0, 32);
+  }
+
+  /* --- the voice map: aiConfig.voiceProfiles ----------------------------
+   * MM.ai.getConfig() normalizes aiConfig down to the fields the TEXT layer
+   * enforces and drops everything else, so voiceProfiles is not on it and never
+   * will be. Read it straight from Firebase instead, with a live listener so an
+   * assignment made in the admin panel takes effect without a reload.
+   * ---------------------------------------------------------------------- */
+
+  var _voiceCfg = { profiles: {}, loaded: false, loading: null, bound: false };
+
+  function normalizeVoiceProfileMap(raw) {
+    var out = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    var k, id, v, voiceId;
+    for (k in raw) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+      id = String(k == null ? '' : k).toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+      if (!id || PROFILE_ORDER.indexOf(id) === -1) continue;
+      v = raw[k];
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      voiceId = String(v.voiceId || v.voice_id || '').trim();
+      if (!/^[A-Za-z0-9_-]{8,64}$/.test(voiceId)) continue;   /* same gate as the server */
+      out[id] = {
+        voiceId: voiceId,
+        modelId: (typeof v.modelId === 'string' && v.modelId) ? v.modelId : DEFAULT_TTS_MODEL,
+        name: (typeof v.name === 'string') ? v.name.slice(0, 80) : ''
+      };
+    }
+    return out;
+  }
+
+  /** Resolves with the profile map. Never rejects; an unreadable node is {}. */
+  function loadVoiceProfiles() {
+    /* A test harness or the admin panel can inject the map directly. */
+    if (window.MM_VOICE_PROFILES) {
+      _voiceCfg.profiles = normalizeVoiceProfileMap(window.MM_VOICE_PROFILES);
+      _voiceCfg.loaded = true;
+      return Promise.resolve(_voiceCfg.profiles);
+    }
+    if (_voiceCfg.loaded) return Promise.resolve(_voiceCfg.profiles);
+    if (_voiceCfg.loading) return _voiceCfg.loading;
+
+    var d = voiceDb();
+    if (!d) {
+      _voiceCfg.loaded = true;
+      return Promise.resolve(_voiceCfg.profiles);
+    }
+
+    _voiceCfg.loading = new Promise(function (resolve) {
+      var settled = false;
+      function done() {
+        if (settled) return;
+        settled = true;
+        _voiceCfg.loaded = true;
+        _voiceCfg.loading = null;
+        resolve(_voiceCfg.profiles);
+      }
+      try {
+        var ref = d.ref('appConfig/aiConfig/voiceProfiles');
+        if (!_voiceCfg.bound && typeof ref.on === 'function') {
+          _voiceCfg.bound = true;
+          ref.on('value', function (snap) {
+            var v = null;
+            try { v = (snap && typeof snap.val === 'function') ? snap.val() : null; } catch (e) { v = null; }
+            _voiceCfg.profiles = normalizeVoiceProfileMap(v);
+            done();
+          }, function (e) {
+            /* Almost always a missing read rule. Not fatal: no map means every
+               profile uses the browser voice, which is the safe default. */
+            setPremiumError(e);
+            done();
+          });
+        } else {
+          ref.once('value').then(function (snap) {
+            var v = null;
+            try { v = (snap && typeof snap.val === 'function') ? snap.val() : null; } catch (e) { v = null; }
+            _voiceCfg.profiles = normalizeVoiceProfileMap(v);
+            done();
+          }, function (e) { setPremiumError(e); done(); });
+        }
+      } catch (e) { setPremiumError(e); done(); }
+      /* Never let a silent Firebase leave speak() hanging. */
+      setTimeout(done, TIER_WAIT_MS);
+    });
+    return _voiceCfg.loading;
+  }
+
+  /** Synchronous peek. '' / null when the profile has no studio voice yet. */
+  function profileVoice(profileId) {
+    if (window.MM_VOICE_PROFILES && !_voiceCfg.loaded) {
+      _voiceCfg.profiles = normalizeVoiceProfileMap(window.MM_VOICE_PROFILES);
+      _voiceCfg.loaded = true;
+    }
+    var id = String(profileId || DEFAULT_PROFILE);
+    var v = _voiceCfg.profiles[id];
+    return v ? v : null;
+  }
+
+  /* --- eligibility ------------------------------------------------------- */
+
+  function currentTier() {
+    var a = aiMod();
+    if (!a || typeof a.getTier !== 'function') return '';
+    try { return String(a.getTier() || ''); } catch (e) { return ''; }
+  }
+
+  function tierIsResolving() {
+    var a = aiMod();
+    if (!a || typeof a.isResolving !== 'function') return false;
+    try { return a.isResolving() === true; } catch (e) { return false; }
+  }
+
+  /**
+   * MM.voice.isPremium() -> bool
+   * Would the NEXT speak() go through ElevenLabs? Cheap, synchronous, and safe
+   * to call in a render path.
+   */
+  function isPremium(profileId) {
+    return premiumReasonFor(profileId) === '';
+  }
+
+  /* '' means yes. Anything else is the human-readable reason it will not, which
+     is what premiumReason() returns and what the settings UI shows. */
+  function premiumReasonFor(profileId) {
+    if (_premium.disabled) {
+      return _premium.reason || 'Studio voices are unavailable for the rest of this session.';
+    }
+    var prefs = getPrefs();
+    if (prefs.premiumVoice === false) return 'You have studio voices switched off in Voice settings.';
+    var a = aiMod();
+    if (!a || typeof a.getTier !== 'function') return 'The AI layer is not loaded, so only device voices are available.';
+    if (tierIsResolving()) return 'Still checking your plan.';
+    var tier = currentTier();
+    if (PREMIUM_TIERS.indexOf(tier) === -1) {
+      return 'The ' + (tier || 'free') + ' plan uses your device\'s own voices. Every line is still read aloud.';
+    }
+    if (!hasFetch()) return 'This browser cannot fetch audio, so device voices are used.';
+    if (!hasAudioEl()) return 'This browser cannot play audio clips, so device voices are used.';
+    var v = profileVoice(profileId || DEFAULT_PROFILE);
+    if (!v) return 'No studio voice has been assigned to the "' + (profileId || DEFAULT_PROFILE) + '" role yet.';
+    return '';
+  }
+
+  function premiumReason() { return premiumReasonFor(DEFAULT_PROFILE); }
+
+  function hasFetch() { try { return typeof window.fetch === 'function'; } catch (e) { return false; } }
+  function hasAudioEl() { try { return typeof window.Audio === 'function'; } catch (e) { return false; } }
+
+  /* --- playback ---------------------------------------------------------- */
+
+  /**
+   * ONE <audio> element for the whole session, on purpose.
+   *
+   * iOS unlocks a SPECIFIC element - the one that had play() called on it inside
+   * a user gesture - not the page. A fresh `new Audio()` per clip is therefore
+   * locked every single time on iPhone, which would silently mean "premium
+   * voices never work on the platform most students use". prime() (already
+   * called from every gesture handler in this file) touches this element, and
+   * every clip afterwards reuses it.
+   */
+  var _audioEl = null;
+
+  function getAudioEl() {
+    if (_audioEl) return _audioEl;
+    if (!hasAudioEl()) return null;
+    try { _audioEl = new window.Audio(); } catch (e) { _audioEl = null; }
+    return _audioEl;
+  }
+
+  function premiumAudioBusy() {
+    var el = _currentAudio;
+    if (!el) return false;
+    try { return !el.paused && !el.ended; } catch (e) { return false; }
+  }
+
+  /**
+   * Cancels the in-flight playClipUrl() promise, if there is one.
+   *
+   * Without this, stopSpeaking() detaches the onended handler and the promise
+   * speak() returned never settles - so a caller doing
+   * `speak(a).then(next)` while the student taps something else would hang
+   * forever. A cancelled clip resolves {spoken:false, reason:'cancelled'},
+   * exactly like the browser path does.
+   */
+  var _currentPlayCancel = null;
+
+  function stopPremiumAudio() {
+    var el = _currentAudio;
+    var cancel = _currentPlayCancel;
+    _currentAudio = null;
+    _currentPlayCancel = null;
+    if (el) {
+      try { el.pause(); } catch (e) { /* noop */ }
+      try { el.onended = null; el.onerror = null; el.onplay = null; } catch (e) { /* noop */ }
+      /* Clearing src releases the decoder; Safari otherwise keeps it alive and a
+         long session slowly accumulates them. The element itself is kept so the
+         iOS unlock survives. */
+      try { el.src = ''; } catch (e) { /* noop */ }
+      try { if (typeof el.load === 'function') el.load(); } catch (e) { /* noop */ }
+    }
+    if (cancel) { try { cancel(); } catch (e) { /* noop */ } }
+  }
+
+  /**
+   * Play one clip. Resolves {spoken:true} / {spoken:false, reason}, rejects only
+   * on a real playback failure so the caller can fall back to the browser voice.
+   */
+  function playClipUrl(url, opts, token) {
+    return new Promise(function (resolve, reject) {
+      if (!hasAudioEl()) { reject(new Error('no Audio element')); return; }
+      if (token !== _speakToken) { resolve({ spoken: false, reason: 'cancelled' }); return; }
+
+      var prefs = getPrefs();
+      var profile = VOICE_PROFILES[opts.voice] || VOICE_PROFILES[DEFAULT_PROFILE];
+      /* The rate PREF is a user setting and must apply to both engines. The
+         profile's own rate is a browser-synth nicety and is deliberately NOT
+         applied here: an ElevenLabs voice already has the character the profile
+         was faking, and re-pitching it just makes it sound resampled. */
+      var rate = clamp((opts.rate !== undefined && opts.rate !== null ? Number(opts.rate) / profile.rate : 1) * (prefs.rate || 1), 0.5, 2);
+      var volume = clamp(opts.volume === undefined ? 1 : opts.volume, 0, 1);
+
+      var el = getAudioEl();
+      if (!el) { reject(new Error('no Audio element')); return; }
+
+      var settled = false;
+      function finish(v) {
+        if (settled) return;
+        settled = true;
+        if (_currentAudio === el) _currentAudio = null;
+        if (_currentPlayCancel === cancelThis) _currentPlayCancel = null;
+        resolve(v);
+      }
+      function bail(e) {
+        if (settled) return;
+        settled = true;
+        if (_currentAudio === el) _currentAudio = null;
+        if (_currentPlayCancel === cancelThis) _currentPlayCancel = null;
+        reject(e || new Error('audio playback failed'));
+      }
+      function cancelThis() { finish({ spoken: false, reason: 'cancelled' }); }
+
+      try {
+        el.preload = 'auto';
+        el.src = url;
+        el.volume = volume;
+        try { el.playbackRate = rate; } catch (e) { /* some browsers clamp/refuse */ }
+      } catch (e) { bail(e); return; }
+
+      el.onended = function () { finish({ spoken: true, premium: true }); };
+      el.onerror = function () { bail(new Error('clip could not be decoded or fetched')); };
+
+      _currentAudio = el;
+      _currentPlayCancel = cancelThis;
+      _voiceStats.plays++;
+
+      var p;
+      try { p = el.play(); } catch (e) { bail(e); return; }
+      if (p && typeof p.then === 'function') {
+        p.then(function () {
+          callSafe(opts.onChunk, '', 0, 1);
+        }, function (e) {
+          /* Autoplay policy, almost always. The browser synth has the same
+             gesture requirement but degrades more gracefully, so hand it over. */
+          bail(e);
+        });
+      } else {
+        callSafe(opts.onChunk, '', 0, 1);
+      }
+    });
+  }
+
+  /* --- the shared Firebase index ---------------------------------------- */
+
+  function readClipIndex(hash) {
+    var d = voiceDb();
+    if (!d || !hash) return Promise.resolve(null);
+    _voiceStats.indexReads++;
+    return new Promise(function (resolve) {
+      var settled = false;
+      function done(v) { if (!settled) { settled = true; resolve(v); } }
+      try {
+        d.ref(VOICE_CACHE_PATH + '/' + hash).once('value').then(function (snap) {
+          var val = null;
+          try { val = (snap && typeof snap.val === 'function') ? snap.val() : null; } catch (e) { val = null; }
+          if (!val || typeof val !== 'object' || typeof val.url !== 'string' || !val.url) { done(null); return; }
+          done(val);
+        }, function (e) {
+          /* Missing rule. Not fatal - it only means this student pays for a
+             line somebody already bought. */
+          setPremiumError(e);
+          done(null);
+        });
+      } catch (e) { setPremiumError(e); done(null); }
+      setTimeout(function () { done(null); }, 6000);
+    });
+  }
+
+  function writeClipIndex(hash, rec) {
+    var d = voiceDb();
+    if (!d || !hash) return Promise.resolve(false);
+    return new Promise(function (resolve) {
+      try {
+        var p = d.ref(VOICE_CACHE_PATH + '/' + hash).set(rec);
+        if (p && typeof p.then === 'function') {
+          p.then(function () { resolve(true); }, function (e) { setPremiumError(e); resolve(false); });
+        } else { resolve(true); }
+      } catch (e) { setPremiumError(e); resolve(false); }
+    });
+  }
+
+  /* The only honest answer to "how much has the cache saved us": it counts hits
+     across every student and every device, not just this tab. */
+  function bumpClipHit(hash) {
+    var d = voiceDb();
+    if (!d || !hash) return;
+    try {
+      var inc = null;
+      if (window.firebase && window.firebase.database && window.firebase.database.ServerValue &&
+          typeof window.firebase.database.ServerValue.increment === 'function') {
+        inc = window.firebase.database.ServerValue.increment(1);
+      }
+      if (inc === null) return;   /* old SDK: skip rather than race a read-modify-write */
+      var p = d.ref(VOICE_CACHE_PATH + '/' + hash + '/hits').set(inc);
+      if (p && typeof p['catch'] === 'function') p['catch'](function () { /* non-fatal */ });
+    } catch (e) { /* non-fatal */ }
+  }
+
+  function uploadClip(hash, profile, b64) {
+    var s = voiceStorage();
+    if (!s || !hash) return Promise.resolve(null);
+    var path = VOICE_STORAGE_ROOT + '/' + profile + '/' + hash + '.mp3';
+    return new Promise(function (resolve) {
+      var settled = false;
+      function done(v) { if (!settled) { settled = true; resolve(v); } }
+      try {
+        var ref = s.ref(path);
+        Promise.resolve(ref.putString(b64, 'base64', { contentType: 'audio/mpeg' }))
+          .then(function () { return ref.getDownloadURL(); })
+          .then(function (url) {
+            if (typeof url !== 'string' || !url) { _voiceStats.uploadFailures++; done(null); return; }
+            _voiceStats.uploads++;
+            done({ url: url, path: path });
+          }, function (e) {
+            /* A Storage rule that is not deployed, a bucket that does not exist,
+               an offline phone. None of them may reach the student: they still
+               hear the clip from the data URL, only the sharing is lost. */
+            _voiceStats.uploadFailures++;
+            setPremiumError(e);
+            done(null);
+          });
+      } catch (e) {
+        _voiceStats.uploadFailures++;
+        setPremiumError(e);
+        done(null);
+      }
+    });
+  }
+
+  /* --- the static bundle ------------------------------------------------- */
+
+  function staticClip(hash) {
+    var map = window.MM_STATIC_VOICE;
+    if (!map || typeof map !== 'object' || !hash) return '';
+    var v = map[hash];
+    return (typeof v === 'string' && v) ? v : '';
+  }
+
+  function rememberClipData(hash, dataUrl) {
+    if (!hash || !dataUrl || String(dataUrl).indexOf('data:') !== 0) return;
+    if (!_clipData[hash]) _clipDataOrder.push(hash);
+    _clipData[hash] = dataUrl;
+    while (_clipDataOrder.length > MAX_MEM_CLIPS) {
+      var drop = _clipDataOrder.shift();
+      if (drop !== hash) delete _clipData[drop];
+    }
+  }
+
+  function rememberClip(hash, entry) {
+    if (!hash || !entry) return;
+    _clipMem[hash] = entry;
+  }
+
+  /* --- calling the server ------------------------------------------------ */
+
+  function whenTierReady() {
+    if (!tierIsResolving()) return Promise.resolve();
+    var a = aiMod();
+    if (!a || typeof a.onResolved !== 'function') return Promise.resolve();
+    return new Promise(function (resolve) {
+      var done = false, off = null;
+      function finish() {
+        if (done) return;
+        done = true;
+        try { if (off) off(); } catch (e) { /* noop */ }
+        resolve();
+      }
+      try { off = a.onResolved(finish); } catch (e) { finish(); return; }
+      setTimeout(finish, TIER_WAIT_MS);
+    });
+  }
+
+  function getIdToken() {
+    var m = mmObj();
+    if (!m.authUser || !isFn(m.authUser.getIdToken)) {
+      var e = new Error('You need to be signed in for studio voices.');
+      e.code = 'no-auth';
+      return Promise.reject(e);
+    }
+    return Promise.resolve().then(function () { return m.authUser.getIdToken(); })
+      .then(function (tok) {
+        if (!tok) { var e2 = new Error('no token'); e2.code = 'no-auth'; throw e2; }
+        return tok;
+      });
+  }
+
+  function ttsErrFromBody(status, text) {
+    var data = null;
+    try { data = JSON.parse(text); } catch (e) { data = null; }
+    var code = (data && typeof data.error === 'string') ? data.error
+      : status === 401 ? 'no-auth'
+      : status === 403 ? 'tier-denied'
+      : status === 429 ? 'quota-exceeded'
+      : status === 503 ? 'ai-disabled'
+      : 'server';
+    var e = new Error((data && data.message) ? data.message : 'That line could not be voiced.');
+    e.code = code;
+    e.status = status;
+    if (data) {
+      if (typeof data.reason === 'string') e.reason = data.reason;
+      if (typeof data.kind === 'string') e.kind = data.kind;
+      if (typeof data.limit === 'number') e.limit = data.limit;
+      if (typeof data.used === 'number') e.used = data.used;
+      if (typeof data.resetsAt === 'number') e.resetsAt = data.resetsAt;
+    }
+    return e;
+  }
+
+  /**
+   * Which failures are PERMANENT for this session?
+   *
+   * Re-asking after one of these buys nothing but latency on every future line:
+   * a tier does not change mid-session, a missing key does not appear, the
+   * monthly ElevenLabs bundle does not refill before midnight UTC, and the
+   * student's own daily character cap does not reset before midnight Eastern.
+   * A 429 from ElevenLabs itself, a network blip or a one-off 500 are NOT
+   * permanent and are retried on the next line.
+   */
+  function isPermanentFailure(e) {
+    if (!e || !e.code) return false;
+    if (e.code === 'tier-denied' || e.code === 'ai-disabled' || e.code === 'no-auth') return true;
+    if (e.code === 'quota-exceeded') return true;
+    if (e.code === 'server' && (e.reason === 'bad-key' || e.reason === 'not-configured' ||
+        e.reason === 'no-voice-configured' || e.reason === 'bad-voice-or-model' || e.reason === 'bad-voice')) return true;
+    return false;
+  }
+
+  function reasonPhrase(e) {
+    if (!e) return 'Studio voices are unavailable right now.';
+    if (e.code === 'tier-denied') return e.message || 'Your plan uses your device\'s own voices.';
+    if (e.code === 'quota-exceeded') return e.message || 'Today\'s studio-voice characters are used up.';
+    if (e.code === 'ai-disabled') return e.message || 'Studio voices are switched off right now.';
+    if (e.code === 'no-auth') return 'Sign in to use studio voices. Everything is still read aloud without one.';
+    return e.message || 'Studio voices are unavailable right now.';
+  }
+
+  /** POST /api/tts speak. Resolves with the parsed body, or rejects with a coded Error. */
+  function callTts(text, profile, voiceId, modelId) {
+    return whenTierReady().then(getIdToken).then(function (tok) {
+      return window.fetch(ttsEndpoint(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'speak', idToken: tok, text: text,
+          profile: profile, voiceId: voiceId, modelId: modelId
+        })
+      });
+    }).then(function (res) {
+      return Promise.resolve(res.text()).then(function (body) {
+        if (!res.ok) throw ttsErrFromBody(res.status, body);
+        var data = null;
+        try { data = JSON.parse(body); } catch (e) { data = null; }
+        if (!data || data.ok !== true || typeof data.b64 !== 'string' || !data.b64) {
+          /* A 200 with a body we cannot read is a malformed response, not a
+             success. Treated as a transient server fault: fall back now, try
+             again on the next line. */
+          var e2 = new Error('The voice service returned nothing playable.');
+          e2.code = 'server';
+          throw e2;
+        }
+        return data;
+      });
+    }, function (e) {
+      if (e && e.code) throw e;
+      var ne = new Error('Could not reach the voice service.');
+      ne.code = 'network';
+      throw ne;
+    });
+  }
+
+  function b64BytesLen(b64) {
+    var s = String(b64 || '');
+    if (!s) return 0;
+    var pad = 0;
+    if (s.charAt(s.length - 1) === '=') pad++;
+    if (s.charAt(s.length - 2) === '=') pad++;
+    return Math.max(0, Math.floor(s.length * 3 / 4) - pad);
+  }
+
+  /**
+   * Resolve ONE clip to something playable, going through the cache ladder.
+   * Resolves an entry, or null when the clip cannot be had. Never rejects.
+   *
+   * Concurrent callers asking for the identical hash share one promise, which is
+   * what stops a scenario that renders six lines at once paying six times for
+   * the one that happens to be duplicated.
+   */
+  function resolveClip(o) {
+    var normText = o.text;
+    var profile = o.profile;
+    var voiceId = o.voiceId;
+    var modelId = o.modelId;
+    var hash = o.hash;
+    var allowGenerate = o.allowGenerate !== false;
+
+    /* 1. this page session */
+    if (_clipMem[hash]) {
+      _voiceStats.hits++;
+      _voiceStats.charsSaved += normText.length;
+      var hit = _clipMem[hash], copy = {}, k;
+      for (k in hit) { if (Object.prototype.hasOwnProperty.call(hit, k)) copy[k] = hit[k]; }
+      copy.source = 'memory';
+      copy.cached = true;
+      return Promise.resolve(copy);
+    }
+
+    /* 2. the bundled static set - zero network of any kind */
+    var stat = staticClip(hash);
+    if (stat) {
+      var sEntry = {
+        url: stat, source: 'static', mime: 'audio/mpeg', cached: true, shared: true,
+        hash: hash, voiceId: voiceId, modelId: modelId, profile: profile,
+        chars: normText.length, cost: 0
+      };
+      _voiceStats.hits++;
+      _voiceStats.charsSaved += normText.length;
+      rememberClip(hash, sEntry);
+      rememberClipData(hash, stat);
+      return Promise.resolve(sEntry);
+    }
+
+    /* de-duplicate concurrent callers */
+    if (_clipInflight[hash]) return _clipInflight[hash];
+
+    var p = readClipIndex(hash).then(function (rec) {
+      /* 3. the shared index across every student who ever ran this app */
+      if (rec) {
+        var entry = {
+          url: rec.url, source: 'index', mime: 'audio/mpeg', cached: true, shared: true,
+          hash: hash,
+          voiceId: (typeof rec.voiceId === 'string') ? rec.voiceId : voiceId,
+          modelId: (typeof rec.modelId === 'string') ? rec.modelId : modelId,
+          profile: (typeof rec.profile === 'string') ? rec.profile : profile,
+          chars: (typeof rec.chars === 'number') ? rec.chars : normText.length,
+          bytes: (typeof rec.bytes === 'number') ? rec.bytes : 0,
+          cost: 0
+        };
+        _voiceStats.hits++;
+        _voiceStats.charsSaved += entry.chars;
+        rememberClip(hash, entry);
+        bumpClipHit(hash);
+        return entry;
+      }
+
+      _voiceStats.misses++;
+      if (!allowGenerate) return null;
+      if (_premium.disabled) return null;
+
+      /* 4. pay for it once, for everybody */
+      return callTts(normText, profile, voiceId, modelId).then(function (data) {
+        var mime = (typeof data.mime === 'string' && data.mime) ? data.mime : 'audio/mpeg';
+        var dUrl = 'data:' + mime + ';base64,' + data.b64;
+        var chars = (typeof data.chars === 'number') ? data.chars : normText.length;
+        var bytes = b64BytesLen(data.b64);
+
+        _voiceStats.generated++;
+        _voiceStats.chars += chars;
+        rememberClipData(hash, dUrl);
+
+        /* The clip is playable RIGHT NOW from the data URL. Uploading and
+           publishing is for the NEXT student and must never be on the critical
+           path of this one - a slow Storage write would be heard as a pause. */
+        var entry = {
+          url: dUrl, source: 'generated', mime: mime, cached: false, shared: false,
+          hash: hash,
+          voiceId: (typeof data.voiceId === 'string') ? data.voiceId : voiceId,
+          modelId: (typeof data.modelId === 'string') ? data.modelId : modelId,
+          profile: profile, chars: chars, bytes: bytes,
+          cost: (typeof data.cost === 'number' && isFinite(data.cost)) ? data.cost : 0,
+          dataUrl: dUrl
+        };
+        rememberClip(hash, entry);
+
+        uploadClip(hash, profile, data.b64).then(function (up) {
+          if (!up) return null;
+          entry.shared = true;
+          entry.storageUrl = up.url;
+          return writeClipIndex(hash, {
+            url: up.url,
+            voiceId: entry.voiceId,
+            modelId: entry.modelId,
+            profile: profile,
+            chars: chars,
+            bytes: bytes,
+            path: up.path,
+            hits: 0,
+            createdAt: Date.now(),
+            createdBy: currentUid() || 'anon'
+          });
+        })['catch'](function (e) { setPremiumError(e); return null; });
+
+        return entry;
+      })['catch'](function (e) {
+        setPremiumError(e);
+        if (isPermanentFailure(e)) blockPremium(reasonPhrase(e));
+        return null;
+      });
+    })['catch'](function (e) {
+      setPremiumError(e);
+      return null;
+    });
+
+    /* Clear the de-dup slot on BOTH paths, and only once the value is settled,
+       so a second caller arriving one tick later still joins this call. */
+    _clipInflight[hash] = p.then(function (v) {
+      delete _clipInflight[hash];
+      return v;
+    }, function (e) {
+      delete _clipInflight[hash];
+      setPremiumError(e);
+      return null;
+    });
+    return _clipInflight[hash];
+  }
+
+  /**
+   * Everything needed to name one clip: the normalized text, the voice, the
+   * model and the hash. Returns null when this profile has no studio voice.
+   */
+  function clipRequest(text, opts) {
+    var o = opts || {};
+    var profileId = (o.voice && VOICE_PROFILES[o.voice]) ? o.voice : DEFAULT_PROFILE;
+    var v = profileVoice(profileId);
+    if (!v) return null;
+    var voiceId = o.voiceId ? String(o.voiceId) : v.voiceId;
+    var modelId = o.modelId ? String(o.modelId) : (v.modelId || DEFAULT_TTS_MODEL);
+    var normText = normalizeClinicalForTTS(text);
+    if (!normText) return null;
+    return {
+      text: normText, profile: profileId, voiceId: voiceId, modelId: modelId,
+      hash: clipHash(normText, voiceId, modelId)
+    };
+  }
+
+  /**
+   * speakEleven(text, opts, token) -> Promise<{spoken, reason}>
+   *
+   * NEVER rejects and never throws. {spoken:false} means "the browser voice
+   * should take this line", and that is a completely normal outcome.
+   */
+  function speakEleven(text, opts, token) {
+    return Promise.resolve().then(function () {
+      if (token !== _speakToken) return { spoken: false, reason: 'cancelled' };
+      if (premiumReasonFor(opts.voice) !== '') return { spoken: false, reason: 'ineligible' };
+
+      var req = clipRequest(text, opts);
+      if (!req) return { spoken: false, reason: 'no-voice' };
+      if (req.text.length > MAX_PREMIUM_CHARS) return { spoken: false, reason: 'too-long' };
+
+      return resolveClip(req).then(function (entry) {
+        if (!entry || !entry.url) return { spoken: false, reason: 'unavailable' };
+        if (token !== _speakToken) return { spoken: false, reason: 'cancelled' };
+        return playClipUrl(entry.url, opts, token).then(function (r) {
+          if (r && r.spoken) {
+            return { spoken: true, premium: true, source: entry.source, chars: entry.chars, hash: entry.hash };
+          }
+          return r;
+        }, function (e) {
+          /* Decode failure or a blocked autoplay. If the entry came out of the
+             shared index the URL may be dead (a cleared bucket), so drop it from
+             memory - the next attempt re-reads the index or regenerates. */
+          setPremiumError(e);
+          if (entry.source === 'index' || entry.source === 'static') delete _clipMem[entry.hash];
+          return { spoken: false, reason: 'playback-failed' };
+        });
+      });
+    })['catch'](function (e) {
+      /* The last line of defence. Whatever went wrong in here, the student is
+         about to hear the line from the browser synth and will never know. */
+      setPremiumError(e);
+      return { spoken: false, reason: 'error' };
+    });
+  }
+
+  /* --- stats, admin surface --------------------------------------------- */
+
+  function voiceStatsSnapshot() {
+    return {
+      hits: _voiceStats.hits,
+      misses: _voiceStats.misses,
+      generated: _voiceStats.generated,
+      chars: _voiceStats.chars,
+      charsSaved: _voiceStats.charsSaved,
+      indexReads: _voiceStats.indexReads,
+      uploads: _voiceStats.uploads,
+      uploadFailures: _voiceStats.uploadFailures,
+      plays: _voiceStats.plays,
+      fallbacks: _voiceStats.fallbacks,
+      memory: Object.keys(_clipMem).length,
+      inflight: Object.keys(_clipInflight).length,
+      premium: isPremium(),
+      premiumReason: premiumReason(),
+      disabled: _premium.disabled,
+      disabledReason: _premium.reason,
+      tier: currentTier(),
+      profiles: _voiceCfg.profiles,
+      storageAvailable: !!voiceStorage(),
+      lastError: _premium.lastError ? String(_premium.lastError.message || _premium.lastError) : ''
+    };
+  }
+
+  /** Owner-only proxy: the ElevenLabs voice catalog. Resolves {ok, voices, ...}. */
+  function listElevenVoices() {
+    return getIdToken().then(function (tok) {
+      return window.fetch(ttsEndpoint(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'listVoices', idToken: tok })
+      });
+    }).then(function (res) {
+      return Promise.resolve(res.text()).then(function (t) {
+        if (!res.ok) throw ttsErrFromBody(res.status, t);
+        var d = null;
+        try { d = JSON.parse(t); } catch (e) { d = null; }
+        if (!d) { var e2 = new Error('Malformed voice list.'); e2.code = 'server'; throw e2; }
+        return d;
+      });
+    });
+  }
+
+  /** Owner-only proxy: the ElevenLabs monthly character quota. */
+  function elevenQuota() {
+    return getIdToken().then(function (tok) {
+      return window.fetch(ttsEndpoint(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'quota', idToken: tok })
+      });
+    }).then(function (res) {
+      return Promise.resolve(res.text()).then(function (t) {
+        if (!res.ok) throw ttsErrFromBody(res.status, t);
+        var d = null;
+        try { d = JSON.parse(t); } catch (e) { d = null; }
+        if (!d) { var e2 = new Error('Malformed quota response.'); e2.code = 'server'; throw e2; }
+        return d;
+      });
+    });
+  }
+
+  /** Read the whole shared clip index. Resolves {ok, entries, error}. */
+  function listClipCache() {
+    var d = voiceDb();
+    if (!d) return Promise.resolve({ ok: false, entries: {}, error: 'Firebase is not connected.' });
+    return new Promise(function (resolve) {
+      try {
+        d.ref(VOICE_CACHE_PATH).once('value').then(function (snap) {
+          var v = null;
+          try { v = (snap && typeof snap.val === 'function') ? snap.val() : null; } catch (e) { v = null; }
+          resolve({ ok: true, entries: (v && typeof v === 'object') ? v : {}, error: '' });
+        }, function (e) {
+          resolve({ ok: false, entries: {}, error: (e && e.message) ? e.message : 'permission denied' });
+        });
+      } catch (e) {
+        resolve({ ok: false, entries: {}, error: (e && e.message) ? e.message : 'permission denied' });
+      }
+    });
+  }
+
+  /**
+   * MM.voice.dialogueList() -> [{id, scenarioId, scenarioTitle, profile, trigger,
+   *                              raw, text, voiceId, modelId, hash, label}]
+   *
+   * Every scripted dialogue line in window.ALL_SCENARIOS, already normalized and
+   * hashed. This IS the pre-generate work list, and it is built here rather than
+   * in the admin panel for the same reason js/images.js owns its prompt
+   * templates: the normalized text is the cache key, so one character of drift
+   * between the pre-generate tool and the runtime caller means the whole set is
+   * paid for twice.
+   *
+   * A dialogue speaker that has no studio voice assigned is included with an
+   * empty voiceId so the panel can SAY that rather than silently skipping it.
+   */
+  function dialogueList() {
+    var scen = [];
+    if (Array.isArray(window.ALL_SCENARIOS)) scen = window.ALL_SCENARIOS;
+    else {
+      scen = [].concat(
+        Array.isArray(window.SCENARIOS_MS2A) ? window.SCENARIOS_MS2A : [],
+        Array.isArray(window.SCENARIOS_MS2B) ? window.SCENARIOS_MS2B : [],
+        Array.isArray(window.SCENARIOS_OB) ? window.SCENARIOS_OB : [],
+        Array.isArray(window.SCENARIOS_PEDS) ? window.SCENARIOS_PEDS : []
+      );
+    }
+    var out = [], i, j, s, d, line, profileId, v, normText;
+    for (i = 0; i < scen.length; i++) {
+      s = scen[i];
+      if (!s || !Array.isArray(s.dialogue)) continue;
+      for (j = 0; j < s.dialogue.length; j++) {
+        d = s.dialogue[j];
+        if (!d || typeof d !== 'object') continue;
+        line = (typeof d.line === 'string') ? d.line : '';
+        if (!line.trim()) continue;
+        profileId = (typeof d.speaker === 'string' && VOICE_PROFILES[d.speaker]) ? d.speaker : DEFAULT_PROFILE;
+        v = profileVoice(profileId);
+        normText = normalizeClinicalForTTS(line);
+        out.push({
+          id: String(s.id || ('sim-' + i)) + ':' + j,
+          scenarioId: String(s.id || ('sim-' + i)),
+          scenarioTitle: String(s.title || s.id || ('Scenario ' + (i + 1))),
+          profile: profileId,
+          trigger: (typeof d.trigger === 'string') ? d.trigger : '',
+          raw: line,
+          text: normText,
+          chars: normText.length,
+          voiceId: v ? v.voiceId : '',
+          modelId: v ? (v.modelId || DEFAULT_TTS_MODEL) : DEFAULT_TTS_MODEL,
+          hash: v ? clipHash(normText, v.voiceId, v.modelId || DEFAULT_TTS_MODEL) : '',
+          label: String(s.title || s.id || 'Scenario') + ' - ' + profileId +
+                 (d.trigger ? ' / ' + d.trigger : '')
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Cache-only lookup (index included, generation never). Resolves entry|null. */
+  function lookupClip(item) {
+    if (!item || !item.hash || !item.voiceId) return Promise.resolve(null);
+    return resolveClip({
+      text: item.text, profile: item.profile, voiceId: item.voiceId,
+      modelId: item.modelId, hash: item.hash, allowGenerate: false
+    });
+  }
+
+  /** Full lookup, generating if needed. Resolves entry|null. Never rejects. */
+  function getClip(item) {
+    if (!item || !item.hash || !item.voiceId) return Promise.resolve(null);
+    return resolveClip({
+      text: item.text, profile: item.profile, voiceId: item.voiceId,
+      modelId: item.modelId, hash: item.hash, allowGenerate: true
+    });
+  }
+
+  /** A data: URL for one hash, for the static bundle. Resolves null, never rejects. */
+  function clipDataUrl(hash, url) {
+    if (_clipData[hash]) return Promise.resolve(_clipData[hash]);
+    var src = url || (_clipMem[hash] && _clipMem[hash].url) || '';
+    if (!src) return Promise.resolve(null);
+    if (String(src).indexOf('data:') === 0) { rememberClipData(hash, src); return Promise.resolve(src); }
+    if (!hasFetch()) return Promise.resolve(null);
+    return window.fetch(src).then(function (r) {
+      if (!r.ok) return null;
+      return r.blob();
+    }).then(function (blob) {
+      if (!blob || typeof window.FileReader !== 'function') return null;
+      return new Promise(function (resolve) {
+        var fr = new window.FileReader();
+        fr.onload = function () {
+          var v = String(fr.result || '');
+          if (v.indexOf('data:') === 0) { rememberClipData(hash, v); resolve(v); } else resolve(null);
+        };
+        fr.onerror = function () { resolve(null); };
+        try { fr.readAsDataURL(blob); } catch (e) { resolve(null); }
+      });
+    })['catch'](function (e) { setPremiumError(e); return null; });
+  }
+
+  /**
+   * Build the text of a drop-in JS file:
+   *     window.MM_STATIC_VOICE = { "<hash>": "<data:audio/mpeg;base64,...>", ... };
+   *
+   * Loaded before js/voice.js this turns step 2 of the lookup into a permanent
+   * hit: those lines are then free for every student forever, with no Firebase
+   * read, no Storage download and no ElevenLabs call, ever again.
+   *
+   * mp3 base64 is BIG - budget roughly 20-30 KB per short line - so the panel
+   * warns about the file size rather than this function refusing to build it.
+   */
+  function exportStaticVoice(items, onProgress) {
+    var list = Array.isArray(items) ? items : [];
+    var map = {}, skipped = [], i = 0, bytes = 0;
+
+    function step() {
+      if (i >= list.length) return Promise.resolve();
+      var it = list[i++] || {};
+      if (isFn(onProgress)) {
+        try { onProgress(i, list.length, it.label || it.hash || ''); } catch (e) { /* noop */ }
+      }
+      if (!it.hash) return step();
+      return clipDataUrl(it.hash, it.url).then(function (d) {
+        if (d) { map[it.hash] = d; bytes += d.length; }
+        else skipped.push(it.label || it.hash);
+        return step();
+      });
+    }
+
+    return step().then(function () {
+      var keys = Object.keys(map);
+      var lines = [
+        '/* MedMaster static voice bundle - generated ' + new Date().toISOString(),
+        ' *',
+        ' * ' + keys.length + ' clip' + (keys.length === 1 ? '' : 's') +
+          ', keyed by sha256(normalizeClinicalForTTS(line) + voiceId + modelId).',
+        ' *',
+        ' * Drop this file in the repo and load it BEFORE js/voice.js:',
+        ' *   <script src="data/static-voice.js"></script>',
+        ' *',
+        ' * Every hash in here is step 2 of the clip lookup order, which means it',
+        ' * costs nothing: no ElevenLabs call, no Firebase read, no Storage download,',
+        ' * for anybody, ever. If the line text, the assigned voice or the model',
+        ' * changes, the hash changes and these entries simply stop matching - they',
+        ' * are never wrong, only unused. Re-export from Admin -> AI -> Voices.',
+        ' */',
+        'window.MM_STATIC_VOICE = {'
+      ];
+      for (var j = 0; j < keys.length; j++) {
+        lines.push('  ' + JSON.stringify(keys[j]) + ': ' + JSON.stringify(map[keys[j]]) +
+          (j < keys.length - 1 ? ',' : ''));
+      }
+      lines.push('};');
+      lines.push('');
+      return { text: lines.join('\n'), count: keys.length, skipped: skipped, bytes: bytes };
+    });
+  }
+
+  /** Session reset, for the admin panel after a config change. Never clears Firebase. */
+  function resetPremium() {
+    _clipMem = {};
+    _clipInflight = {};
+    _clipData = {};
+    _clipDataOrder = [];
+    _premium.disabled = false;
+    _premium.reason = '';
+    _premium.lastError = null;
+    _voiceCfg.loaded = false;
+    _voiceCfg.loading = null;
+    _voiceStats.hits = 0; _voiceStats.misses = 0; _voiceStats.generated = 0;
+    _voiceStats.chars = 0; _voiceStats.charsSaved = 0; _voiceStats.indexReads = 0;
+    _voiceStats.uploads = 0; _voiceStats.uploadFailures = 0;
+    _voiceStats.plays = 0; _voiceStats.fallbacks = 0;
+  }
+
+  /* Kick the profile map off early so the first speak() of a session does not
+     wait on a Firebase read. Entirely best-effort; nothing depends on it. */
+  try { setTimeout(function () { loadVoiceProfiles(); }, 0); } catch (e) { /* noop */ }
+
   /**
    * speak(text, opts) -> Promise
-   *   opts: {voice, rate, pitch, volume, lang, voiceName, force, onChunk}
+   *   opts: {voice, rate, pitch, volume, lang, voiceName, force, onChunk,
+   *          premium:false to force the browser path}
    *   - resolves after the final chunk's onend (or immediately if muted/empty)
    *   - rejects on a real synthesis error
    *   - a new speak() cancels whatever was speaking before it
    * iOS: the FIRST call in a page session must come from a user gesture.
+   *
+   * Two engines behind one function. ElevenLabs is tried first when - and only
+   * when - every one of these is true:
+   *   - prefs allow it (master mute off, premiumVoice on)
+   *   - MM.ai.getTier() is 'pro' or 'instructor'
+   *   - the tier has finished resolving (MM.ai.isResolving() is false)
+   *   - studio voices have not been disabled for this session by an earlier
+   *     permanent failure
+   *   - this profile has a voice assigned in aiConfig.voiceProfiles
+   * ANY failure at all falls through to the browser path below. That is the
+   * entire contract: a student never hears silence and never sees an error
+   * because of a voice service they did not know existed.
    */
   function speak(text, opts) {
     opts = opts || {};
-    var synth = getSynth();
-    var Utt = getUtteranceCtor();
-    if (!synth || !Utt) {
-      return Promise.reject(new Error('Text-to-speech is not supported in ' + browserName() + '.'));
-    }
     var prefs = getPrefs();
     if (prefs.enabled === false && !opts.force) return Promise.resolve({ spoken: false, reason: 'muted' });
 
     var clean = normalizeForSpeech(text);
     if (!clean) return Promise.resolve({ spoken: false, reason: 'empty' });
 
-    /* cancel anything in flight (also clears Chrome's stuck queue) */
+    /* cancel anything in flight, on BOTH engines (also clears Chrome's stuck queue) */
     stopSpeaking();
     var token = _speakToken;
+
+    if (opts.premium !== false && premiumReasonFor(opts.voice) === '') {
+      _speaking = true;
+      emitSpeakState();
+      return speakEleven(text, opts, token).then(function (res) {
+        if (res && res.spoken) {
+          if (token === _speakToken && _speaking) { _speaking = false; emitSpeakState(); }
+          return res;
+        }
+        if (res && res.reason === 'cancelled') {
+          if (token === _speakToken && _speaking) { _speaking = false; emitSpeakState(); }
+          return res;
+        }
+        _voiceStats.fallbacks++;
+        return speakBrowser(clean, opts, token);
+      }, function () {
+        /* speakEleven never rejects, but if it ever learns how, the student
+           still hears the line. */
+        _voiceStats.fallbacks++;
+        return speakBrowser(clean, opts, token);
+      });
+    }
+
+    return speakBrowser(clean, opts, token);
+  }
+
+  /**
+   * The original browser-synth path, unchanged in behaviour. Split out of
+   * speak() so the ElevenLabs attempt can fall through into it without a second
+   * stopSpeaking() (which would bump the token and cancel itself).
+   */
+  function speakBrowser(clean, opts, token) {
+    var synth = getSynth();
+    var Utt = getUtteranceCtor();
+    if (!synth || !Utt) {
+      if (token === _speakToken && _speaking) { _speaking = false; emitSpeakState(); }
+      return Promise.reject(new Error('Text-to-speech is not supported in ' + browserName() + '.'));
+    }
+    var prefs = getPrefs();
 
     var profile = VOICE_PROFILES[opts.voice] || VOICE_PROFILES[DEFAULT_PROFILE];
     var baseRate = (opts.rate !== undefined && opts.rate !== null) ? Number(opts.rate) : profile.rate;
@@ -1900,6 +3573,37 @@
     chunkText: chunkText,
     ABBREVIATIONS: SPEECH_EXPANSIONS,
     CORRECTIONS: MEDICAL_CORRECTIONS,
+
+    /* ---- studio voices (ElevenLabs). ALL ADDITIVE - every existing member
+       above behaves exactly as it did before this layer existed, and with no
+       voice configured this whole block is inert. ---- */
+    isPremium: isPremium,
+    premiumReason: premiumReason,
+    premiumReasonFor: premiumReasonFor,
+    stats: voiceStatsSnapshot,
+    normalizeClinicalForTTS: normalizeClinicalForTTS,
+    /* admin + pre-generate surface */
+    listElevenVoices: listElevenVoices,
+    elevenQuota: elevenQuota,
+    listClipCache: listClipCache,
+    dialogueList: dialogueList,
+    lookupClip: lookupClip,
+    getClip: getClip,
+    clipRequest: clipRequest,
+    clipHash: clipHash,
+    clipDataUrl: clipDataUrl,
+    exportStaticVoice: exportStaticVoice,
+    resetPremium: resetPremium,
+    loadVoiceProfiles: loadVoiceProfiles,
+    profileVoice: profileVoice,
+    TTS_MODELS: TTS_MODELS,
+    PROFILE_ORDER: PROFILE_ORDER,
+    PREMIUM_TIERS: PREMIUM_TIERS,
+    DEFAULT_TTS_MODEL: DEFAULT_TTS_MODEL,
+    TEST_LINE: TEST_LINE,
+    VOICE_CACHE_PATH: VOICE_CACHE_PATH,
+    VOICE_STORAGE_ROOT: VOICE_STORAGE_ROOT,
+    TTS_ENDPOINT: TTS_ENDPOINT_DEFAULT,
 
     /* permissions */
     requestMicPermission: requestMicPermission,
