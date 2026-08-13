@@ -10,45 +10,45 @@
     },
     "messages": {
       ".read": "auth != null",
-      ".write": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       ".indexOn": ["timestamp"]
     },
     "analytics": {
       "visits": {
-        ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+        ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
         ".write": "auth != null",
         ".indexOn": ["timestamp"]
       },
       "sessions": {
-        ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+        ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
         ".write": "auth != null",
         ".indexOn": ["userId", "timestamp"]
       }
     },
     "userStats": {
-      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
     "userMeta": {
-      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       ".indexOn": ["status", "signupAt"],
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
-        ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
+        ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
+        ".write": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
         "status": {
-          ".validate": "auth.token.email === 'codingky@gmail.com' || newData.val() === 'pending' || newData.val() === 'rejected' || (newData.val() === 'approved' && root.child('appConfig/siteConfig/auth/manualApprovalEnabled').val() !== true)"
+          ".validate": "(auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true) || newData.val() === 'pending' || newData.val() === 'rejected' || (newData.val() === 'approved' && root.child('appConfig/siteConfig/auth/manualApprovalEnabled').val() !== true)"
         },
         "approvedBy": {
-          ".validate": "auth.token.email === 'codingky@gmail.com'"
+          ".validate": "(auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)"
         },
         "approvedAt": {
-          ".validate": "auth.token.email === 'codingky@gmail.com'"
+          ".validate": "(auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)"
         },
         "rejectedAt": {
-          ".validate": "auth.token.email === 'codingky@gmail.com'"
+          ".validate": "(auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)"
         }
       }
     },
@@ -70,7 +70,7 @@
     },
     "bannedUsers": {
       ".read": "auth != null",
-      ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
+      ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)"
     },
     "admins": {
       ".read": "auth != null",
@@ -79,38 +79,39 @@
     "appConfig": {
       "inviteCode": {
         ".read": true,
-        ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
+        ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)"
       },
       "siteConfig": {
         ".read": "auth != null",
-        ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
+        ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)"
       },
       "aiConfig": {
         ".read": "auth != null",
-        ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
+        ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)"
       }
     },
 
     "userTiers": {
-      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
-        ".write": "auth != null && auth.token.email === 'codingky@gmail.com'"
+        ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
+        ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)"
       }
     },
 
     "aiUsage": {
-      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
+        ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
         "$day": {
-          ".write": "auth != null && auth.uid === $uid"
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.isNumber() && (!data.exists() || newData.val() >= data.val())"
         }
       }
     },
 
     "aiSpend": {
-      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       ".write": false,
       "$day": {
         ".indexOn": ["total6"]
@@ -133,14 +134,14 @@
           },
           "players": {
             "$uid": {
-              ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')"
+              ".write": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))"
             }
           }
         }
       },
       "results": {
         "$uid": {
-          ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
+          ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
           ".write": "auth != null && auth.uid === $uid"
         }
       }
@@ -148,34 +149,37 @@
 
     "voiceCache": {
       ".read": "auth != null",
-      ".write": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       ".indexOn": ["createdAt"],
       "$hash": {
-        ".write": "auth != null && (!data.exists() || auth.token.email === 'codingky@gmail.com')",
+        ".write": "auth != null && (!data.exists() || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
         ".validate": "newData.hasChildren(['url','voiceId','modelId'])",
         "hits": { ".write": "auth != null" }
       }
     },
 
     "voiceSpend": {
-      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       ".write": false
     },
 
     "voiceUsage": {
-      ".read": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')",
-        "$day": { ".write": "auth != null && auth.uid === $uid" }
+        ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
+        "$day": {
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.isNumber() && (!data.exists() || newData.val() >= data.val())"
+        }
       }
     },
 
     "imageCache": {
       ".read": "auth != null",
-      ".write": "auth != null && auth.token.email === 'codingky@gmail.com'",
+      ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true)",
       ".indexOn": ["feature", "createdAt"],
       "$hash": {
-        ".write": "auth != null && (!data.exists() || auth.token.email === 'codingky@gmail.com')",
+        ".write": "auth != null && (!data.exists() || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
         ".validate": "newData.hasChildren(['url','mime','model'])",
         "hits": { ".write": "auth != null" }
       }
@@ -184,7 +188,7 @@
     "community": {
       "profiles": {
         ".read": "auth != null",
-        "$uid": { ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'codingky@gmail.com')" }
+        "$uid": { ".write": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))" }
       },
       "questions": {
         ".read": "auth != null",
@@ -239,13 +243,13 @@
         }
       },
       "reports": {
-        ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' || root.child('admins').child(auth.uid).val() === true)",
+        ".read": "auth != null && ((auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true) || root.child('admins').child(auth.uid).val() === true)",
         ".write": "auth != null",
         ".indexOn": ["createdAt", "status"]
       },
       "moderationLog": {
-        ".read": "auth != null && (auth.token.email === 'codingky@gmail.com' || root.child('admins').child(auth.uid).val() === true)",
-        ".write": "auth != null && (auth.token.email === 'codingky@gmail.com' || root.child('admins').child(auth.uid).val() === true)",
+        ".read": "auth != null && ((auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true) || root.child('admins').child(auth.uid).val() === true)",
+        ".write": "auth != null && ((auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true) || root.child('admins').child(auth.uid).val() === true)",
         ".indexOn": ["timestamp"]
       }
     }
