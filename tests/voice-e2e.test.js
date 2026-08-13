@@ -257,7 +257,73 @@ var SPEAKER_VOICE = {
 module.exports = {
   name: 'voice-e2e — cross-module audio behaviour',
   run: function (t) {
+
+    /* ==================================================================== */
+    /* REGRESSION: Firebase is not up yet when the modules load             */
+    /*                                                                      */
+    /* The real page loads every module with `defer`, so they finish        */
+    /* executing BEFORE bootMedMaster() calls initFirebase(). voice.js used */
+    /* to kick loadVoiceProfiles() on a setTimeout(0), find no database,    */
+    /* and latch `loaded = true` with an EMPTY map - permanently. No        */
+    /* listener was ever bound, every profile lookup returned null, and     */
+    /* every studio voice silently degraded to the device robot voice while */
+    /* the admin panel showed a perfectly good configuration.               */
+    /* Shipped, and only found by a human pressing play.                    */
+    /* ==================================================================== */
+    function bootOrderCase(label, delayMs) {
+      return new Promise(function (done) {
+        var world = H.makeWorld({
+          owner: true, tier: 'instructor', uid: 'boot-1',
+          fetchImpl: function (url, init) {
+            var b = {};
+            try { b = JSON.parse((init && init.body) || '{}'); } catch (e) {}
+            if (b.action === 'speak') return Promise.resolve(H.ttsOk({ voiceId: b.voiceId }));
+            return Promise.resolve(H.jsonResponse({ ok: true }));
+          }
+        });
+        var w = world.window, realDb = world.db;
+        realDb.seed('appConfig/aiConfig/voiceProfiles', {
+          patient: { voiceId: 'AZnzlk1XvdvUeBnXmlld', modelId: 'eleven_flash_v2_5', name: 'Domi' }
+        });
+
+        /* No database and no firebase global at the moment voice.js runs. */
+        w.MM.db = null;
+        var fb = w.firebase;
+        w.firebase = undefined;
+        world.loadAiThenPatch();
+        world.load('js/voice.js');
+
+        setTimeout(function () { w.MM.db = realDb; w.firebase = fb; }, delayMs);
+
+        setTimeout(function () {
+          use(world);
+          w.MM.voice.speak('I feel short of breath.', { voice: 'patient', force: true })
+            .then(function (r) {
+              var tts = w.__fetchCalls.filter(function (c) { return /api\/tts/.test(c.url); });
+              t.ok(!!(r && r.premium), label + ': the studio voice was used');
+              t.eq(tts.length, 1, label + ': exactly one /api/tts call');
+              t.eq(w.__spoken.length, 0, label + ': the device robot voice did NOT speak');
+              if (tts.length) {
+                t.eq(tts[0].body.voiceId, 'AZnzlk1XvdvUeBnXmlld',
+                  label + ': the configured patient voice was requested');
+              }
+              world.cleanup();
+              done();
+            }, function () {
+              t.ok(false, label + ': speak() rejected');
+              world.cleanup();
+              done();
+            });
+        }, delayMs + 60);
+      });
+    }
+
+    t.group('REGRESSION: studio voices survive the defer/boot race');
+
     return Promise.resolve()
+      .then(function () { return bootOrderCase('firebase up 30ms after modules', 30); })
+      .then(function () { return bootOrderCase('firebase up 300ms after modules', 300); })
+      .then(function () { t.group('1. tier transitions mid-session'); })
       .then(function () { return group1_tierFlip(t); })
       .then(function () { return group2_tierRace(t); })
       .then(function () { return group3_scenarioCorpus(t); })

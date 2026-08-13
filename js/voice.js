@@ -1550,7 +1550,10 @@
   var VOICE_STORAGE_ROOT = 'voice';           /* voice/<profile>/<hash>.mp3    */
   var PREMIUM_TIERS = ['pro', 'instructor'];
   var DEFAULT_TTS_MODEL = 'eleven_flash_v2_5';
-  var TIER_WAIT_MS = 8000;                    /* ceiling on "tier still resolving" */
+  var TIER_WAIT_MS = 8000;
+  /* How long a line will wait for the studio-voice profile map before giving
+     up and using the device voice. Short: a student must never notice it. */
+  var PROFILE_WAIT_MS = 2500;                    /* ceiling on "tier still resolving" */
   var MAX_PREMIUM_CHARS = 5000;               /* mirrors MAX_TEXT_CHARS server-side */
   var MAX_MEM_CLIPS = 300;                    /* bounded: an mp3 data URL is real memory */
 
@@ -1799,6 +1802,31 @@
   }
 
   /** Resolves with the profile map. Never rejects; an unreadable node is {}. */
+  /**
+   * scheduleProfileRetry() - poll for Firebase, then bind the profile listener.
+   *
+   * Backs off (0.4s, 0.8s, 1.6s ... capped) and gives up after ~30s, which is
+   * far longer than any real boot and short enough that a signed-out visitor
+   * is not polling forever. Idempotent: a second call while a retry is pending
+   * is a no-op, and it stops the moment the profiles actually load.
+   */
+  var _profileRetry = { timer: null, tries: 0, MAX: 8 };
+
+  function scheduleProfileRetry() {
+    if (_profileRetry.timer || _voiceCfg.loaded) return;
+    if (_profileRetry.tries >= _profileRetry.MAX) return;
+    var delay = Math.min(400 * Math.pow(2, _profileRetry.tries), 8000);
+    _profileRetry.tries++;
+    try {
+      _profileRetry.timer = setTimeout(function () {
+        _profileRetry.timer = null;
+        if (_voiceCfg.loaded) return;
+        if (!voiceDb()) { scheduleProfileRetry(); return; }
+        loadVoiceProfiles();
+      }, delay);
+    } catch (e) { _profileRetry.timer = null; }
+  }
+
   function loadVoiceProfiles() {
     /* A test harness or the admin panel can inject the map directly. */
     if (window.MM_VOICE_PROFILES) {
@@ -1811,7 +1839,17 @@
 
     var d = voiceDb();
     if (!d) {
-      _voiceCfg.loaded = true;
+      /* NO DATABASE YET - and this is the normal case at module load, not an
+         error. The modules are `defer`, so they finish executing BEFORE
+         bootMedMaster() runs initFirebase() on DOMContentLoaded.
+         Latching `loaded = true` here (which this used to do) permanently
+         froze an EMPTY profile map: loadVoiceProfiles() early-returned
+         forever, the listener was never bound, profileVoice() always returned
+         null, and every studio voice silently degraded to the device robot
+         voice - with the admin panel showing a perfectly good configuration,
+         because the panel reads Firebase through its own listener.
+         So: stay unloaded and retry until Firebase shows up. */
+      scheduleProfileRetry();
       return Promise.resolve(_voiceCfg.profiles);
     }
 
@@ -1860,6 +1898,13 @@
       _voiceCfg.profiles = normalizeVoiceProfileMap(window.MM_VOICE_PROFILES);
       _voiceCfg.loaded = true;
     }
+    /* Self-heal: if the map has never loaded and a database exists NOW, bind
+       it. This is synchronous-safe (loadVoiceProfiles returns a promise we
+       ignore) and means the very first speak() after Firebase comes up kicks
+       the load instead of waiting on the retry timer. */
+    if (!_voiceCfg.loaded && !_voiceCfg.loading && voiceDb()) {
+      try { loadVoiceProfiles(); } catch (e) { /* never let this break speech */ }
+    }
     var id = String(profileId || DEFAULT_PROFILE);
     var v = _voiceCfg.profiles[id];
     return v ? v : null;
@@ -1906,7 +1951,13 @@
     if (!hasFetch()) return 'This browser cannot fetch audio, so device voices are used.';
     if (!hasAudioEl()) return 'This browser cannot play audio clips, so device voices are used.';
     var v = profileVoice(profileId || DEFAULT_PROFILE);
-    if (!v) return 'No studio voice has been assigned to the "' + (profileId || DEFAULT_PROFILE) + '" role yet.';
+    if (!v) {
+      /* Two very different situations, and conflating them cost a debugging
+         session: the map may simply not have arrived yet (Firebase still
+         coming up), or it arrived and this role genuinely has no voice. */
+      if (!_voiceCfg.loaded) return 'Still loading the studio voice settings.';
+      return 'No studio voice has been assigned to the "' + (profileId || DEFAULT_PROFILE) + '" role yet.';
+    }
     return '';
   }
 
@@ -2840,6 +2891,63 @@
     stopSpeaking();
     var token = _speakToken;
 
+    /* A "not yet" answer is not a "no". If the only thing standing between
+       this line and a studio voice is that the tier or the profile map is
+       still in flight, wait for it (briefly) rather than burning the line on
+       the device voice. Without this the FIRST line of every session - the
+       patient's opening complaint, the most important one - is always the
+       robot, because Firebase has not answered yet. */
+    if (opts.premium !== false && premiumIsPending(opts.voice)) {
+      return waitForPremiumReadiness().then(function () {
+        return speakResolved(text, clean, opts, token);
+      }, function () {
+        return speakBrowser(clean, opts, token);
+      });
+    }
+
+    return speakResolved(text, clean, opts, token);
+  }
+
+  /** True when premium is neither clearly allowed nor clearly refused yet. */
+  function premiumIsPending(profileId) {
+    if (_premium.disabled) return false;
+    var prefs = getPrefs();
+    if (prefs.premiumVoice === false) return false;
+    var a = aiMod();
+    if (!a || typeof a.getTier !== 'function') return false;
+    if (tierIsResolving()) return true;
+    if (PREMIUM_TIERS.indexOf(currentTier()) === -1) return false;
+    /* Tier is fine; is the profile map simply not here yet? */
+    if (!_voiceCfg.loaded && (voiceDb() || _voiceCfg.loading)) return true;
+    return false;
+  }
+
+  /** Resolve the tier and the profile map, bounded so speech is never hostage. */
+  function waitForPremiumReadiness() {
+    var jobs = [];
+    var a = aiMod();
+    if (a && typeof a.onResolved === 'function' && tierIsResolving()) {
+      jobs.push(new Promise(function (res) {
+        var done = false;
+        function fin() { if (!done) { done = true; res(); } }
+        try { a.onResolved(fin); } catch (e) { fin(); }
+        setTimeout(fin, TIER_WAIT_MS);
+      }));
+    }
+    if (!_voiceCfg.loaded) {
+      jobs.push(new Promise(function (res) {
+        var done = false;
+        function fin() { if (!done) { done = true; res(); } }
+        try { Promise.resolve(loadVoiceProfiles()).then(fin, fin); } catch (e) { fin(); }
+        setTimeout(fin, PROFILE_WAIT_MS);
+      }));
+    }
+    if (!jobs.length) return Promise.resolve();
+    return Promise.all(jobs).then(function () { return null; });
+  }
+
+  /** The original decision point, once nothing is pending any more. */
+  function speakResolved(text, clean, opts, token) {
     if (opts.premium !== false && premiumReasonFor(opts.voice) === '') {
       _speaking = true;
       emitSpeakState();
