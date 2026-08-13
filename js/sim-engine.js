@@ -303,6 +303,39 @@
       '.sim-action .sub{display:block;font-size:11px;color:var(--text3);margin-top:3px;line-height:1.4;}',
       '.sim-action.done{border-color:var(--sim-ok-br);background:var(--sim-ok-bg);}',
       '.sim-action.usedbad{border-color:var(--sim-bad-br);background:var(--sim-bad-bg);}',
+      /* performed, but out of the priority sequence. This state used to have no
+         class at all, so the card went dead grey at 45% opacity with nothing
+         explaining why - the single worst moment in the old grading loop. */
+      '.sim-action.usedmid{border-color:var(--sim-warn-br);background:var(--sim-warn-bg);color:var(--text);}',
+      /* HELD BACK, not consumed: the card is still live and still clickable.
+         The shake is the repercussion; losing the action never was one. */
+      '.sim-action.outorder{border-color:var(--sim-warn-br);background:var(--sim-warn-bg);',
+      'color:var(--text);animation:simShake .45s ease;}',
+      '@keyframes simShake{10%,90%{transform:translateX(-2px);}20%,80%{transform:translateX(3px);}',
+      '30%,50%,70%{transform:translateX(-5px);}40%,60%{transform:translateX(5px);}100%{transform:none;}}',
+      '.sim-action .warn{display:block;font-size:11px;font-weight:800;line-height:1.4;margin-top:4px;',
+      'color:var(--sim-warn-fg);}',
+
+      /* ---- pause ---- */
+      '.sim-pausehost{position:relative;}',
+      '.sim-veil{position:absolute;inset:0;z-index:30;display:flex;align-items:flex-start;',
+      'justify-content:center;padding:var(--sp-4);',
+      'background:color-mix(in srgb,var(--bg) 74%,transparent);}',
+      /* sticky, because on a phone the stage is several screens tall and an
+         overlay pinned to its top edge is an overlay you cannot read */
+      '.sim-veilcard{position:sticky;top:80px;background:var(--surface);color:var(--text);',
+      'border:2px solid var(--accent);',
+      'border-radius:var(--r-xl);padding:var(--sp-4);max-width:360px;text-align:center;',
+      'display:flex;flex-direction:column;gap:var(--sp-2);align-items:center;}',
+      '.sim-veilcard h3{margin:0;font-size:var(--fs-lg);font-weight:800;color:var(--text);}',
+      '.sim-veilcard p{margin:0;font-size:var(--fs-sm);line-height:1.6;color:var(--text2);}',
+      '.sim-veilcard kbd{font:inherit;font-size:11px;font-weight:800;border:1px solid var(--border);',
+      'border-radius:var(--r-sm);padding:1px 5px;background:var(--bg);color:var(--text2);}',
+      /* the monitor answers back when the student overrides a priority */
+      '.sim-mon.jolt{animation:simMonJolt .9s ease;}',
+      '@keyframes simMonJolt{0%{box-shadow:0 0 0 0 transparent;}',
+      '30%{box-shadow:0 0 0 3px color-mix(in srgb,var(--zone-critical) 30%,transparent);}',
+      '100%{box-shadow:0 0 0 0 transparent;}}',
 
       /* ---- feedback ---- */
       '.sim-fb{border-radius:var(--r-lg);padding:11px var(--sp-3);display:flex;gap:var(--sp-3);',
@@ -427,6 +460,9 @@
       /* keep the signal when the motion goes away */
       '.sim-vital.changed{box-shadow:inset 3px 0 0 0 var(--accent);}',
       '.sim-vital.crit{box-shadow:0 0 0 2px var(--sim-bad-br);}',
+      /* no shake: the border, the fill and the sentence carry the whole message */
+      '.sim-action.outorder{box-shadow:inset 0 0 0 2px var(--sim-warn-br);}',
+      '.sim-mon.jolt{box-shadow:0 0 0 2px var(--sim-bad-br);}',
       '.sim-back:active,.sim-chip:active,.sim-tab:active,.sim-action:active{transform:none;',
       'background:var(--surface3);}',
       '}'
@@ -586,6 +622,292 @@
     }
     return guards;
   }
+
+  /* ---------------------------------------------------------------------- *
+   * 5b. Priority BANDS - the ordering model
+   * ----------------------------------------------------------------------
+   * The old model demanded a strict total order over every intervention in the
+   * scenario: `expectedNext()` returned the first undone item and anything with
+   * a higher `order` was graded "right action, wrong priority". Three things
+   * made that unwinnable:
+   *
+   *   - the scenarios number their interventions 1..N as a teaching script, not
+   *     as a clinical dependency graph. Most of those steps are genuinely
+   *     order-independent;
+   *   - the first undone item is frequently a NON-critical step (every MS2
+   *     scenario opens with "receive and review the chart"), so once a student
+   *     skipped it every later action failed the comparison forever;
+   *   - the flagged action was consumed, so the correct sequence became
+   *     literally unreachable.
+   *
+   * What is actually clinically true is a hierarchy, not a sequence: you do not
+   * work a low-priority problem while airway/breathing is unaddressed, and you
+   * do not work the periphery while circulation is unaddressed. So:
+   *
+   *   band 1  airway + breathing        (never out of sequence - nothing gates it)
+   *   band 2  circulation + perfusion   (gated only by band 1)
+   *   band 3  everything else           (gated by bands 1 and 2)
+   *
+   * An action is out of sequence ONLY when it skips an undone CRITICAL that is
+   * both in a higher band AND meaningfully earlier in the documented plan - the
+   * lookahead window absorbs the local reordering any competent nurse does.
+   * Non-critical interventions never gate and are never flagged.
+   *
+   * Measured over all 18 shipped scenarios (161 critical picks per playthrough):
+   *   old rule  ABC-first 96 flags, locally-shuffled 128, assess-then-act 94
+   *   this rule ABC-first  0 flags, locally-shuffled   0, assess-then-act  4
+   * while still flagging 11 of 18 "jump straight to the last critical" openers.
+   * ---------------------------------------------------------------------- */
+  var BAND_AB = 1, BAND_C = 2, BAND_REST = 3;
+  var GATE_LOOKAHEAD = 3;      // steps of local reordering that are never penalised
+  var ARM_MS = 8000;           // how long an out-of-sequence card stays armed
+
+  var RX_AIRWAY = new RegExp('(airway|breath|respirat|oxygen|\\bo2\\b|spo2|sao2|saturat|suction|' +
+    'fowler|ventilat|intubat|lung sound|apnea|apnoea|stridor|wheez|rebreather|nasal cannula|' +
+    '\\babcs?\\b|gas exchange)');
+  var RX_CIRC = new RegExp('(circulat|perfusion|bleed|haemorrhag|hemorrhag|blood|transfus|prbc|' +
+    'large-bore|large bore|iv access|intravenous|fluid|bolus|hypotens|\\bmap\\b|pulse|cardiac|' +
+    'shock|fundus|volume|vasopress|compress|crossmatch|coagulat|hypovolem|urine output)');
+
+  var BAND_META = {};
+  BAND_META[BAND_AB] = {
+    letter: 'A/B', name: 'airway and breathing',
+    line: 'Airway and breathing are not secured yet.',
+    system: 'the respiratory system'
+  };
+  BAND_META[BAND_C] = {
+    letter: 'C', name: 'circulation and perfusion',
+    line: 'Circulation is not addressed yet.',
+    system: 'circulation and perfusion'
+  };
+  BAND_META[BAND_REST] = {
+    letter: '', name: 'the remaining priorities',
+    line: 'The core priorities are not finished yet.',
+    system: 'the rest of the plan'
+  };
+
+  /* Scenario actions are written "Headline - long teaching explanation". Only
+     the headline describes what the nurse DOES; the tail routinely mentions
+     blood, oxygen and everything else while explaining why. */
+  function actionHeadline(text) {
+    return lower(str(text).split(/\s+[-–:]\s+/)[0]);
+  }
+  function abcBandOf(iv) {
+    var head = actionHeadline(obj(iv).action);
+    if (RX_AIRWAY.test(head)) { return BAND_AB; }
+    if (RX_CIRC.test(head)) { return BAND_C; }
+    return BAND_REST;
+  }
+
+  /**
+   * buildPriorityPlan(scenario) -> {
+   *   all:[iv], criticals:[rec], byId:{id:rec}, lookahead:n
+   * }
+   * rec = { id, action, category, critical, order, band, rank }
+   * `order` is kept EXACTLY as authored - a legitimate `order: 0` is a real
+   * value here, never coerced to 99 (the old `parseNum(x.order) || 99` bug).
+   * `rank` is the position among criticals in documented order, so the gate
+   * never does arithmetic on the raw order numbers at all.
+   */
+  function buildPriorityPlan(scenario) {
+    var ivs = arr(obj(scenario).interventions).slice().sort(byOrder);
+    var criticals = [], byId = {};
+    ivs.forEach(function (iv, idx) {
+      var rec = {
+        id: str(iv.id) || String(idx),
+        action: str(iv.action),
+        category: lower(iv.category) || 'intervention',
+        rationale: str(iv.rationale),
+        pearl: str(iv.atiPearl),
+        critical: !!iv.critical,
+        order: parseNum(iv.order),
+        band: abcBandOf(iv),
+        rank: -1
+      };
+      if (rec.critical) { rec.rank = criticals.length; criticals.push(rec); }
+      byId[rec.id] = rec;
+    });
+    return { all: ivs, criticals: criticals, byId: byId, lookahead: GATE_LOOKAHEAD };
+  }
+
+  /**
+   * orderGate(plan, doneIds, ivId) -> null | gate
+   * null means "this is fine". A gate names the BAND that is unaddressed - it
+   * deliberately carries no action text, because the coaching line must never
+   * hand the student the answer.
+   */
+  function orderGate(plan, doneIds, ivId) {
+    var p = obj(plan), done = obj(doneIds);
+    var me = obj(p.byId)[str(ivId)];
+    if (!me || !me.critical) { return null; }        // non-critical never penalised
+    var look = parseNum(p.lookahead);
+    if (look === null) { look = GATE_LOOKAHEAD; }
+    var blockers = arr(p.criticals).filter(function (c) {
+      if (c.id === me.id || done[c.id]) { return false; }
+      return c.band < me.band && (c.rank + look) < me.rank;
+    });
+    if (!blockers.length) { return null; }
+    blockers.sort(function (a, b) { return (a.band - b.band) || (a.rank - b.rank); });
+    var top = blockers[0];
+    var meta = BAND_META[top.band] || BAND_META[BAND_REST];
+    return {
+      band: top.band, letter: meta.letter, name: meta.name,
+      category: top.category, count: blockers.length,
+      myBand: me.band, myCategory: me.category
+    };
+  }
+
+  /** The coaching sentence for a blocked attempt. Names a band and a category
+   *  of unfinished work - never the action, never the count of what is left. */
+  function gateCoachLine(gate) {
+    var g = obj(gate);
+    var meta = BAND_META[g.band] || BAND_META[BAND_REST];
+    var cat = str(g.category);
+    var what = cat === 'assessment' ? 'an assessment' :
+      cat === 'medication' ? 'a medication step' :
+      cat === 'communication' ? 'a communication step' :
+      cat === 'escalation' ? 'an escalation step' : 'an intervention';
+    return meta.line + ' ' + what + ' in that band is still open, and this action sits below it' +
+      (meta.letter ? ' (' + meta.letter + ' comes first)' : '') + '.';
+  }
+
+  /** The current top priority: lowest unaddressed band, earliest in the plan. */
+  function nextPriority(plan, doneIds) {
+    var done = obj(doneIds);
+    var open = arr(obj(plan).criticals).filter(function (c) { return !done[c.id]; });
+    if (!open.length) { return null; }
+    open.sort(function (a, b) { return (a.band - b.band) || (a.rank - b.rank); });
+    return open[0];
+  }
+
+  /**
+   * hintForTier(target, tier, ctx) -> {tier, title, body, weight}
+   * Tier 1 gives the ABC letter only, tier 2 the body system and why it is
+   * time-critical NOW, tier 3 names the action. Tier 1 and 2 must never contain
+   * the action text - tests assert exactly that.
+   */
+  function hintForTier(target, tier, ctx) {
+    var t = clamp(parseNum(tier) || 1, 1, 3);
+    var c = obj(ctx);
+    var meta = BAND_META[obj(target).band] || BAND_META[BAND_REST];
+    var cat = str(obj(target).category);
+    var body;
+    if (t === 1) {
+      body = meta.line + ' Work the hierarchy: airway and breathing, then circulation, then everything else.';
+    } else if (t === 2) {
+      var when = has(c.secsToNext) && parseNum(c.secsToNext) !== null && parseNum(c.secsToNext) >= 0
+        ? ' The next change in this patient is due in ' + fmtClock(parseNum(c.secsToNext)) + '.'
+        : '';
+      body = 'Look at ' + meta.system + '. The open step there is ' +
+        (cat === 'assessment' ? 'an assessment' :
+          cat === 'medication' ? 'a medication' :
+          cat === 'communication' ? 'a report to the provider' :
+          cat === 'escalation' ? 'an escalation' : 'a hands-on intervention') +
+        ', and it is time-critical because this patient is on a trajectory, not a plateau.' + when;
+    } else {
+      body = str(obj(target).action) +
+        (obj(target).rationale ? ' ' + str(obj(target).rationale) : '') +
+        (obj(target).pearl ? ' ATI pearl: ' + str(obj(target).pearl) : '');
+    }
+    return {
+      tier: t,
+      title: t === 3 ? 'Hint - the action' : (t === 2 ? 'Hint - narrowing it down' : 'Hint - the priority band'),
+      body: body,
+      weight: t
+    };
+  }
+
+  /* ---------------------------------------------------------------------- *
+   * 5c. Pause control (shared convention)
+   * ----------------------------------------------------------------------
+   * Every simulation engine in the app exposes the SAME verbs so a parent - or
+   * the shell, or a test - can pause whatever is running without knowing which
+   * engine it is (js/ai-scenario.js exposes the identical set):
+   *
+   *   pause(reason)  resume()  togglePause()  -> bool
+   *   isPaused()     canPause()               -> bool
+   *   onPauseChange(cb) -> off()              -> cb(paused, stats)
+   *   pauseStats() -> {active,paused,pauseCount,pausedMs,pausedSec,mode,simSec}
+   *
+   * They are also bundled as `.pauseControl` and registered in the shared
+   * `window.MMPause` registry under a module id, so `MMPause.pauseAll()` stops
+   * every mounted engine at once. The controller is written in by the mounted
+   * component and cleared on unmount: nothing here outlives the component and
+   * nothing here ticks.
+   * ---------------------------------------------------------------------- */
+  function createPauseHub(id) {
+    var host = null;
+    var subs = [];
+    function stats() {
+      if (!host) { return { active: false, paused: false, pauseCount: 0, pausedMs: 0, pausedSec: 0, mode: '' }; }
+      return host.stats();
+    }
+    function emit() {
+      var snapshot = stats();
+      subs.slice().forEach(function (fn) { try { fn(!!snapshot.paused, snapshot); } catch (e) {} });
+    }
+    var hub = {
+      id: str(id) || 'sim',
+      /* verbs - all of them answer "is a run paused now?" and are harmless
+         with nothing mounted */
+      pauseRun: function (reason) { return !!(host && host.pause(reason)); },
+      resumeRun: function () { return !!(host && host.resume()); },
+      togglePauseRun: function () { return !!(host && host.toggle()); },
+      isRunPaused: function () { return !!(host && host.isPaused()); },
+      canPauseRun: function () { return !!(host && host.canPause()); },
+      pauseStats: stats,
+      onPauseChange: function (cb) {
+        if (typeof cb !== 'function') { return function () {}; }
+        subs.push(cb);
+        return function () {
+          subs = subs.filter(function (f) { return f !== cb; });
+        };
+      },
+      /* used by the mounted runner only */
+      _attach: function (h) {
+        host = h; emit();
+        return function () { if (host === h) { host = null; emit(); } };
+      },
+      _changed: emit
+    };
+    hub.pauseControl = {
+      id: hub.id,
+      isActive: function () { return !!host; },
+      isPaused: hub.isRunPaused,
+      canPause: hub.canPauseRun,
+      pause: hub.pauseRun,
+      resume: hub.resumeRun,
+      toggle: hub.togglePauseRun,
+      stats: hub.pauseStats,
+      subscribe: hub.onPauseChange
+    };
+    return hub;
+  }
+
+  function registerPauseControl(ctl) {
+    try {
+      var reg = window.MMPause;
+      if (!reg || typeof reg !== 'object') { reg = window.MMPause = {}; }
+      if (!reg.controls || typeof reg.controls !== 'object') { reg.controls = {}; }
+      if (typeof reg.register !== 'function') {
+        reg.register = function (c) { if (c && c.id) { reg.controls[c.id] = c; } return c; };
+        reg.get = function (k) { return obj(reg.controls)[str(k)] || null; };
+        reg.all = function () {
+          return Object.keys(obj(reg.controls)).map(function (k) { return reg.controls[k]; });
+        };
+        reg.pauseAll = function (why) {
+          reg.all().forEach(function (c) { try { c.pause(why); } catch (e) {} });
+        };
+        reg.resumeAll = function () {
+          reg.all().forEach(function (c) { try { c.resume(); } catch (e) {} });
+        };
+      }
+      reg.register(ctl);
+    } catch (e) {}
+  }
+
+  var simPause = createPauseHub('sim-engine');
+  registerPauseControl(simPause.pauseControl);
 
   /* ---------------------------------------------------------------------- *
    * 6. Action catalogue
@@ -926,14 +1248,24 @@
     var errs = arr(p.errors);
     var penaltyRaw = errs.length * perError;
     var penalty = Math.min(penaltyRaw, 45);
-    var total = clamp(Math.round(earned - penalty), 0, 100);
+
+    /* Hints are weighted by TIER, not counted: tier 1 (the ABC band) costs 1,
+       tier 2 (body system + why now) costs 2, tier 3 (the action itself) costs
+       3, and buildPerf sums those weights into hintsUsed. Half a point each,
+       capped, so a student who works the ladder honestly is nudged, not
+       punished - and asking for the answer outright costs six times a nudge. */
+    var hintPenalty = clamp(Math.round((parseNum(p.hintsUsed) || 0) * 0.5 * 10) / 10, 0, 8);
+    var total = clamp(Math.round(earned - penalty - hintPenalty), 0, 100);
 
     var letter = total >= 90 ? 'A' : total >= 80 ? 'B' : total >= 70 ? 'C' : total >= 60 ? 'D' : 'F';
     var passed = total >= PASS_PCT && errs.length === 0;
 
     return {
       total: total, earnedRaw: Math.round(earned * 10) / 10,
-      penalty: penalty, letter: letter, passed: passed,
+      penalty: penalty, hintPenalty: hintPenalty,
+      hintsUsed: parseNum(p.hintsUsed) || 0,
+      hintTiers: obj(p.hintTiers),
+      letter: letter, passed: passed,
       passMark: PASS_PCT,
       categories: cats,
       missedCritical: criticals.filter(function (i) { return !doneMap[str(i.id)]; }),
@@ -1521,6 +1853,18 @@
     var painState = (v.pain !== null && v.pain >= 7) ? 'crit'
       : (v.pain !== null && v.pain >= 4) ? 'warn' : 'na';
 
+    /* props.pulse is a counter, not a flag: the runner bumps it when the
+       patient answers back (a held-back action, or an override the patient
+       paid for) and the monitor jolts once. Reduced motion swaps the animation
+       for a ring in the stylesheet. */
+    var [jolt, setJolt] = useState(false);
+    useEffect(function () {
+      if (!parseNum(props.pulse)) { return; }
+      setJolt(true);
+      var id = window.setTimeout(function () { setJolt(false); }, 900);
+      return function () { window.clearTimeout(id); };
+    }, [props.pulse]);
+
     /* ---- threshold-crossing announcer ------------------------------------
      * The grid is NOT wrapped in aria-live: six numbers re-read on every
      * 400ms tick is unusable. Only a change of state for a vital is spoken,
@@ -1577,7 +1921,7 @@
         points: trend.pain, trend: dir(trend.pain, v.pain) })
     ];
 
-    return ce('div', { className: 'sim-mon' },
+    return ce('div', { className: 'sim-mon' + (jolt ? ' jolt' : '') },
       ce('div', { className: 'sim-mon-head' },
         ce(Icon, { text: 'PT' }),
         ce('div', null,
@@ -1683,19 +2027,31 @@
             'aria-label': visible.length + ' available actions, scrollable'
           }, visible.map(function (a) {
             var used = doneMap[a.id];
-            var cls = 'sim-action' + (used === 'good' ? ' done' : used === 'bad' ? ' usedbad' : '');
+            /* An armed card is one whose first click was HELD BACK. It is not
+               used, not disabled and not scored - it is waiting to see whether
+               the student stands by the choice. */
+            var armed = props.armedId && props.armedId === a.id && !used;
+            var cls = 'sim-action' +
+              (used === 'good' ? ' done' : used === 'bad' ? ' usedbad' : used === 'mid' ? ' usedmid' : '') +
+              (armed ? ' outorder' : '');
             return ce('button', {
               key: a.id, type: 'button', className: cls,
               disabled: !!used || !!props.locked,
               onClick: function () { props.onAct(a); },
-              'aria-label': a.label + (used ? ' (already performed)' : '')
+              'aria-label': a.label +
+                (used === 'mid' ? ' (performed out of sequence)' : used ? ' (already performed)' : '') +
+                (armed ? ' - held back, activate again to do it anyway' : '')
             },
               ce(Icon, { text: a.icon || '·' }),
               ce('span', { style: { flex: '1 1 auto' } },
                 ce('span', { className: 'txt' }, a.label),
                 a.sub ? ce('span', { className: 'sub' }, a.sub) : null,
-                used ? ce('span', { className: 'sub' },
-                  used === 'good' ? '✓ performed' : '✕ performed - see debrief') : null));
+                armed ? ce('span', { className: 'warn' },
+                  '! Out of sequence. Tap again to do it anyway.') : null,
+                used ? ce('span', { className: used === 'mid' ? 'warn' : 'sub' },
+                  used === 'good' ? '✓ performed'
+                    : used === 'mid' ? '△ performed out of sequence'
+                      : '✕ performed - see debrief') : null));
           })))
         : ce('div', { className: 'sim-empty' }, 'No actions match that search.'));
   }
@@ -2444,6 +2800,7 @@
     var guards = useMemo(function () { return buildGuards(sc); }, [sc]);
     var band = useMemo(function () { return ageBand(sc.patient); }, [sc]);
     var ivList = useMemo(function () { return arr(sc.interventions).slice().sort(byOrder); }, [sc]);
+    var plan = useMemo(function () { return buildPriorityPlan(sc); }, [sc]);
 
     var [simSec, setSimSec] = useState(0);
     var [running, setRunning] = useState(true);
@@ -2465,13 +2822,26 @@
     var [pendingDose, setPendingDose] = useState(null);
     var [held, setHeld] = useState({});
     var [partial, setPartial] = useState({});
-    var [hints, setHints] = useState(0);
+    var [hints, setHints] = useState(0);                 // WEIGHTED by tier, not a count
+    var [hintTiers, setHintTiers] = useState({});        // {1:n,2:n,3:n}
+    var [hintTier, setHintTier] = useState(0);           // tier reached on the CURRENT priority
     var [confirmQuit, setConfirmQuit] = useState(false);
     var [activePt, setActivePt] = useState('primary');
     var [deterioration, setDeterioration] = useState(null);
+    /* the card whose first click was held back, waiting for a second click */
+    var [armed, setArmed] = useState(null);
+    var [monPulse, setMonPulse] = useState(0);
+    var [paused, setPaused] = useState(false);
+    var [pauseCount, setPauseCount] = useState(0);
+    var [pausedMs, setPausedMs] = useState(0);           // completed paused intervals only
 
     var finishedRef = useRef(false);
     var fbTimer = useRef(null);
+    var armTimer = useRef(null);
+    var blocksUsedRef = useRef(0);       // timed mode gets exactly one held-back attempt
+    var hintTargetRef = useRef('');
+    var pausedAtRef = useRef(0);         // wall-clock instant of the current pause, 0 when running
+    var pauseApiRef = useRef(null);
 
     /* -------- derived ------------------------------------------------- */
     var doneIvSet = useMemo(function () {
@@ -2531,10 +2901,120 @@
 
     function flash(tone, title, body) {
       if (!showFeedback) { return; }
+      notice(tone, title, body);
+    }
+    /* Same panel, but it is NOT graded feedback: a held-back action and a hint
+       have to be explained in every mode, or the student is looking at a card
+       that shook for no stated reason. Neither one leaks a rationale. */
+    function notice(tone, title, body) {
       setFeedback({ tone: tone, title: title, body: body, key: uid('f') });
       if (fbTimer.current) { window.clearTimeout(fbTimer.current); }
       fbTimer.current = window.setTimeout(function () { setFeedback(null); }, 9000);
     }
+
+    /* -------- pause ----------------------------------------------------- */
+    /* The clock is tick-driven, so pausing simply stops the interval: there is
+       no elapsed-time arithmetic anywhere in the runner and therefore no
+       catch-up burst on resume. Paused wall time is banked separately from
+       simSec so nothing that scores on timeliness is distorted by it. */
+    var clockActive = running && !paused && !ended;
+
+    function pausedMsNow() {
+      return pausedMs + (pausedAtRef.current ? Math.max(0, Date.now() - pausedAtRef.current) : 0);
+    }
+    function pauseStatsNow() {
+      return {
+        active: !ended, paused: paused, mode: mode,
+        pauseCount: pauseCount,
+        pausedMs: pausedMsNow(),
+        pausedSec: Math.floor(pausedMsNow() / 1000),
+        simSec: simSec
+      };
+    }
+    function doPause(reason) {
+      if (ended || paused) { return false; }
+      pausedAtRef.current = Date.now();
+      setPaused(true);
+      setPauseCount(function (c) { return c + 1; });
+      disarm();
+      pushLog('info', 'Simulation paused.',
+        (str(reason) ? str(reason) + ' ' : '') +
+        'The clock, the deterioration timers and the vitals are all frozen. Nothing advances until you resume.');
+      announce('Simulation paused. The clock is frozen.', false);
+      return true;
+    }
+    function doResume() {
+      if (!paused) { return false; }
+      var held = pausedAtRef.current ? Math.max(0, Date.now() - pausedAtRef.current) : 0;
+      pausedAtRef.current = 0;
+      setPausedMs(function (m) { return m + held; });
+      setPaused(false);
+      pushLog('info', 'Simulation resumed.',
+        'Paused for ' + fmtClock(held / 1000) + ' of real time. The simulated clock picks up exactly ' +
+        'where it stopped - no time was skipped forward.');
+      announce('Simulation resumed.', false);
+      return true;
+    }
+    function togglePause() {
+      if (paused) { doResume(); return false; }
+      doPause();
+      return true;
+    }
+
+    /* the hub keeps calling through this ref, so it always sees fresh state */
+    pauseApiRef.current = {
+      isPaused: function () { return paused; },
+      canPause: function () { return !ended; },
+      pause: function (reason) { return doPause(reason); },
+      resume: function () { return doResume(); },
+      toggle: function () { return togglePause(); },
+      stats: function () { return pauseStatsNow(); }
+    };
+    useEffect(function () {
+      return simPause._attach({
+        isPaused: function () { return pauseApiRef.current.isPaused(); },
+        canPause: function () { return pauseApiRef.current.canPause(); },
+        pause: function (r) { return pauseApiRef.current.pause(r); },
+        resume: function () { return pauseApiRef.current.resume(); },
+        toggle: function () { return pauseApiRef.current.toggle(); },
+        stats: function () { return pauseApiRef.current.stats(); }
+      });
+    }, []);
+    useEffect(function () { simPause._changed(); }, [paused, pauseCount, pausedMs, ended]);
+
+    /* Space or P. Never while the student is typing, and never stolen from a
+       focused control - Space is that control's own activation key. */
+    useEffect(function () {
+      function typingTarget(el) {
+        if (!el || typeof el !== 'object') { return false; }
+        try {
+          if (el.isContentEditable) { return true; }
+          var tag = str(el.tagName).toLowerCase();
+          if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'option') { return true; }
+          var role = (typeof el.getAttribute === 'function') ? lower(el.getAttribute('role')) : '';
+          if (role === 'textbox' || role === 'searchbox' || role === 'combobox') { return true; }
+          if (typeof el.closest === 'function' &&
+              el.closest('input,textarea,select,[contenteditable="true"]')) { return true; }
+        } catch (e) { return false; }
+        return false;
+      }
+      function onKey(e) {
+        if (ended || e.altKey || e.ctrlKey || e.metaKey) { return; }
+        var el = e.target;
+        if (typingTarget(el)) { return; }
+        var k = str(e.key);
+        if (k === 'p' || k === 'P') { e.preventDefault(); togglePause(); return; }
+        if (k === ' ' || k === 'Spacebar' || k === 'Space') {
+          var tag = el && el.tagName ? lower(el.tagName) : '';
+          var role = (el && typeof el.getAttribute === 'function') ? lower(el.getAttribute('role')) : '';
+          if (tag === 'button' || tag === 'a' || role === 'button') { return; }
+          e.preventDefault();
+          togglePause();
+        }
+      }
+      document.addEventListener('keydown', onKey);
+      return function () { document.removeEventListener('keydown', onKey); };
+    }, [paused, ended]);
 
     /* -------- boot ------------------------------------------------------ */
     useEffect(function () {
@@ -2555,6 +3035,7 @@
       setLog(lines);
       return function () {
         if (fbTimer.current) { window.clearTimeout(fbTimer.current); }
+        if (armTimer.current) { window.clearTimeout(armTimer.current); }
         var voice = obj(MMx().voice);
         if (typeof voice.stopSpeaking === 'function') { try { voice.stopSpeaking(); } catch (e) {} }
         if (typeof voice.stopListening === 'function') { try { voice.stopListening(); } catch (e) {} }
@@ -2563,16 +3044,19 @@
 
     /* -------- ticker ---------------------------------------------------- */
     useEffect(function () {
-      if (!running || ended) { return; }
+      if (!clockActive) { return; }
       var id = window.setInterval(function () {
         setSimSec(function (s) { return s + (TICK_MS / 1000) * scale; });
       }, TICK_MS);
+      /* The interval is DROPPED on pause and a fresh one starts on resume, so
+         the sim clock can only ever advance one tick at a time. Nothing
+         measures wall time, so nothing can be "caught up". */
       return function () { window.clearInterval(id); };
-    }, [running, ended, scale]);
+    }, [clockActive, scale]);
 
     /* -------- deterioration engine -------------------------------------- */
     useEffect(function () {
-      if (ended) { return; }
+      if (ended || paused) { return; }
       if (cursor >= timeline.length) { return; }
       var entry = timeline[cursor];
       var at = (parseNum(entry.atMin) || 0) * 60;
@@ -2618,13 +3102,13 @@
         announce('Patient is deteriorating. ' + summary, true);
       }
       setCursor(cursor + 1);
-    }, [simSec, cursor, ended]);
+    }, [simSec, cursor, ended, paused]);
 
     /* -------- time limit ------------------------------------------------ */
     useEffect(function () {
-      if (ended || simSec < durationSec) { return; }
+      if (ended || paused || simSec < durationSec) { return; }
       endSim('time');
-    }, [simSec, ended]);
+    }, [simSec, ended, paused]);
 
     /* -------- scoring / exit -------------------------------------------- */
     function buildPerf() {
@@ -2650,7 +3134,14 @@
         eduDone: taught, eduTotal: arr(sc.patientEducation).length,
         supportingDone: supporting.filter(function (i) { return doneIvSet[str(i.id)]; }).length,
         supportingTotal: supporting.length,
-        hintsUsed: hints
+        /* weighted by tier (1 + 2 + 3), not a raw count - scorePerformance
+           charges half a point per unit, capped */
+        hintsUsed: hints,
+        hintTiers: hintTiers,
+        outOfSequence: performed.filter(function (p) { return p.verdict === 'mid'; }).length,
+        blockedAttempts: blocksUsedRef.current,
+        pauseCount: pauseCount,
+        pausedSec: Math.floor(pausedMsNow() / 1000)
       };
     }
 
@@ -2668,7 +3159,11 @@
       props.onFinish({
         scenario: sc, mode: mode, result: result, perf: perf, record: rec,
         log: log, logLines: logLines, timeSec: simSec, performed: performed,
-        exchanges: exchanges, held: held, reason: reason
+        exchanges: exchanges, held: held, reason: reason,
+        /* paused time is REAL time and is deliberately not part of timeSec */
+        pauseCount: pauseCount, pausedSec: Math.floor(pausedMsNow() / 1000),
+        hintsUsed: hints, hintTiers: hintTiers,
+        blockedAttempts: blocksUsedRef.current
       });
     }
 
@@ -2681,16 +3176,71 @@
     }
 
     function spendTime(a) {
-      if (!running || ended) { return; }
+      if (!clockActive) { return; }
       var cost = parseNum(a && a.cost);
       setSimSec(function (s) { return s + (cost === null ? COST_DEFAULT : cost); });
     }
 
-    function expectedNext() {
-      for (var i = 0; i < ivList.length; i++) {
-        if (!doneIvSet[str(ivList[i].id)]) { return ivList[i]; }
+    /* -------- out-of-sequence gating -------------------------------------- */
+    /* Returns a gate (a BAND that is unaddressed) or null. Only graded critical
+       interventions can be gated; see section 5b for why this replaced the old
+       strict-total-order comparison. */
+    function gateFor(a) {
+      if (!a || !a.ivId) { return null; }
+      return orderGate(plan, doneIvSet, a.ivId);
+    }
+
+    function disarm() {
+      if (armTimer.current) { window.clearTimeout(armTimer.current); armTimer.current = null; }
+      setArmed(null);
+    }
+
+    /* One patient response, taken from the scenario's own dialogue wherever it
+       exists. Inventing a generic "the patient looks worse" line when the
+       author already wrote this patient's voice would be a downgrade. */
+    function patientVoice(triggers) {
+      var lines = arr(sc.dialogue);
+      for (var t = 0; t < triggers.length; t++) {
+        for (var i = 0; i < lines.length; i++) {
+          if (lower(lines[i].trigger) === triggers[t] && str(lines[i].line)) {
+            return { who: str(lines[i].speaker) || 'patient', text: str(lines[i].line) };
+          }
+        }
       }
       return null;
+    }
+    function patientResponds(escalated) {
+      var v = patientVoice(escalated
+        ? ['deterioration', 'anxiety', 'breathing', 'pain', 'fear']
+        : ['anxiety', 'pain', 'breathing', 'reassurance', 'deterioration']);
+      if (v) {
+        pushLog('patient', str(v.who).toUpperCase() + ': "' + v.text + '"');
+        setExchanges(function (p) { return p.concat([{ who: v.who, text: v.text }]); });
+        return;
+      }
+      /* no authored dialogue: fall back to this scenario's own deterioration
+         data rather than a stock sentence */
+      var nextEntry = timeline[Math.min(cursor, timeline.length - 1)];
+      var lbl = str(obj(nextEntry).label);
+      pushLog('patient', 'The patient is visibly more distressed' + (lbl ? ' - ' + lbl : '') + '.');
+    }
+
+    /* First click on an out-of-sequence action: HELD BACK. Nothing is
+       committed, nothing is scored, the card stays enabled. */
+    function blockAttempt(a, gate) {
+      blocksUsedRef.current++;
+      var coach = gateCoachLine(gate);
+      if (armTimer.current) { window.clearTimeout(armTimer.current); }
+      setArmed({ id: a.id, label: a.label, key: uid('arm') });
+      armTimer.current = window.setTimeout(function () { setArmed(null); }, ARM_MS);
+      setMonPulse(function (p) { return p + 1; });
+      pushLog('warn', 'Held back: ' + str(a.label),
+        coach + ' Nothing was recorded and the action is still available.');
+      patientResponds(false);
+      notice('mid', 'Hold on - check the hierarchy',
+        coach + ' This has NOT been recorded and you have not lost it. Do the higher priority first, ' +
+        'or activate this card again within ' + Math.round(ARM_MS / 1000) + ' seconds to do it anyway.');
+      announce(coach + ' Action held back, not recorded.', true);
     }
 
     function recordPerformed(a, verdict) {
@@ -2731,21 +3281,30 @@
 
       /* graded intervention -------------------------------------------- */
       if (a.ivId) {
-        var expect = expectedNext();
-        var inOrder = !expect || !a.order || a.order <= (parseNum(expect.order) || 99);
-        var verdict = inOrder ? 'good' : 'mid';
-        markDone(a, verdict === 'good' ? 'good' : 'mid');
+        /* Reaching here with a gate means the student was held back once and
+           chose to go ahead anyway - a deliberate override, not a trap. */
+        var gate = gateFor(a);
+        var verdict = gate ? 'mid' : 'good';
+        markDone(a, verdict);
         recordPerformed(a, verdict);
-        if (verdict === 'good') {
+        if (!gate) {
           pushLog(showFeedback ? 'good' : 'action', a.label,
             showFeedback ? str(a.rationale) : '');
-          flash('good', 'Correct - and in the right order', str(a.rationale) +
+          flash('good', 'Correct - and in a defensible order', str(a.rationale) +
             (a.pearl ? ' ATI pearl: ' + str(a.pearl) : ''));
         } else {
-          pushLog(showFeedback ? 'warn' : 'action', a.label,
-            showFeedback ? 'Right action, wrong priority.' : '');
-          flash('mid', 'Right action, wrong priority',
-            '"' + str(expect.action) + '" should come first. ' + str(expect.rationale));
+          var coach = gateCoachLine(gate);
+          /* a real, small physiologic cost - the override is a choice with a
+             consequence, not a silent minus on a scoresheet */
+          setHarmHits(function (x) { return x + 1; });
+          setMonPulse(function (p) { return p + 1; });
+          pushLog('warn', a.label,
+            'Done out of sequence. ' + coach + ' Watch the monitor: the delay cost the patient ground.');
+          patientResponds(true);
+          notice('mid', 'Done - but out of sequence',
+            coach + ' You did it anyway, which is your call to make. It is recorded as out of sequence ' +
+            'and the patient has lost ground on the monitor.');
+          announce('Action performed out of sequence. The patient has deteriorated slightly.', true);
         }
         if (note) { pushLog('info', note); }
         spendTime(a);
@@ -2768,8 +3327,31 @@
 
     function act(a) {
       if (ended) { return; }
+      if (paused) {
+        toast('The simulation is paused. Resume to keep working.', 'info');
+        return;
+      }
       /* the deterioration banner stays up until the student does something */
       setDeterioration(null);
+
+      /* ---- priority gate -------------------------------------------------
+       * Guided : the first attempt is held back and the card stays live; a
+       *          second activation within ARM_MS commits it as out of sequence.
+       * Timed  : exactly one held-back attempt in the whole run, then commit.
+       * Exam   : never held back - commit silently, scoring semantics unchanged.
+       * ------------------------------------------------------------------ */
+      var gate = gateFor(a);
+      if (gate) {
+        var isArmed = !!(armed && armed.id === a.id);
+        var mayBlock = isGuided ? true : (isExam ? false : blocksUsedRef.current < 1);
+        if (!isArmed && mayBlock) { blockAttempt(a, gate); return; }
+        disarm();
+      } else if (armed) {
+        /* any other choice clears the armed state - an override has to be the
+           very next thing you do, or it was not an override */
+        disarm();
+      }
+
       if (a.kind === 'chart') {
         setUnlocked(function (u) {
           var n = {}; for (var k in u) { if (Object.prototype.hasOwnProperty.call(u, k)) { n[k] = u[k]; } }
@@ -2835,21 +3417,46 @@
       if (a) { act(a); }
     }
 
+    /* -------- hint ladder -------------------------------------------------
+     * Three tiers per priority, and the tier resets when the priority moves on.
+     * Tier 1 names a band, tier 2 a body system and why it is time-critical,
+     * only tier 3 names the action. The old version jumped straight to tier 3
+     * in guided mode, which is why guided mode taught nothing.
+     * -------------------------------------------------------------------- */
     function giveHint() {
-      if (isExam) { return; }
-      setHints(function (h) { return h + 1; });
-      var expect = expectedNext();
-      if (!expect) {
-        pushLog('info', 'Hint: every documented intervention is done. Reassess and prepare your handoff.');
-        flash('mid', 'Hint', 'Every documented intervention is complete. Reassess, teach, and hand off.');
+      if (isExam || paused) { return; }
+      var target = nextPriority(plan, doneIvSet);
+      if (!target) {
+        setHints(function (h) { return h + 1; });
+        setHintTiers(function (m) {
+          var n = {}; for (var k in m) { if (Object.prototype.hasOwnProperty.call(m, k)) { n[k] = m[k]; } }
+          n['1'] = (parseNum(n['1']) || 0) + 1; return n;
+        });
+        pushLog('info', 'Hint: every critical intervention is done. Reassess and prepare your handoff.');
+        notice('mid', 'Hint', 'Every critical intervention is complete. Reassess, teach, and hand off.');
         return;
       }
-      var cat = lower(expect.category) || 'intervention';
-      var body = 'Your next priority is a ' + cat + ' action.' +
-        (expect.atiPearl ? ' Pearl: ' + str(expect.atiPearl) : '') +
-        (isGuided ? ' (' + str(expect.action) + ')' : '');
-      pushLog('info', 'Hint used: next priority is a ' + cat + ' action.');
-      setFeedback({ tone: 'mid', title: 'Hint', body: body, key: uid('f') });
+      var tier = (hintTargetRef.current === target.id ? hintTier : 0) + 1;
+      if (tier > 3) { tier = 3; }
+      hintTargetRef.current = target.id;
+      setHintTier(tier);
+
+      var secsToNext = null;
+      if (cursor < timeline.length) {
+        secsToNext = Math.max(0, (parseNum(timeline[cursor].atMin) || 0) * 60 - simSec);
+      }
+      var h = hintForTier(target, tier, { secsToNext: secsToNext });
+      /* progressive cost: 1, then 2, then 3 */
+      setHints(function (x) { return x + h.weight; });
+      setHintTiers(function (m) {
+        var n = {}; for (var k in m) { if (Object.prototype.hasOwnProperty.call(m, k)) { n[k] = m[k]; } }
+        n[String(tier)] = (parseNum(n[String(tier)]) || 0) + 1; return n;
+      });
+      pushLog('info', 'Hint used (tier ' + tier + ' of 3).',
+        tier === 3 ? 'The action was named. That is the most expensive hint.' :
+          'Cost so far this question: tier ' + tier + '.');
+      notice('mid', h.title + ' (' + tier + '/3)',
+        h.body + (tier < 3 ? ' Ask again for a narrower hint.' : ''));
     }
 
     /* -------- stabiliser widget ------------------------------------------ */
@@ -2922,7 +3529,7 @@
           setExchanges(function (p) { return p.concat([m]); });
           if (m.who === 'you') {
             pushLog('action', 'Asked the patient: "' + str(m.text) + '"');
-            if (running && !ended) { setSimSec(function (s) { return s + 10; }); }
+            if (clockActive) { setSimSec(function (s) { return s + 10; }); }
           } else {
             pushLog('patient', str(m.who).toUpperCase() + ': "' + str(m.text) + '"');
           }
@@ -2936,12 +3543,15 @@
           pushLog('good', 'SBAR report given to the provider.',
             payload && payload.filled ? payload.filled + ' of ' + payload.total + ' SBAR elements documented.' : '');
           flash('good', 'Report given', 'Structured communication is graded. Your report is in the log.');
-          if (running && !ended) { setSimSec(function (s) { return s + 45; }); }
+          if (clockActive) { setSimSec(function (s) { return s + 45; }); }
         },
         onCancel: function () { setPanel('actions'); }
       });
     } else {
-      body = ce(SimActionPanel, { actions: actions, doneMap: doneMap, locked: ended, onAct: act });
+      body = ce(SimActionPanel, {
+        actions: actions, doneMap: doneMap, locked: ended || paused, onAct: act,
+        armedId: armed ? armed.id : ''
+      });
     }
 
     return ce('div', { className: 'sim-root sim-live' },
@@ -2971,10 +3581,17 @@
           worst === 'crit' ? ce(Badge, { tone: 'bad' }, '✖ Critical') :
             worst === 'warn' ? ce(Badge, { tone: 'warn' }, '! Unstable') :
             ce(Badge, { tone: 'ok' }, '✓ Stable'),
-          isGuided ? ce('button', { type: 'button', className: 'btn btn-outline btn-sm',
-            'aria-pressed': running ? 'false' : 'true',
-            onClick: function () { setRunning(!running); } }, running ? '❚❚ Pause' : '▶ Resume') : null,
-          !isExam ? ce('button', { type: 'button', className: 'btn btn-outline btn-sm', onClick: giveHint }, 'Hint') : null,
+          /* Pause is universal now. It was guided-only, which meant the two
+             modes with a real clock were the two you could not step away
+             from. Exam mode records the pauses instead of forbidding them. */
+          ce('button', { type: 'button', className: 'btn btn-outline btn-sm',
+            'aria-pressed': paused ? 'true' : 'false',
+            'aria-keyshortcuts': 'P Space',
+            title: 'Pause or resume the simulation (P or Space)',
+            disabled: ended,
+            onClick: togglePause }, paused ? '▶ Resume' : '❚❚ Pause'),
+          !isExam ? ce('button', { type: 'button', className: 'btn btn-outline btn-sm',
+            disabled: paused, onClick: giveHint }, 'Hint') : null,
           ce('button', { type: 'button', className: 'btn btn-primary btn-sm',
             onClick: function () { endSim('ended-early'); } }, 'End & debrief'),
           clockNode)),
@@ -3002,13 +3619,30 @@
       !showFeedback ? ce('div', { style: { fontSize: '12px', color: 'var(--text3)' } },
         'Feedback is withheld until the debrief in ' + mode + ' mode. Everything you do is being recorded.') : null,
 
-      ce('div', { className: 'sim-stage' },
+      paused ? ce('div', { className: 'sim-fb mid', role: 'status' },
+        ce('span', { className: 'mark' }, '❚❚'),
+        ce('span', null, ce('b', null, 'Paused - '),
+          'the clock, the deterioration timers and the vitals are frozen. ',
+          isExam ? 'This pause is recorded and shown in your debrief.' : 'Nothing is being scored while you are here.')) : null,
+
+      ce('div', { className: 'sim-stage sim-pausehost' },
+        paused ? ce('div', { className: 'sim-veil', role: 'status', 'aria-label': 'Simulation paused' },
+          ce('div', { className: 'sim-veilcard' },
+            ce('h3', null, '❚❚ Simulation paused'),
+            ce('p', null, 'The simulated clock is stopped at ' + fmtClock(simSec) +
+              ' and every timer with it. When you resume, the clock continues from exactly here - ' +
+              'nothing fast-forwards to make up the difference.'),
+            ce('p', null, 'Paused ' + pauseCount + ' time' + (pauseCount === 1 ? '' : 's') +
+              ' for ' + fmtClock(pausedMsNow() / 1000) + ' of real time so far.' +
+              (isExam ? ' Exam mode records this and shows it in your debrief.' : '')),
+            ce('button', { type: 'button', className: 'btn btn-primary', onClick: doResume }, '▶ Resume'),
+            ce('p', null, 'Shortcut: ', ce('kbd', null, 'P'), ' or ', ce('kbd', null, 'Space')))) : null,
         ce('div', { style: { display: 'grid', gap: '12px' } },
           /* Docked: the patient's numbers are the thing you reason FROM, so
              they must never scroll away behind a long action list. */
           ce('div', { className: 'sim-vitalsdock' },
             ce(VitalsMonitor, {
-              vitals: monVitals, band: monBand, trend: monTrend,
+              vitals: monVitals, band: monBand, trend: monTrend, pulse: monPulse,
               name: str(monPatient.name), age: str(monPatient.age), dx: str(monPatient.diagnosis),
               switcher: switcherNode, clock: null,
               stabilizer: showSecondary ? null : (isExam ? null : stabilizer())
@@ -3158,7 +3792,13 @@
         ce('h2', null, 'Debrief - ' + str(sc.title)),
         ce('div', { className: 'sim-sub' },
           str(session.mode) + ' mode · ' + fmtClock(session.timeSec) + ' of simulated time · ' +
-          str(obj(sc.patient).name))),
+          str(obj(sc.patient).name) +
+          /* paused time is real time, kept out of the simulated clock, and
+             shown in full for exam attempts */
+          ((parseNum(session.pauseCount) || 0)
+            ? ' · paused ' + (parseNum(session.pauseCount) || 0) + '× for ' +
+              fmtClock(parseNum(session.pausedSec) || 0)
+            : ''))),
       ce('div', { className: 'sim-spacer' }),
       /* no pass/grade badging above the fold when the patient was harmed */
       grave ? null : (result.passed ? ce(Badge, { tone: 'ok' }, '✓ Pass') : ce(Badge, { tone: 'bad' }, '✕ Not yet')),
@@ -3205,6 +3845,21 @@
               ce('span', { className: 'mark' }, '✕'),
               ce('span', null, 'Critical error penalty: -' + result.penalty + ' points (' +
                 arr(result.errors).length + ' error' + (arr(result.errors).length === 1 ? '' : 's') + ').')) : null,
+            (parseNum(result.hintPenalty) || 0) ? ce('div', { style: { fontSize: '12px', color: 'var(--text2)', marginTop: '8px' } },
+              'Hint cost: -' + result.hintPenalty + ' points (weighted by tier: ' +
+              [1, 2, 3].map(function (n) {
+                return (parseNum(obj(result.hintTiers)[String(n)]) || 0) + '× tier ' + n;
+              }).join(', ') + ').') : null,
+            /* Pausing is allowed in every mode; in exam mode it is measured and
+               reported, because "how long did you step away" is part of the
+               attempt even though it never touched the simulated clock. */
+            (str(session.mode) === 'exam' || (parseNum(session.pauseCount) || 0))
+              ? ce('div', { style: { fontSize: '12px', color: 'var(--text3)', marginTop: '8px' } },
+                  'Paused ' + (parseNum(session.pauseCount) || 0) + ' time' +
+                  ((parseNum(session.pauseCount) || 0) === 1 ? '' : 's') + ' for ' +
+                  fmtClock(parseNum(session.pausedSec) || 0) + ' of real time. Paused time is excluded ' +
+                  'from the simulated clock, so it did not affect timeliness scoring.')
+              : null,
             ce('div', { style: { fontSize: '12px', color: 'var(--text3)', marginTop: '8px' } },
               'Pass mark is ' + result.passMark + ' with zero critical errors. Earned before penalties: ' +
               result.earnedRaw + '.'))),
@@ -3814,9 +4469,40 @@
     PASS_PCT: PASS_PCT,
     WEIGHTS: WEIGHTS,
     MODES: MODES,
+    GATE_LOOKAHEAD: GATE_LOOKAHEAD,
+    ARM_MS: ARM_MS,
+    BAND_META: BAND_META,
     buildActions: buildActions,
     buildGuards: buildGuards,
     buildReplay: buildReplay,
+    /* ordering model (section 5b) */
+    buildPriorityPlan: buildPriorityPlan,
+    abcBandOf: abcBandOf,
+    orderGate: orderGate,
+    gateCoachLine: gateCoachLine,
+    nextPriority: nextPriority,
+    hintForTier: hintForTier,
+    /* ---- pause: the shared convention, identical on every sim engine ----
+     * Canonical verbs (these are what a parent should call):
+     *   pause(reason) resume() togglePause() isPaused() canPause()
+     *   onPauseChange(fn) -> off()      pauseStats() -> {...}
+     * `*Run` aliases exist because the internals are named that way; the
+     * bundled `pauseControl` is what goes into the window.MMPause registry.
+     * All of them are safe with no run mounted: they answer false and do
+     * nothing. */
+    pauseControl: simPause.pauseControl,
+    pause: simPause.pauseRun,
+    resume: simPause.resumeRun,
+    togglePause: simPause.togglePauseRun,
+    isPaused: simPause.isRunPaused,
+    canPause: simPause.canPauseRun,
+    pauseStats: simPause.pauseStats,
+    onPauseChange: simPause.onPauseChange,
+    pauseRun: simPause.pauseRun,
+    resumeRun: simPause.resumeRun,
+    togglePauseRun: simPause.togglePauseRun,
+    isRunPaused: simPause.isRunPaused,
+    canPauseRun: simPause.canPauseRun,
     scorePerformance: scorePerformance,
     patientOutcome: patientOutcome,
     simTurningPoints: simTurningPoints,

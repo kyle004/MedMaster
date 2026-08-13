@@ -120,6 +120,55 @@
   }
   function pct(n) { return Math.round(clamp(numOr(n, 0), 0, 1) * 100) + '%'; }
 
+  /** Milligrams as a nurse would write them: 1, 0.5, 0.14, 0.035 - never 0.140000001. */
+  function fmtMg(n) {
+    var v = numOr(n, 0);
+    if (!isFinite(v)) return '0';
+    var s = (Math.abs(v) >= 1) ? v.toFixed(2) : v.toFixed(3);
+    s = s.replace(/0+$/, '').replace(/\.$/, '');
+    return s || '0';
+  }
+
+  /* localStorage, defensively. Private browsing and a full quota both throw,
+     and neither is a reason for a code drill to stop working. */
+  function lsGet(k) {
+    try { return window.localStorage ? window.localStorage.getItem(k) : null; }
+    catch (e) { return null; }
+  }
+  function lsSet(k, v) {
+    try { if (window.localStorage) window.localStorage.setItem(k, v); return true; }
+    catch (e) { return false; }
+  }
+  function lsDel(k) {
+    try { if (window.localStorage) window.localStorage.removeItem(k); } catch (e) {}
+  }
+
+  /**
+   * contentHash(text) -> 32 lowercase hex characters.
+   *
+   * Prefers MM.ai.promptHash, which is the sha256 the image and voice caches
+   * already key on, so one hashing convention covers the whole app. Falls back
+   * to a doubled FNV-1a when ai.js has not loaded - shorter and weaker, but the
+   * only thing riding on it is a cache lookup, and a fallback key is stable
+   * within itself, which is all a cache needs.
+   */
+  function contentHash(text) {
+    var t = str(text);
+    var ai = aiApi();
+    if (isFn(ai.promptHash)) {
+      try {
+        var h = str(ai.promptHash(t, 'codeblue', 'scenario'));
+        if (h) return h;
+      } catch (e) { /* fall through */ }
+    }
+    var a = hashSeed(t).toString(16);
+    var b = hashSeed('salt:' + t + ':' + t.length).toString(16);
+    var c = hashSeed(t.split('').reverse().join('')).toString(16);
+    var d = hashSeed('x' + t.length + ':' + t).toString(16);
+    return (a + '00000000').slice(0, 8) + (b + '00000000').slice(0, 8) +
+           (c + '00000000').slice(0, 8) + (d + '00000000').slice(0, 8);
+  }
+
   function reducedMotion() {
     try {
       if (!window.matchMedia) return false;
@@ -184,6 +233,13 @@
   var CLEAR_WINDOW  = 6000;    // "clear!" must precede the shock by <= this
   var RECORDER_MS   = 20000;   // recorder has this long to timestamp a beat
   var ROOM_STALE_MS = 45 * 60 * 1000;
+
+  /* ---------------------------------------------------------------- pause */
+  /* A pause is not a stopwatch that stops - it is an offset. Every timestamp
+     in engine state is SIMULATED time, and simulated time is wall-clock time
+     minus every millisecond the room has spent paused. See simNow(). */
+  var PAUSE_MIN_MS  = 250;     // ignore a double-tap on the pause button
+  var PAUSE_NAG_MS  = 10 * 60 * 1000;   // after this the UI says "still paused"
 
   var DIFFS = [
     { id: 'student',   label: 'Student',   base: 0.13, shockGain: 0.36, htGain: 0.34, drift: 0.22,
@@ -324,6 +380,15 @@
       epiMg: 1, epiText: '1 mg IV push',
       pedi: false,
       prearrest: true,
+      /* The pre-arrest window, described as data rather than as an `if (id ===
+         ...)` in tick(). A generated scenario can only have a winnable
+         pre-arrest window if these are fields. */
+      prearrestDeadlineMs: 90000,
+      arrestRhythm: 'pvt',
+      rescueBy: 'cause',
+      rescueText: 'The potassium is running and the ectopy settles. Bea converts to sinus rhythm with a pulse. ' +
+                  'She never arrested.',
+      arrestText: 'Bea has lost consciousness and her pulse. The monitor shows pulseless VT.',
       handoff: 'the cardiology fellow'
     },
     {
@@ -344,24 +409,94 @@
       epiMg: 0.14, epiText: '0.14 mg (0.01 mg/kg) IV push',
       pedi: true, weightKg: 14,
       prearrest: true,
+      prearrestDeadlineMs: 75000,
+      arrestRhythm: 'asystole',
+      rescueBy: 'airway',
+      rescueText: 'Oxygen, a patent airway and effective breaths. Tobias\'s heart rate climbs back through 90 and ' +
+                  'his colour returns. He never arrested - because you treated his lungs.',
+      arrestText: 'Tobias has lost his pulse. The monitor is flat. This is a full arrest now.',
       handoff: 'the PICU attending'
     }
   ];
+
+  /* ------------------------------------------------------- custom cases
+   * A scenario the AI built is a CASE like any other - same fields, same
+   * engine, same scoring. It lives in this runtime registry rather than in
+   * CASES so that nothing school-authored can ever be shadowed by a generated
+   * one, and so caseById() keeps working unchanged for every existing caller.
+   *
+   * The registry is per-tab and deliberately bounded: a student who generates
+   * forty scenarios in one sitting must not be able to grow it without limit.
+   * Anything evicted is re-registered the moment its state or its room cfg is
+   * read again, because the whole case travels with both.
+   * ------------------------------------------------------------------- */
+  var CUSTOM_CASES = {};
+  var CUSTOM_ORDER = [];
+  var CUSTOM_CAP = 40;
+
+  function isCustomCaseId(id) { return str(id).indexOf('custom-') === 0; }
+
+  /** registerCase(c) -> the registered case (or null). Never throws. */
+  function registerCase(c) {
+    var k = obj(c);
+    var id = str(k.id);
+    if (!id || !isCustomCaseId(id)) return null;
+    if (!CUSTOM_CASES[id]) {
+      CUSTOM_ORDER.push(id);
+      while (CUSTOM_ORDER.length > CUSTOM_CAP) {
+        var drop = CUSTOM_ORDER.shift();
+        if (drop !== id) delete CUSTOM_CASES[drop];
+      }
+    }
+    CUSTOM_CASES[id] = k;
+    return k;
+  }
+
   function caseById(id) {
-    for (var i = 0; i < CASES.length; i++) { if (CASES[i].id === id) return CASES[i]; }
+    var cid = str(id);
+    if (CUSTOM_CASES[cid]) return CUSTOM_CASES[cid];
+    for (var i = 0; i < CASES.length; i++) { if (CASES[i].id === cid) return CASES[i]; }
     return CASES[0];
   }
+
+  /** Is this state running content a machine wrote? The UI must always say so. */
+  function isGeneratedCase(k) { return !!obj(k).aiGenerated; }
 
   /* Dose pickers. The distractors are the ones that actually get chosen on a
      ward: the cardiac-arrest dose confused with the anaphylaxis dose, the
      infusion concentration read as the bolus, the adult dose given to a child. */
+  /** Pediatric arrest epinephrine: 0.01 mg/kg IV/IO, capped at the 1 mg adult dose. */
+  function pediEpiMg(weightKg) {
+    var kg = numOr(weightKg, 0);
+    if (kg <= 0) return 0;
+    return Math.min(1, Math.round(kg * 0.01 * 1000) / 1000);
+  }
+  /** Pediatric arrest amiodarone: 5 mg/kg IV/IO bolus, capped at the 300 mg adult dose. */
+  function pediAmioMg(weightKg) {
+    var kg = numOr(weightKg, 0);
+    if (kg <= 0) return 0;
+    return Math.min(300, Math.round(kg * 5 * 10) / 10);
+  }
+
   function epiOptions(c) {
     if (c.pedi) {
+      /* Derived from the patient's weight, not written down next to it. The
+         hard-coded 14 kg list this replaced was correct for exactly one child;
+         a generated pediatric case with any other weight would have offered a
+         "correct" answer that was the wrong dose, which is the single worst
+         thing this file could do to a nursing student. */
+      var kg = numOr(c.weightKg, 0);
+      var mg = numOr(c.epiMg, 0) || pediEpiMg(kg) || 0.14;
+      var lowBy10 = Math.round((mg / 10) * 10000) / 10000;
+      var ratio = mg > 0 ? Math.round(1 / mg) : 0;
       return [
-        { id: 'a', text: '0.14 mg (0.01 mg/kg of 0.1 mg/mL) IV push', ok: true },
-        { id: 'b', text: '1 mg (1 mL of 1 mg/mL) IV push', ok: false, why: 'That is the adult arrest dose - roughly seven times what Tobias should get.' },
-        { id: 'c', text: '0.014 mg IV push', ok: false, why: 'A decimal place low. 0.01 mg/kg of 14 kg is 0.14 mg.' },
-        { id: 'd', text: '0.14 mg IM in the lateral thigh', ok: false, why: 'Right dose, wrong route. In an arrest with IV/IO access, epinephrine goes IV or IO.' }
+        { id: 'a', text: fmtMg(mg) + ' mg (0.01 mg/kg of 0.1 mg/mL) IV push', ok: true },
+        { id: 'b', text: '1 mg (1 mL of 1 mg/mL) IV push', ok: false,
+          why: 'That is the adult arrest dose' + (ratio > 1 ? ' - about ' + ratio + ' times what this child should get.' : '.') },
+        { id: 'c', text: fmtMg(lowBy10) + ' mg IV push', ok: false,
+          why: 'A decimal place low. 0.01 mg/kg of ' + (kg ? fmtMg(kg) + ' kg' : 'this weight') + ' is ' + fmtMg(mg) + ' mg.' },
+        { id: 'd', text: fmtMg(mg) + ' mg IM in the lateral thigh', ok: false,
+          why: 'Right dose, wrong route. In an arrest with IV/IO access, epinephrine goes IV or IO.' }
       ];
     }
     return [
@@ -373,10 +508,11 @@
   }
   function amioOptions(c, given) {
     if (c.pedi) {
+      var amg = pediAmioMg(c.weightKg) || 70;
       return [
-        { id: 'a', text: '70 mg (5 mg/kg) amiodarone IV bolus', ok: true },
+        { id: 'a', text: fmtMg(amg) + ' mg (5 mg/kg) amiodarone IV bolus', ok: true },
         { id: 'b', text: '300 mg amiodarone IV push', ok: false, why: 'Adult dose. Pediatric amiodarone in arrest is 5 mg/kg.' },
-        { id: 'c', text: '70 mg amiodarone over 20 minutes', ok: false, why: 'In arrest it is a bolus. The slow infusion is for the perfusing rhythm.' }
+        { id: 'c', text: fmtMg(amg) + ' mg amiodarone over 20 minutes', ok: false, why: 'In arrest it is a bolus. The slow infusion is for the perfusing rhythm.' }
       ];
     }
     if (given >= 1) {
@@ -640,6 +776,185 @@
    * the DOM, Firebase, or the clock - `now` is always a parameter.
    * ======================================================================== */
 
+  /* ------------------------------------------------------------- PAUSE
+   * DESIGN RULE #5 - A PAUSE IS AN OFFSET, NOT A STOPWATCH.
+   *
+   * Every timestamp stored in engine state (startedAt, cycleStartedAt,
+   * lastEpiAt, log[].at, ...) is SIMULATED time. Simulated time is wall-clock
+   * time minus every millisecond this code has spent paused:
+   *
+   *     simNow(st, realNow) = realNow - pausedTotalMs - (currently-paused-for)
+   *
+   * That single subtraction is the whole feature. Nothing has to be rewound on
+   * resume, because nothing moved: the cycle clock, the epinephrine clock, the
+   * compression fraction and every "time to first X" metric are all differences
+   * between two simulated timestamps, and the paused interval is absent from
+   * both sides. Resume therefore cannot fast-forward - there is no accumulated
+   * gap for it to catch up on - and scoring on timeliness is untouched.
+   *
+   * `pausedAt` is the ONE field in state measured in real wall-clock time,
+   * because it has to be subtracted from a real clock to be meaningful. It is
+   * named and commented here so nobody ever compares it with startedAt.
+   * ------------------------------------------------------------------- */
+
+  function isPaused(st) { return !!obj(st).paused; }
+
+  /** How long this code has been paused in total, including a pause in progress. */
+  function pausedMs(st, realNow) {
+    var s = obj(st);
+    var total = numOr(s.pausedTotalMs, 0);
+    if (s.paused) total += Math.max(0, numOr(realNow, nowMs()) - numOr(s.pausedAt, 0));
+    return total;
+  }
+
+  /** Wall-clock -> simulated time. The only clock conversion in this file. */
+  function simNow(st, realNow) {
+    var real = numOr(realNow, nowMs());
+    return real - pausedMs(st, real);
+  }
+
+  /**
+   * pause(st, realNow, uid, name) -> was a NEW pause started?
+   *
+   * Two students pressing pause in the same second is the normal case, not the
+   * edge case - the host applies their events in push-key order and the second
+   * one lands here on an already-paused code. It is a no-op, deliberately
+   * silent, and the log keeps naming whoever got there first.
+   */
+  function pause(st, realNow, uid, name) {
+    if (!st) return false;
+    if (st.phase !== 'running' && st.phase !== 'check') return false;
+    if (st.paused) return false;
+    var real = numOr(realNow, nowMs());
+    st.paused = true;
+    st.pausedAt = real;
+    st.pausedBy = str(uid || '');
+    st.pausedByName = cut(str(name || ''), 32);
+    st.pauseCount = numOr(st.pauseCount, 0) + 1;
+    /* Hands come off the chest the instant the room freezes. Leaving cprOn set
+       would credit the compressor for the whole pause the moment it ended. */
+    st.cprOn = false;
+    st.cprRate = 0;
+    logLine(st, 'pause', (str(name) || 'Someone') + ' paused the code. The clock, the rhythm and every ' +
+      'drug interval are frozen - paused time is not counted in any of your timings.', str(uid || ''));
+    return true;
+  }
+
+  /**
+   * resume(st, realNow, uid, name) -> was a pause ended?
+   *
+   * Anyone in the room may resume, including someone who was not the person who
+   * paused. That is on purpose: the alternative is a room frozen forever
+   * because the student who hit pause closed their laptop.
+   */
+  function resume(st, realNow, uid, name) {
+    if (!st || !st.paused) return false;
+    var real = numOr(realNow, nowMs());
+    var held = Math.max(0, real - numOr(st.pausedAt, real));
+    st.pausedTotalMs = numOr(st.pausedTotalMs, 0) + held;
+    var was = str(st.pausedByName);
+    st.paused = false;
+    st.pausedAt = 0;
+    st.pausedBy = '';
+    st.pausedByName = '';
+    logLine(st, 'pause', (str(name) || 'Someone') + ' restarted the code after ' + fmtClock(held) +
+      ' paused' + (was && was !== str(name) ? ' (paused by ' + was + ')' : '') +
+      '. Hands back on the chest.', str(uid || ''));
+    return true;
+  }
+
+  /* ----------------------------------------------- the shared pause hub
+   * Every simulation engine in the app exposes the SAME verbs so the shell, a
+   * parent, or a test can pause whatever is running without knowing which
+   * engine it is (js/sim-engine.js and js/ai-scenario.js expose the identical
+   * set):
+   *
+   *   pause(reason)  resume()  togglePause()  -> bool
+   *   isPaused()     canPause()               -> bool
+   *   onPauseChange(cb) -> off()              -> cb(paused, stats)
+   *   pauseStats() -> {active,paused,pauseCount,pausedMs,pausedSec,mode,simSec}
+   *
+   * Bundled as `.pauseControl` and registered in window.MMPause under a module
+   * id, so MMPause.pauseAll() freezes a running code alongside everything else.
+   * The controller is written in by the mounted runner and cleared on unmount.
+   *
+   * Code Blue's own pause is a ROOM state, not a local one, so these verbs do
+   * not flip a flag - they submit the same sim_pause / sim_resume event the
+   * button submits, and the freeze arrives back through /state like every other
+   * change. In a room that means MMPause.pauseAll() pauses it for everybody,
+   * which is the only behaviour that could be correct.
+   * ------------------------------------------------------------------- */
+  function createPauseHub(id) {
+    var host = null;
+    var subs = [];
+    function stats() {
+      if (!host) { return { active: false, paused: false, pauseCount: 0, pausedMs: 0, pausedSec: 0, mode: '' }; }
+      return host.stats();
+    }
+    function emit() {
+      var snapshot = stats();
+      subs.slice().forEach(function (fn) { try { fn(!!snapshot.paused, snapshot); } catch (e) {} });
+    }
+    var hub = {
+      id: str(id) || 'sim',
+      pauseRun: function (reason) { return !!(host && host.pause(reason)); },
+      resumeRun: function () { return !!(host && host.resume()); },
+      togglePauseRun: function () { return !!(host && host.toggle()); },
+      isRunPaused: function () { return !!(host && host.isPaused()); },
+      canPauseRun: function () { return !!(host && host.canPause()); },
+      pauseStats: stats,
+      onPauseChange: function (cb) {
+        if (typeof cb !== 'function') { return function () {}; }
+        subs.push(cb);
+        return function () { subs = subs.filter(function (f) { return f !== cb; }); };
+      },
+      _attach: function (h) {
+        host = h; emit();
+        return function () { if (host === h) { host = null; emit(); } };
+      },
+      _changed: emit
+    };
+    hub.pauseControl = {
+      id: hub.id,
+      isActive: function () { return !!host; },
+      isPaused: hub.isRunPaused,
+      canPause: hub.canPauseRun,
+      pause: hub.pauseRun,
+      resume: hub.resumeRun,
+      toggle: hub.togglePauseRun,
+      stats: hub.pauseStats,
+      subscribe: hub.onPauseChange
+    };
+    return hub;
+  }
+
+  /* Byte-for-byte the same bootstrap the other engines use, because whichever
+     module loads first is the one that defines the registry helpers. */
+  function registerPauseControl(ctl) {
+    try {
+      var reg = window.MMPause;
+      if (!reg || typeof reg !== 'object') { reg = window.MMPause = {}; }
+      if (!reg.controls || typeof reg.controls !== 'object') { reg.controls = {}; }
+      if (typeof reg.register !== 'function') {
+        reg.register = function (c) { if (c && c.id) { reg.controls[c.id] = c; } return c; };
+        reg.get = function (k) { return obj(reg.controls)[str(k)] || null; };
+        reg.all = function () {
+          return Object.keys(obj(reg.controls)).map(function (k) { return reg.controls[k]; });
+        };
+        reg.pauseAll = function (why) {
+          reg.all().forEach(function (c) { try { c.pause(why); } catch (e) {} });
+        };
+        reg.resumeAll = function () {
+          reg.all().forEach(function (c) { try { c.resume(); } catch (e) {} });
+        };
+      }
+      reg.register(ctl);
+    } catch (e) {}
+  }
+
+  var cbPause = createPauseHub('codeblue');
+  registerPauseControl(cbPause.pauseControl);
+
   function blankScore() {
     return {
       pts: 0, good: [], errors: [], major: 0, minor: 0, actions: 0,
@@ -652,11 +967,20 @@
 
   function createState(cfg) {
     var c = obj(cfg);
-    var kase = caseById(c.caseId);
+    /* A generated case arrives inside the config, gets registered so every
+       caseById() in this file resolves it, and is then carried IN STATE. That
+       is what makes an AI scenario multiplayer-safe: the host generates once,
+       the case rides the same /state snapshot every client already renders
+       from, and no client is ever able to generate a divergent copy. */
+    var custom = registerCase(c.customCase);
+    var kase = custom || caseById(c.caseId);
     var st = {
-      v: 1,
+      v: 2,
       caseId: kase.id,
+      customCase: custom ? deepCopy(custom) : null,
+      aiGenerated: !!(custom && custom.aiGenerated),
       difficulty: str(c.difficulty) || 'competent',
+      maxCycles: clamp(Math.round(numOr(c.maxCycles, MAX_CYCLES)), 2, 20),
       roleMode: (c.roleMode === 'leader') ? 'leader' : 'assigned',
       teamSize: clamp(Math.round(numOr(c.teamSize, 4)), 2, 6),
       solo: !!c.solo,
@@ -668,6 +992,15 @@
       tickAt: 0,
       hostBeat: 0,
       rev: 0,
+
+      /* Pause is shared room state, never a local flag. Anyone may set it,
+         everyone freezes, and the room says whose finger it was. */
+      paused: false,
+      pausedAt: 0,            // WALL CLOCK, not simulated time. See simNow().
+      pausedBy: '',
+      pausedByName: '',
+      pausedTotalMs: 0,
+      pauseCount: 0,
 
       rhythm: kase.initialRhythm,
       arrested: !kase.prearrest,
@@ -1004,6 +1337,11 @@
 
   /* ------------------------------------------------------------------ tick */
 
+  /** How many 2-minute cycles this code runs before the engine calls it. */
+  function maxCyclesOf(st) {
+    return clamp(Math.round(numOr(obj(st).maxCycles, MAX_CYCLES)), 2, 20);
+  }
+
   function beginCheck(st, now) {
     st.phase = 'check';
     st.checkStartedAt = now;
@@ -1061,7 +1399,7 @@
     st.switchPrompted = true;
     st.checkAnnounced = '';
     logLine(st, 'cycle', 'Cycle ' + st.cycle + ' - resume compressions. Switch compressors.', str(byUid || ''));
-    if (numOr(st.cycle, 1) > MAX_CYCLES) {
+    if (numOr(st.cycle, 1) > maxCyclesOf(st)) {
       /* Say the real number rather than a hard-coded one: the constant above is
          the sort of thing that gets tuned, and a log line that disagrees with
          the clock beside it destroys trust in both. */
@@ -1081,6 +1419,11 @@
    * perfect CPR, and we must not skip four rhythm checks in one frame either.
    */
   function tick(st, now) {
+    /* Paused: nothing advances and tickAt is deliberately NOT moved forward.
+       `now` is already simulated time and is therefore frozen for the whole
+       pause, so this is belt and braces - but a future caller that hands tick()
+       a wall clock would otherwise silently credit the team with the pause. */
+    if (st.paused) return st;
     if (st.phase !== 'running' && st.phase !== 'check') { st.tickAt = now; return st; }
     var prev = numOr(st.tickAt, 0) || now;
     var dt = clamp(now - prev, 0, 4000);
@@ -1093,12 +1436,13 @@
         if (st.cprRate >= CPR_LOW && st.cprRate <= CPR_HIGH) st.cprBandMs = numOr(st.cprBandMs, 0) + dt;
         if (!st.metrics.firstCompressionAt) {
           st.metrics.firstCompressionAt = now;
-          /* Roles are re-dealt on every tick until the code starts, so somebody
-           who walks in thirty seconds late still gets a job. The instant the
-           code is running they freeze - a role changing hands mid-compression
-           because a phone reconnected would be worse than an empty role. */
-        if (st.phase === 'briefing' && st.roleMode !== 'leader') dealFromPlayers(st, players, myUid);
-        var cu = uidForRole(st, 'compressions');
+          /* There was a stray `dealFromPlayers(st, players, myUid)` here - a bad
+             paste of two lines from the host loop, where those two variables
+             exist. In tick() they do not, and the only thing keeping it from
+             throwing a ReferenceError into the middle of the first compression
+             was an inner `phase === 'briefing'` test inside a block that can
+             only run when the phase is 'running'. Removed. */
+          var cu = uidForRole(st, 'compressions');
           var lag = now - numOr(st.startedAt, now);
           if (lag <= 10000) award(st, cu, 6, 'Hands on the chest in ' + fmtSec(lag) + '.');
           else fault(st, cu, lag > 30000 ? 'major' : 'minor',
@@ -1112,7 +1456,7 @@
     if (st.phase === 'running' && !st.arrested) {
       var k = caseById(st.caseId);
       var since = now - numOr(st.startedAt, now);
-      var deadline = (k.id === 'peds-resp') ? 75000 : 90000;
+      var deadline = clamp(numOr(k.prearrestDeadlineMs, 90000), 30000, 300000);
       if (since >= deadline) {
         /* THE RESCUE WINDOW. Both pre-arrest cases are winnable before anybody
            touches the chest, and a mode that only ever rewarded good CPR would
@@ -1124,18 +1468,19 @@
            else, so it is winnable but never guaranteed. */
         var d2 = diffOf(st.difficulty);
         var rescue = 0;
-        if (k.id === 'peds-resp' && st.o2 && st.airway !== 'none') {
+        /* Two ways to prevent an arrest, chosen by the case rather than by its
+           id: fix the breathing (a child, an overdose, an airway) or fix the
+           cause (the electrolyte, the volume, the rhythm). */
+        var rescueBy = str(k.rescueBy) || (k.cause === 'hypoxia' ? 'airway' : 'cause');
+        if (rescueBy === 'airway' && st.o2 && st.airway !== 'none') {
           rescue = 0.42 + d2.htGain + (st.htCorrect ? 0.12 : 0);
-        } else if (k.id === 'vt-deteriorating' && st.htCorrect) {
+        } else if (rescueBy === 'cause' && st.htCorrect) {
           rescue = 0.18 + d2.htGain * 0.6;
         }
         if (rescue > 0 && roll(st) < clamp(rescue, 0, 0.88)) {
           st.rhythm = 'sinus';
-          logLine(st, 'rhythm', (k.id === 'peds-resp')
-            ? 'Oxygen, a patent airway and effective breaths. Tobias\'s heart rate climbs back through 90 and ' +
-              'his colour returns. He never arrested - because you treated his lungs.'
-            : 'The potassium is running and the ectopy settles. Bea converts to sinus rhythm with a pulse. ' +
-              'She never arrested.', '', true);
+          logLine(st, 'rhythm', str(k.rescueText) ||
+            'The treatment lands in time. The rhythm settles and the pulse holds. They never arrested.', '', true);
           st.beat = numOr(st.beat, 0) + 1;
           st.lastBeatKind = 'rosc';
           gradeOutcome(st, now, 'rosc');
@@ -1143,13 +1488,12 @@
         }
         st.arrested = true;
         st.arrestAt = now;
-        st.rhythm = (k.id === 'peds-resp') ? 'asystole' : 'pvt';
+        st.rhythm = RHYTHMS[str(k.arrestRhythm)] ? str(k.arrestRhythm) : 'pvt';
         st.cycleStartedAt = now;
         st.cycleCprMs = 0;
         st.checkPausedMs = numOr(st.checkPausedMs, 0);
-        logLine(st, 'rhythm', (k.id === 'peds-resp')
-          ? 'Tobias has lost his pulse. The monitor is flat. This is a full arrest now.'
-          : 'Bea has lost consciousness and her pulse. The monitor shows pulseless VT.', '', true);
+        logLine(st, 'rhythm', str(k.arrestText) ||
+          'The pulse is gone. ' + rhy(st.rhythm).mon + ' This is a full arrest now.', '', true);
         st.beat = numOr(st.beat, 0) + 1;
         st.lastBeatKind = 'arrest';
       }
@@ -1206,6 +1550,42 @@
     }
 
     if (st.phase === 'briefing' || st.phase === 'ended') return st;
+
+    /* --------------------------------------------------------- pause/resume
+       The transport ids are sim_pause / sim_resume rather than pause / resume
+       because THIS FILE ALREADY HAS a 'resume' event and it means "resume
+       compressions after the rhythm check", which is a completely different
+       thing that is already scored. The engine functions are still pause() and
+       resume(), matching the naming the written-simulation engine uses.
+
+       No role check: anybody in the room may stop a drill. Somebody's phone
+       rings, somebody's clinical instructor walks in, somebody needs to look
+       something up - and a study tool that makes you choose between abandoning
+       the code and ignoring the room is a tool people stop using.
+
+       The wall clock is read HERE, on the authoritative host, rather than taken
+       from the event: the sender's Date.now() can be minutes out and a pause
+       stamped from a skewed clock would silently shift every timing in the
+       code. */
+    /* e.realT lets a caller that already knows the wall clock hand it in - a
+       replay, or a test. Live, nobody sets it and the host reads its own. */
+    var realT = numOr(e.realT, nowMs());
+    if (type === 'sim_pause') {
+      pause(st, realT, uid, str(pl.name));
+      return st;
+    }
+    if (type === 'sim_resume') {
+      /* An accidental double-tap on Pause->Resume should not shave a
+         quarter-second off the clock and log two lines nobody asked for. */
+      if (st.paused && (realT - numOr(st.pausedAt, 0)) < PAUSE_MIN_MS) return st;
+      resume(st, realT, uid, str(pl.name));
+      return st;
+    }
+    /* THE FREEZE. Everything below this line is an action inside the code, and
+       while the room is paused there is no code to act inside. Swallowing the
+       event rather than queueing it is deliberate: a queue would fire six
+       compressions and a shock the instant somebody pressed play. */
+    if (st.paused) return st;
 
     /* ------------------------------------------------------------ the pad */
     if (type === 'switch') {
@@ -1709,6 +2089,10 @@
       htAttempts: numOr(st.htAttempts, 0),
       airway: str(st.airway),
       iv: !!st.iv,
+      /* Reported so the debrief can say it out loud, and NOT subtracted from
+         anything - it was never in any of these numbers to begin with. */
+      pausedMs: numOr(st.pausedTotalMs, 0),
+      pauseCount: numOr(st.pauseCount, 0),
       outcome: str(st.outcome)
     };
   }
@@ -2050,37 +2434,10 @@
     return L.join('\n');
   }
 
-  function parseNarration(raw) {
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
-    var whole = str(raw).trim();
-    if (!whole) return null;
-    var attempts = [], seen = {};
-    function add(v) {
-      var s = str(v).trim();
-      if (!s || seen[s]) return;
-      seen[s] = true;
-      attempts.push(s);
-    }
-    add(whole);
-    var fenced = /^```[a-zA-Z]*\s*([\s\S]*?)\s*```\s*$/.exec(whole);
-    if (fenced) add(fenced[1]);
-    var any = /```[a-zA-Z]*\s*([\s\S]*?)```/.exec(whole);
-    if (any) add(any[1]);
-    var a = whole.indexOf('{'), b = whole.lastIndexOf('}');
-    if (a !== -1 && b > a) add(whole.slice(a, b + 1));
-    var i, v;
-    for (i = 0; i < attempts.length; i++) {
-      try { v = JSON.parse(attempts[i]); if (v && typeof v === 'object' && !Array.isArray(v)) return v; }
-      catch (e) { /* next shape */ }
-    }
-    for (i = 0; i < attempts.length; i++) {
-      try {
-        v = JSON.parse(attempts[i].replace(/,\s*([\]}])/g, '$1'));
-        if (v && typeof v === 'object' && !Array.isArray(v)) return v;
-      } catch (e) { /* next shape */ }
-    }
-    return null;
-  }
+  /* One JSON ladder for the whole file. parseJsonReply (section 9b) is the
+     implementation; this name is kept because it is exported and because the
+     narrator is what it was written for. */
+  function parseNarration(raw) { return parseJsonReply(raw); }
 
   var ROLE_IDS = ['lead', 'compressions', 'airway', 'meds', 'defib', 'recorder'];
 
@@ -2213,6 +2570,1059 @@
       var s = str(t).trim();
       return s ? cut(s, 2200) : null;
     }, function (e) { return { __err: errText(e) }; });
+  }
+
+  /* ==========================================================================
+   * 9b. CUSTOM SCENARIOS - THE AI BUILDS THE CASE
+   *
+   * A student types "HHS" or "DIC" or picks a chip, and the model writes a CASE
+   * in exactly the shape section 2 hand-authored: a lead-in paragraph, an
+   * initial rhythm, a reversible cause from the H&T list, and a handoff. The
+   * engine cannot tell the difference and does not need to - which is the whole
+   * design. Everything below exists to make sure that by the time a generated
+   * case reaches createState it is as safe to practise on as one a nurse wrote.
+   *
+   * THREE GATES, IN ORDER, AND NOTHING IS PLAYABLE UNTIL IT PASSES ALL THREE:
+   *   1. PARSE   - strict JSON, with fence-stripping, brace-carving and a
+   *                truncation salvage before we give up and ask for a repair.
+   *   2. SCHEMA  - every field the engine reads exists, is the right type, and
+   *                names something the engine actually knows (a rhythm id that
+   *                is in RHYTHMS, a cause id that is in HT_LIST).
+   *   3. CLINICAL- the numbers. See clinicalCheck(): this is the gate that
+   *                stops a nursing student being taught a potassium of 47 or a
+   *                pediatric epinephrine dose ten times too big.
+   *
+   * A failure at any gate is fed BACK to the model as a numbered list of
+   * problems and regenerated, up to GEN_MAX_ATTEMPTS. If it never passes, the
+   * student is told plainly and offered the school-authored cases instead. A
+   * malformed generation can therefore end the attempt, but it can never reach
+   * the engine and it can never throw.
+   * ======================================================================== */
+
+  var SCENARIO_SCHEMA_VERSION = 3;   // bump to invalidate every cached scenario
+  var GEN_MAX_ATTEMPTS = 3;
+  var GEN_MAX_TOKENS = 2400;
+  var GEN_TEMP = 0.7;
+  var GEN_RETRY_TEMP = 0.35;
+  var GEN_TIMEOUT_MS = 75000;
+
+  /* The quick-picks. Everything a Med-Surg 2 student is asked to recognise as
+     a patient who is about to arrest, plus the two endocrine emergencies that
+     are on every exam. `cause` is the H&T the engine will grade the team on;
+     it is a HINT to the model and a plausibility check on what comes back, not
+     a hard requirement - "sepsis" can honestly arrest through hypovolemia OR
+     hypoxia OR acidosis, and all three are teachable. */
+  var TOPIC_CHIPS = [
+    { id: 'hhs',        label: 'HHS',                    causes: ['hypovolemia', 'hypokalemia'] },
+    { id: 'dka',        label: 'DKA',                    causes: ['hydrogen', 'hypokalemia', 'hypovolemia'] },
+    { id: 'ards',       label: 'ARDS',                   causes: ['hypoxia', 'hydrogen'] },
+    { id: 'sepsis',     label: 'Sepsis / septic shock',  causes: ['hypovolemia', 'hypoxia', 'hydrogen'] },
+    { id: 'icp',        label: 'Acute increased ICP',    causes: ['hypoxia', 'hydrogen'] },
+    { id: 'dic',        label: 'DIC',                    causes: ['hypovolemia'] },
+    { id: 'gibleed',    label: 'GI bleed',               causes: ['hypovolemia'] },
+    { id: 'hf',         label: 'Heart failure',          causes: ['hypoxia', 'thrombosis_c', 'hypokalemia'] },
+    { id: 'pe',         label: 'Pulmonary embolism',     causes: ['thrombosis_p', 'hypoxia'] },
+    { id: 'liver',      label: 'Liver failure',          causes: ['hypovolemia', 'hydrogen', 'hypokalemia'] },
+    { id: 'anaphylaxis',label: 'Anaphylaxis',            causes: ['hypoxia', 'hypovolemia'] },
+    { id: 'hyperk',     label: 'Hyperkalemia',           causes: ['hypokalemia'] },
+    { id: 'opioid',     label: 'Opioid overdose',        causes: ['toxins', 'hypoxia'] },
+    { id: 'tension',    label: 'Tension pneumothorax',   causes: ['tension'] },
+    { id: 'tamponade',  label: 'Cardiac tamponade',      causes: ['tamponade'] },
+    { id: 'hypothermia',label: 'Hypothermia',            causes: ['hypothermia'] },
+    { id: 'trauma',     label: 'Trauma / hemorrhage',    causes: ['hypovolemia', 'tension'] },
+    { id: 'peds',       label: 'Pediatric respiratory',  causes: ['hypoxia'] }
+  ];
+  function chipFor(topic) {
+    var t = str(topic).toLowerCase().trim();
+    if (!t) return null;
+    for (var i = 0; i < TOPIC_CHIPS.length; i++) {
+      var c = TOPIC_CHIPS[i];
+      if (c.id === t || c.label.toLowerCase() === t) return c;
+    }
+    return null;
+  }
+
+  /* The three words a student recognises, mapped onto the three the engine
+     already models. "Expert" and "Challenge" are the same difficulty; the
+     lobby has always called it Challenge and the generator is asked for expert
+     content, so both names appear and they mean one thing. */
+  var GEN_DIFFS = [
+    { id: 'student',   label: 'Student',   engine: 'student',
+      brief: 'a straightforward presentation with the classic textbook findings' },
+    { id: 'competent', label: 'Competent', engine: 'competent',
+      brief: 'a realistic presentation with one or two findings that could point elsewhere' },
+    { id: 'expert',    label: 'Expert',    engine: 'challenge',
+      brief: 'a difficult presentation - an atypical picture, a confounding comorbidity, or two plausible causes' }
+  ];
+  function genDiff(id) {
+    for (var i = 0; i < GEN_DIFFS.length; i++) { if (GEN_DIFFS[i].id === str(id)) return GEN_DIFFS[i]; }
+    return GEN_DIFFS[1];
+  }
+
+  /* Length is a real setting, not a label: it is the number of 2-minute cycles
+     the engine will run before it calls the code. */
+  var GEN_LENGTHS = [
+    { id: 'brief',    label: 'Short',    cycles: 4,  about: 'about 8 minutes' },
+    { id: 'standard', label: 'Standard', cycles: 7,  about: 'about 15 minutes' },
+    { id: 'full',     label: 'Full',     cycles: 10, about: 'about 22 minutes' }
+  ];
+  function genLength(id) {
+    for (var i = 0; i < GEN_LENGTHS.length; i++) { if (GEN_LENGTHS[i].id === str(id)) return GEN_LENGTHS[i]; }
+    return GEN_LENGTHS[1];
+  }
+
+  /* ----------------------------------------------------------- the prompt */
+
+  var ARREST_RHYTHMS = ['vf', 'vf_fine', 'pvt', 'pea', 'asystole'];
+  var PREARREST_RHYTHMS = ['vt_pulse', 'brady'];
+
+  function htIdList() {
+    return HT_LIST.map(function (h) { return h.id + ' (' + h.label + ')'; }).join(', ');
+  }
+
+  var SCENARIO_SYSTEM = [
+    'You write PRACTICE cardiac-arrest scenarios for a nursing-school simulation app. Nursing students run them',
+    'as a timed drill against a rhythm engine. Nothing you write is medical advice and there is no real patient.',
+    '',
+    'Your job is to take a topic the student named and turn it into ONE patient who arrests, or is about to arrest,',
+    'BECAUSE of that topic. The clinical picture, the lab values and the reversible cause must all be the ones that',
+    'topic actually produces. A student will read this and believe it, so every number has to be one a real patient',
+    'with that condition could actually have.',
+    '',
+    'HARD RULES',
+    '1. Reply with ONE JSON object and nothing else. No prose, no markdown fence, no commentary.',
+    '2. Never state a medication dose anywhere. The simulator calculates every dose from the weight you give it,',
+    '   and a dose in your text would contradict it. Describe drugs by name only.',
+    '3. Every lab value and vital sign must be physiologically possible for a living patient.',
+    '4. Use adult values for an adult and pediatric values for a child. If the patient is under 14 you MUST set',
+    '   pedi true and give a weight that is right for that age.',
+    '5. The lead-in is what the nurse walking into the room sees. Present tense, concrete, 120-260 words, no headings,',
+    '   no bullet points, and no telling the student what to do about it.',
+    '6. Do not name the reversible cause inside the lead-in. The student has to work it out; that is the exercise.',
+    '',
+    'THE JSON:',
+    '{',
+    '  "title": "short case title, under 70 characters",',
+    '  "short": "4-5 word label for a list",',
+    '  "icon": "one emoji",',
+    '  "category": "Cardiac | Medical-Surgical | Emergency | Pediatrics | Critical Care | OB",',
+    '  "patient": {"name":"first and last name","age":58,"sex":"male|female","weightKg":81},',
+    '  "lead": "the paragraph described above",',
+    '  "initialRhythm": "one of: ' + ARREST_RHYTHMS.join(', ') + ', ' + PREARREST_RHYTHMS.join(', ') + '",',
+    '  "prearrest": true only if initialRhythm is vt_pulse or brady (the patient still has a pulse),',
+    '  "arrestRhythm": "if prearrest, the rhythm they deteriorate INTO: one of ' + ARREST_RHYTHMS.join(', ') + '",',
+    '  "rescueBy": "if prearrest, either airway (oxygen and ventilation prevent the arrest) or cause",',
+    '  "cause": "the reversible cause, exactly one id from: ' + htIdList() + '",',
+    '  "causeHint": "one sentence a debriefer would say pointing at the cause, under 200 characters",',
+    '  "handoff": "who takes the patient at the end, e.g. the intensivist",',
+    '  "vitals": {"hr":0,"sbp":0,"dbp":0,"rr":0,"spo2":0,"tempC":0,"glucoseMgDl":0},',
+    '  "labs": [{"name":"Potassium","value":6.9,"unit":"mEq/L"}],',
+    '  "history": ["short past-medical-history items"],',
+    '  "teachingPoints": ["2-4 short sentences a student should take away"]',
+    '}',
+    '',
+    'vitals are THE LAST FULL SET RECORDED BEFORE THIS CALL, so the patient was still alive when they were taken:',
+    'heart rate must be above zero and the blood pressure must be a real pressure with systolic above diastolic.',
+    'Give 4 to 8 labs, only ones that matter for this condition, with the units an American hospital reports.'
+  ].join('\n');
+
+  function scenarioUserMessage(o, problems) {
+    var opt = obj(o);
+    var d = genDiff(opt.difficulty);
+    var len = genLength(opt.length);
+    var chip = chipFor(opt.topic);
+    var L = [];
+    L.push('TOPIC THE STUDENT ASKED FOR: ' + cut(str(opt.topic), 200));
+    L.push('DIFFICULTY: ' + d.label + ' - ' + d.brief);
+    L.push('LENGTH: the team gets about ' + len.cycles + ' two-minute cycles (' + len.about +
+           '), so pitch the complexity to fit that.');
+    if (chip) {
+      L.push('The reversible cause for this topic is most often one of: ' + chip.causes.join(', ') +
+             '. Pick whichever one your patient actually has.');
+    }
+    L.push('VARIETY SEED (change names, ages, ward and details with it): ' + str(opt.seed || 'x'));
+    if (arr(problems).length) {
+      L.push('');
+      L.push('YOUR PREVIOUS ATTEMPT WAS REJECTED BY THE SIMULATOR. Fix every one of these and send the whole');
+      L.push('JSON object again:');
+      arr(problems).slice(0, 12).forEach(function (p, i) { L.push((i + 1) + '. ' + str(p)); });
+    }
+    L.push('');
+    L.push('Write the scenario now. JSON only.');
+    return L.join('\n');
+  }
+
+  /* ------------------------------------------------------------- parsing */
+
+  /**
+   * parseJsonReply(raw) -> object | null. NEVER throws.
+   * Clean JSON, ```fences, leading prose, trailing prose, trailing commas.
+   * The same ladder ai-scenario.js walks, so one convention covers both files.
+   */
+  function parseJsonReply(raw) {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+    var whole = str(raw).trim();
+    if (!whole) return null;
+    var attempts = [], seen = {};
+    function add(v) {
+      var s = str(v).trim();
+      if (!s || seen[s]) return;
+      seen[s] = true;
+      attempts.push(s);
+    }
+    add(whole);
+    var fenced = /^```[a-zA-Z]*\s*([\s\S]*?)\s*```\s*$/.exec(whole);
+    if (fenced) add(fenced[1]);
+    var any = /```[a-zA-Z]*\s*([\s\S]*?)```/.exec(whole);
+    if (any) add(any[1]);
+    var a = whole.indexOf('{'), b = whole.lastIndexOf('}');
+    if (a !== -1 && b > a) add(whole.slice(a, b + 1));
+    var i, v;
+    for (i = 0; i < attempts.length; i++) {
+      try { v = JSON.parse(attempts[i]); if (v && typeof v === 'object' && !Array.isArray(v)) return v; }
+      catch (e) { /* next shape */ }
+    }
+    for (i = 0; i < attempts.length; i++) {
+      try {
+        v = JSON.parse(attempts[i].replace(/,\s*([\]}])/g, '$1'));
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+      } catch (e) { /* next shape */ }
+    }
+    return null;
+  }
+
+  /**
+   * completeTruncatedJSON(raw) - recover an object the token ceiling cut off
+   * mid-generation. Walk from the first '{' tracking string/escape state and
+   * bracket depth, then append the closers the walk still owes. Nothing is
+   * invented: a field that was mid-word stays clipped, and a salvage that lost
+   * the fields a scenario cannot function without is rejected outright.
+   *
+   * This mirrors ai-scenario.js rather than importing it, because the two
+   * modules load independently and a load-order dependency between them would
+   * be a far worse coupling than fifty duplicated lines.
+   */
+  function completeTruncatedJSON(raw) {
+    var s0 = str(raw);
+    var start = s0.indexOf('{');
+    if (start === -1) return null;
+    s0 = s0.slice(start).replace(/```\s*$/, '');
+
+    /* Walk once and report what the string still owes. */
+    function scan(s) {
+      var inStr = false, esc = false, stack = [], commas = [], i, ch;
+      for (i = 0; i < s.length; i++) {
+        ch = s.charAt(i);
+        if (esc) { esc = false; continue; }
+        if (ch === '\\') { if (inStr) esc = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === '{') stack.push('}');
+        else if (ch === '[') stack.push(']');
+        else if (ch === '}' || ch === ']') {
+          if (stack.length && stack[stack.length - 1] === ch) stack.pop();
+          else return null;            // broken beyond truncation - give up
+        } else if (ch === ',') commas.push(i);
+      }
+      return { inStr: inStr, stack: stack, commas: commas };
+    }
+
+    function closeAndParse(s) {
+      var w = scan(s);
+      if (!w) return null;
+      var fixed = s;
+      if (w.inStr) fixed += '"';
+      fixed = fixed.replace(/[,:]\s*$/, '');
+      var st = w.stack.slice();
+      while (st.length) fixed += st.pop();
+      try {
+        var v = JSON.parse(fixed);
+        return (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+      } catch (e) { return null; }
+    }
+
+    var first = scan(s0);
+    if (!first) return null;
+    if (!first.stack.length && !first.inStr) return null;   // complete; look elsewhere
+
+    /* Candidates, least destructive first. Closing the brackets where the cut
+       fell is the common case; but a generation that stopped in the middle of
+       the NEXT key ("teachingP) leaves a fragment that cannot be closed into
+       anything valid, so the fallbacks walk back through the last few commas
+       and drop the half-written member. Dropping one field is better than
+       throwing away a whole scenario, and nothing is invented either way. */
+    var candidates = [s0], i;
+    for (i = first.commas.length - 1; i >= 0 && candidates.length <= 8; i--) {
+      candidates.push(s0.slice(0, first.commas[i]));
+    }
+    for (i = 0; i < candidates.length; i++) {
+      var parsed = closeAndParse(candidates[i]);
+      if (!parsed) continue;
+      /* Only accept a salvage that still has enough to BE a scenario. */
+      if (str(parsed.lead) && str(parsed.initialRhythm) && str(parsed.cause)) return parsed;
+    }
+    return null;
+  }
+
+  /* ------------------------------------------------ gate 2: the schema */
+
+  var CATEGORIES = ['Cardiac', 'Medical-Surgical', 'Emergency', 'Pediatrics', 'Critical Care', 'OB', 'Neuro'];
+  var HT_IDS = HT_LIST.map(function (h) { return h.id; });
+
+  function oneOfOr(v, list, dflt) {
+    var s = str(v).trim();
+    return list.indexOf(s) !== -1 ? s : dflt;
+  }
+  function firstEmoji(v) {
+    var s = str(v).trim();
+    if (!s) return '';
+    /* Surrogate pairs count as two UTF-16 units; take both or the emoji breaks. */
+    var cp = s.charCodeAt(0);
+    return (cp >= 0xD800 && cp <= 0xDBFF) ? s.slice(0, 2) : s.slice(0, 1);
+  }
+
+  /**
+   * normalizeGenerated(parsed, opts) -> { case, problems[] }
+   *
+   * Coerces whatever came back into the CASE shape and collects every schema
+   * problem it could not coerce away. `case` is always an object so the
+   * clinical gate can still run and report on it; `problems.length === 0` is
+   * the only thing that means the schema gate passed.
+   */
+  function normalizeGenerated(parsed, opts) {
+    var p = obj(parsed), o = obj(opts), problems = [];
+    var pt = obj(p.patient);
+
+    var name = cut(str(pt.name).trim(), 48);
+    var age = numOr(pt.age, NaN);
+    var sex = str(pt.sex).trim().toLowerCase();
+    var weightKg = numOr(pt.weightKg, NaN);
+
+    if (!name) problems.push('patient.name is missing.');
+    if (!isFinite(age)) problems.push('patient.age is missing or is not a number.');
+    if (!isFinite(weightKg)) problems.push('patient.weightKg is missing or is not a number.');
+
+    var title = cut(str(p.title).trim(), 90);
+    if (title.length < 6) problems.push('title is missing or shorter than six characters.');
+
+    var lead = str(p.lead).trim().replace(/\s+/g, ' ');
+    if (lead.length < 200) problems.push('lead is missing or shorter than 200 characters - it has to set the whole scene.');
+    if (lead.length > 2400) lead = cut(lead, 2400);
+
+    var rhythm = str(p.initialRhythm).trim().toLowerCase();
+    var isPre = !!p.prearrest;
+    if (ARREST_RHYTHMS.indexOf(rhythm) === -1 && PREARREST_RHYTHMS.indexOf(rhythm) === -1) {
+      problems.push('initialRhythm "' + str(p.initialRhythm) + '" is not one the simulator knows. Use one of: ' +
+        ARREST_RHYTHMS.concat(PREARREST_RHYTHMS).join(', ') + '.');
+      rhythm = '';
+    } else {
+      /* prearrest is not the model's opinion - it is a fact about the rhythm it
+         chose. A "pulseless" flag that disagrees with a rhythm that has a pulse
+         would run the wrong half of the engine. */
+      isPre = PREARREST_RHYTHMS.indexOf(rhythm) !== -1;
+    }
+
+    var cause = str(p.cause).trim().toLowerCase();
+    if (HT_IDS.indexOf(cause) === -1) {
+      problems.push('cause "' + str(p.cause) + '" is not one of the H\'s and T\'s the simulator grades. Use one of: ' +
+        HT_IDS.join(', ') + '.');
+      cause = '';
+    }
+
+    var arrestRhythm = oneOfOr(str(p.arrestRhythm).toLowerCase(), ARREST_RHYTHMS,
+      rhythm === 'brady' ? 'asystole' : 'pvt');
+    var rescueBy = oneOfOr(str(p.rescueBy).toLowerCase(), ['airway', 'cause'],
+      cause === 'hypoxia' ? 'airway' : 'cause');
+
+    var causeHint = cut(str(p.causeHint).trim(), 240);
+    if (!causeHint) problems.push('causeHint is missing.');
+    var handoff = cut(str(p.handoff).trim(), 48) || 'the intensivist';
+
+    /* The cause must not be handed to the student in the lead-in - that is the
+       exercise. A model that names it has written a different exercise. */
+    if (lead && cause) {
+      var htWord = htLabel(cause).toLowerCase().split(' ')[0].replace(/[^a-z]/g, '');
+      if (htWord.length > 5 && lead.toLowerCase().indexOf(htWord) !== -1 &&
+          cause !== 'hypoxia' && cause !== 'hypovolemia') {
+        problems.push('The lead-in names the reversible cause ("' + htWord + '"). The student has to work it out - ' +
+          'describe the findings instead.');
+      }
+    }
+
+    var pedi = (isFinite(age) && age < 14) || !!pt.pedi || !!p.pedi;
+
+    var kase = {
+      id: str(o.caseId) || ('custom-' + str(o.hash || contentHash(lead + rhythm + cause))),
+      aiGenerated: true,
+      schemaV: SCENARIO_SCHEMA_VERSION,
+      topic: cut(str(o.topic), 120),
+      title: title,
+      short: cut(str(p.short).trim(), 40) || cut(title, 40),
+      icon: firstEmoji(p.icon) || '🧪',
+      patient: name + (isFinite(age) ? ', ' + Math.round(age) : ''),
+      patientName: name,
+      age: isFinite(age) ? Math.round(age) : 0,
+      sex: (sex === 'male' || sex === 'female') ? sex : '',
+      category: oneOfOr(str(p.category).trim(), CATEGORIES, pedi ? 'Pediatrics' : 'Medical-Surgical'),
+      lead: lead,
+      initialRhythm: rhythm,
+      cause: cause,
+      causeHint: causeHint,
+      handoff: handoff,
+      pedi: !!pedi,
+      weightKg: isFinite(weightKg) ? Math.round(weightKg * 10) / 10 : 0,
+      prearrest: !!isPre,
+      prearrestDeadlineMs: isPre ? clamp(Math.round(numOr(p.prearrestDeadlineMs, 90000)), 45000, 180000) : 0,
+      arrestRhythm: isPre ? arrestRhythm : '',
+      rescueBy: isPre ? rescueBy : '',
+      rescueText: '', arrestText: '',
+      allowTermination: rhythm === 'asystole' || arrestRhythm === 'asystole',
+      vitals: normalizeVitalsBlock(p.vitals),
+      labs: normalizeLabs(p.labs),
+      history: strList(p.history, 6, 120),
+      teachingPoints: strList(p.teachingPoints, 5, 220),
+      /* Filled in by canonicalDoses() - never taken from the model. */
+      epiMg: 0, epiText: '',
+      /* ...but a dose the model volunteered anyway is KEPT, unused, so the
+         clinical gate can compare it with the one we calculated. Throwing it
+         away here would silently launder a 10x error into a correct-looking
+         case whose narrative still contains the wrong number. */
+      statedEpiMg: numOr(p.epiMg, numOr(obj(p.doses).epinephrineMg, 0))
+    };
+
+    /* The pre-arrest narration the engine logs at the deadline. Written here
+       from the case's own facts rather than asked for, so it can never
+       contradict the rhythm the engine is about to set. */
+    var who = kase.patientName || 'The patient';
+    if (isPre) {
+      kase.rescueText = (rescueBy === 'airway')
+        ? ('Oxygen, a patent airway and effective breaths. ' + who + '\'s heart rate and colour come back up. ' +
+           'They never arrested - because you treated the breathing.')
+        : ('The treatment reaches them in time. The rhythm settles and the pulse holds. ' + who + ' never arrested.');
+      kase.arrestText = who + ' has lost consciousness and their pulse. ' + rhy(arrestRhythm).mon;
+    }
+
+    return { kase: kase, problems: problems };
+  }
+
+  function strList(v, cap, maxLen) {
+    var out = [], i;
+    if (!Array.isArray(v)) return out;
+    for (i = 0; i < v.length && out.length < cap; i++) {
+      var s = cut(str(typeof v[i] === 'object' ? obj(v[i]).text : v[i]).trim(), maxLen || 160);
+      if (s) out.push(s);
+    }
+    return out;
+  }
+
+  var VITAL_KEYS = ['hr', 'sbp', 'dbp', 'rr', 'spo2', 'tempC', 'glucoseMgDl'];
+  function normalizeVitalsBlock(v) {
+    var s = obj(v), out = {}, i;
+    for (i = 0; i < VITAL_KEYS.length; i++) {
+      var k = VITAL_KEYS[i];
+      var n = numOr(s[k], NaN);
+      out[k] = isFinite(n) ? Math.round(n * 10) / 10 : null;
+    }
+    /* A model that answered in Fahrenheit is not wrong, it is just not in the
+       unit the check expects. Convert rather than reject. */
+    if (out.tempC !== null && out.tempC > 80 && out.tempC < 115) {
+      out.tempC = Math.round(((out.tempC - 32) * 5 / 9) * 10) / 10;
+    }
+    return out;
+  }
+
+  function normalizeLabs(v) {
+    var out = [], i;
+    if (!Array.isArray(v)) return out;
+    for (i = 0; i < v.length && out.length < 14; i++) {
+      var l = obj(v[i]);
+      var name = cut(str(l.name).trim(), 40);
+      if (!name) continue;
+      var raw = l.value;
+      var num = numOr(raw, NaN);
+      /* "7.1" and "<0.01" and "greater than 500" all turn up. Keep the text for
+         display and the number for checking; a value with no number in it at
+         all is kept but cannot be range-checked. */
+      if (!isFinite(num)) {
+        var m = /-?\d+(?:\.\d+)?/.exec(str(raw));
+        if (m) num = parseFloat(m[0]);
+      }
+      out.push({
+        name: name,
+        value: isFinite(num) ? num : null,
+        text: cut(str(raw).trim(), 32) || (isFinite(num) ? String(num) : ''),
+        unit: cut(str(l.unit).trim(), 16)
+      });
+    }
+    return out;
+  }
+
+  /* ------------------------------------------- gate 3: the clinical gate */
+
+  /**
+   * Weight that is possible for an age. Wide on purpose - this is here to catch
+   * "3 years old, 62 kg" and "adult, 6 kg", not to have an opinion about a
+   * heavy nine-year-old.
+   */
+  var WEIGHT_FOR_AGE = [
+    { maxAge: 0.25, lo: 1.5,  hi: 8 },
+    { maxAge: 1,    lo: 2.5,  hi: 15 },
+    { maxAge: 3,    lo: 6,    hi: 25 },
+    { maxAge: 6,    lo: 10,   hi: 40 },
+    { maxAge: 11,   lo: 14,   hi: 80 },
+    { maxAge: 17,   lo: 25,   hi: 150 },
+    { maxAge: 130,  lo: 28,   hi: 300 }
+  ];
+  function weightBandFor(age) {
+    for (var i = 0; i < WEIGHT_FOR_AGE.length; i++) {
+      if (age <= WEIGHT_FOR_AGE[i].maxAge) return WEIGHT_FOR_AGE[i];
+    }
+    return WEIGHT_FOR_AGE[WEIGHT_FOR_AGE.length - 1];
+  }
+
+  /* Outside these a living patient does not have that number. Not "unusual" -
+     impossible. Anything merely unusual is left alone: an ICU scenario is
+     supposed to have frightening numbers in it. */
+  var VITAL_BOUNDS = {
+    hr:          { lo: 10,  hi: 300, label: 'heart rate' },
+    sbp:         { lo: 30,  hi: 300, label: 'systolic blood pressure' },
+    dbp:         { lo: 10,  hi: 200, label: 'diastolic blood pressure' },
+    rr:          { lo: 2,   hi: 80,  label: 'respiratory rate' },
+    spo2:        { lo: 20,  hi: 100, label: 'oxygen saturation' },
+    tempC:       { lo: 24,  hi: 43.5,label: 'temperature (C)' },
+    glucoseMgDl: { lo: 10,  hi: 2000,label: 'glucose (mg/dL)' }
+  };
+
+  /* Analyte -> [low, high] in the units an American hospital reports. Matched
+     by substring on a lower-cased lab name, longest key first. */
+  var LAB_BOUNDS = [
+    ['potassium',    1.0,   9.9],
+    ['sodium',       100,   190],
+    ['chloride',     55,    145],
+    ['bicarbonate',  2,     50],
+    ['hco3',         2,     50],
+    ['anion gap',    -5,    60],
+    ['bun',          1,     250],
+    ['urea',         1,     250],
+    ['creatinine',   0.1,   25],
+    ['glucose',      10,    2000],
+    ['calcium',      3,     20],
+    ['magnesium',    0.2,   12],
+    ['phosph',       0.3,   20],
+    ['lactate',      0,     30],
+    ['lactic',       0,     30],
+    ['ph',           6.5,   7.85],
+    ['paco2',        5,     150],
+    ['pco2',         5,     150],
+    ['pao2',         15,    700],
+    ['po2',          15,    700],
+    ['base excess',  -40,   30],
+    ['hemoglobin',   1,     25],
+    ['hgb',          1,     25],
+    ['hematocrit',   3,     75],
+    ['hct',          3,     75],
+    ['platelet',     1,     2000],
+    ['white blood',  0,     250],
+    ['wbc',          0,     250],
+    ['inr',          0.5,   20],
+    ['aptt',         10,    250],
+    ['ptt',          10,    250],
+    ['fibrinogen',   5,     1200],
+    ['d-dimer',      0,     100],
+    ['troponin',     0,     500],
+    ['albumin',      0.5,   7],
+    ['osmolal',      200,   500],
+    ['ammonia',      5,     1000],
+    ['bilirubin',    0,     60],
+    ['alt',          1,     20000],
+    ['ast',          1,     20000],
+    ['bnp',          0,     100000],
+    ['a1c',          3,     20],
+    ['ketone',       0,     30],
+    ['beta-hydroxy', 0,     30]
+  ];
+  function labBoundsFor(name) {
+    var n = str(name).toLowerCase();
+    var best = null;
+    for (var i = 0; i < LAB_BOUNDS.length; i++) {
+      var key = LAB_BOUNDS[i][0];
+      if (n.indexOf(key) !== -1 && (!best || key.length > best[0].length)) best = LAB_BOUNDS[i];
+    }
+    return best;
+  }
+
+  /**
+   * canonicalDoses(kase) - the simulator OWNS every dose.
+   *
+   * The model is told not to state one, and even if it does, this overwrites
+   * it. Adult arrest epinephrine is 1 mg IV push. Pediatric arrest epinephrine
+   * is 0.01 mg/kg, capped at the adult dose. There is no third answer and there
+   * is no reason to let a language model have an opinion about it.
+   */
+  function canonicalDoses(kase) {
+    var k = obj(kase);
+    if (k.pedi) {
+      var mg = pediEpiMg(k.weightKg);
+      k.epiMg = mg;
+      k.epiText = fmtMg(mg) + ' mg (0.01 mg/kg) IV push';
+    } else {
+      k.epiMg = 1;
+      k.epiText = '1 mg IV push';
+    }
+    return k;
+  }
+
+  /** Every "<n> <unit>/kg" in a blob of prose, with its number. */
+  function perKgMentions(text) {
+    var out = [], re = /(\d+(?:\.\d+)?)\s*(mg|mcg|microgram|micrograms|g|unit|units)\s*\/\s*kg/gi, m;
+    var s = str(text);
+    while ((m = re.exec(s))) {
+      out.push({ n: parseFloat(m[1]), unit: m[2].toLowerCase(), at: m.index });
+      if (out.length > 12) break;
+    }
+    return out;
+  }
+
+  /**
+   * clinicalCheck(kase) -> { ok, errors[], warnings[] }
+   *
+   * The gate that exists because a language model will hand you a beautifully
+   * written scenario with a potassium of 47 and a pediatric epinephrine dose
+   * ten times too big, and a nursing student has no reason to disbelieve it.
+   *
+   * `errors` block the scenario and trigger a regeneration. `warnings` are
+   * shown to the student next to the AI-generated label but do not block -
+   * they are the things that are odd rather than impossible.
+   *
+   * What it CANNOT do is in the report and in the comment at the head of
+   * section 9b: it checks that numbers are POSSIBLE, not that they are RIGHT
+   * for this particular patient.
+   */
+  function clinicalCheck(kase) {
+    var k = obj(kase), errors = [], warnings = [];
+    var age = numOr(k.age, 0);
+    var kg = numOr(k.weightKg, 0);
+
+    /* ---- the patient themselves ---- */
+    if (!(age >= 0 && age <= 120)) errors.push('Age ' + age + ' is not a possible age.');
+    if (!(kg > 0)) {
+      errors.push('The patient has no usable weight, and every weight-based dose in this simulator comes from it.');
+    } else if (kg < 1 || kg > 300) {
+      errors.push('A weight of ' + kg + ' kg is not possible.');
+    } else if (age > 0) {
+      var band = weightBandFor(age);
+      if (kg < band.lo || kg > band.hi) {
+        errors.push('A weight of ' + kg + ' kg does not go with an age of ' + age +
+          ' (expected roughly ' + band.lo + '-' + band.hi + ' kg). The pediatric epinephrine dose is calculated ' +
+          'from this weight, so it has to be right.');
+      }
+    }
+    if (k.pedi && age >= 18) warnings.push('Flagged as pediatric but the patient is ' + age + '.');
+    if (!k.pedi && age > 0 && age < 12) {
+      errors.push('A ' + age + '-year-old must be flagged pedi:true so the doses are weight-based.');
+    }
+
+    /* ---- the dose the simulator will teach ---- */
+    var wantEpi = k.pedi ? pediEpiMg(kg) : 1;
+    if (!(wantEpi > 0)) {
+      errors.push('The epinephrine dose could not be calculated for this patient.');
+    } else if (k.pedi && (wantEpi < 0.005 || wantEpi > 1)) {
+      errors.push('A pediatric epinephrine dose of ' + fmtMg(wantEpi) + ' mg is outside anything that could be right.');
+    }
+    /* A dose the model stated anyway, either as a field or in the prose, is
+       checked against the one the simulator will actually use - a 10x error
+       here is the classic decimal slip and it must never reach the student. */
+    var statedEpi = numOr(k.statedEpiMg, 0);
+    if (statedEpi > 0 && wantEpi > 0 && Math.abs(statedEpi - wantEpi) / wantEpi > 0.2) {
+      errors.push('The epinephrine dose in the scenario (' + fmtMg(statedEpi) + ' mg) is not the correct arrest dose ' +
+        'for this patient (' + fmtMg(wantEpi) + ' mg).');
+    }
+    var prose = str(k.lead) + ' ' + arr(k.teachingPoints).join(' ') + ' ' + str(k.causeHint);
+    var epiInProse = /epinephrine[^.]{0,80}?(\d+(?:\.\d+)?)\s*mg\b/i.exec(prose);
+    if (epiInProse && wantEpi > 0) {
+      var pm = parseFloat(epiInProse[1]);
+      if (isFinite(pm) && Math.abs(pm - wantEpi) / wantEpi > 0.2) {
+        errors.push('The text states an epinephrine dose of ' + pm + ' mg. For this patient the arrest dose is ' +
+          fmtMg(wantEpi) + ' mg. Do not put doses in the text at all.');
+      }
+    }
+    /* Any weight-based dose in the prose is checked for the 10x class of error
+       by recomputing it: "0.1 mg/kg ... 81 mg" for an 81 kg patient is 8.1 mg,
+       not 81, and that is exactly the mistake that gets written down. */
+    var perKg = perKgMentions(prose);
+    if (perKg.length && kg > 0) {
+      for (var pk = 0; pk < perKg.length; pk++) {
+        var mention = perKg[pk];
+        var tail = prose.slice(mention.at, mention.at + 120);
+        var total = /=\s*(\d+(?:\.\d+)?)\s*(mg|mcg|g)\b/i.exec(tail) ||
+                    /(?:is|gives|equals|so)\s*(\d+(?:\.\d+)?)\s*(mg|mcg|g)\b/i.exec(tail);
+        if (!total) continue;
+        var want = mention.n * kg;
+        var got = parseFloat(total[1]);
+        if (isFinite(got) && want > 0 && Math.abs(got - want) / want > 0.2) {
+          errors.push('A weight-based dose in the text does not multiply out: ' + mention.n + ' ' + mention.unit +
+            '/kg for ' + kg + ' kg is ' + fmtMg(want) + ', not ' + got + '.');
+        }
+      }
+    }
+
+    /* ---- the vital signs ---- */
+    var v = obj(k.vitals), vk;
+    for (vk in VITAL_BOUNDS) {
+      if (!Object.prototype.hasOwnProperty.call(VITAL_BOUNDS, vk)) continue;
+      var val = v[vk];
+      if (val === null || val === undefined) continue;
+      var b = VITAL_BOUNDS[vk];
+      if (!(val >= b.lo && val <= b.hi)) {
+        errors.push('A ' + b.label + ' of ' + val + ' is not physiologically possible (' + b.lo + '-' + b.hi + ').');
+      }
+    }
+    if (v.sbp !== null && v.dbp !== null && v.sbp !== undefined && v.dbp !== undefined) {
+      if (v.sbp <= v.dbp) {
+        errors.push('Blood pressure ' + v.sbp + '/' + v.dbp + ' is impossible - systolic must be above diastolic.');
+      } else if ((v.sbp + 2 * v.dbp) / 3 < 20) {
+        errors.push('Blood pressure ' + v.sbp + '/' + v.dbp + ' gives a mean arterial pressure below 20, ' +
+          'which is not a pressure a patient is recorded with.');
+      }
+    }
+    /* The vitals are the LAST SET BEFORE the call, so they belong to a patient
+       who was still alive when they were taken. */
+    if (v.hr !== null && v.hr !== undefined && v.hr <= 0) {
+      errors.push('The vital signs are the last set recorded before this call, so the heart rate cannot be zero.');
+    }
+    /* And for a patient who still has a pulse, they have to match the rhythm on
+       the monitor - the student is looking at both at once. */
+    if (k.initialRhythm === 'brady' && v.hr !== null && v.hr !== undefined && v.hr >= 60) {
+      warnings.push('The rhythm is a severe bradycardia but the recorded heart rate is ' + v.hr + '.');
+    }
+    if (k.initialRhythm === 'vt_pulse' && v.hr !== null && v.hr !== undefined && v.hr < 100) {
+      warnings.push('The rhythm is ventricular tachycardia but the recorded heart rate is ' + v.hr + '.');
+    }
+
+    /* ---- the labs ---- */
+    var labs = arr(k.labs), li;
+    for (li = 0; li < labs.length; li++) {
+      var lab = obj(labs[li]);
+      if (lab.value === null || lab.value === undefined) {
+        warnings.push('"' + str(lab.name) + '" has no numeric value, so it could not be range-checked.');
+        continue;
+      }
+      var lb = labBoundsFor(lab.name);
+      if (!lb) {
+        warnings.push('"' + str(lab.name) + '" is not a lab this app knows how to range-check.');
+        continue;
+      }
+      var lv = numOr(lab.value, 0);
+      /* One unit conversion, for the one analyte where the two conventions are
+         a factor of eighteen apart and both are commonly written. */
+      if (/glucose/i.test(str(lab.name)) && /mmol/i.test(str(lab.unit))) lv = lv * 18;
+      if (lv < lb[1] || lv > lb[2]) {
+        errors.push(str(lab.name) + ' of ' + str(lab.text || lab.value) + ' ' + str(lab.unit) +
+          ' is outside anything a living patient has (' + lb[1] + '-' + lb[2] + ').');
+      }
+    }
+
+    /* ---- the prose ---- */
+    if (/\b(as an ai|language model|i cannot|i'm sorry|as a large)\b/i.test(str(k.lead))) {
+      errors.push('The lead-in is a refusal or a model disclaimer rather than a scenario.');
+    }
+
+    /* ---- does the cause fit the topic? A heuristic, and labelled as one ---- */
+    var chip = chipFor(k.topic);
+    if (chip && k.cause && chip.causes.indexOf(k.cause) === -1) {
+      warnings.push('For ' + chip.label + ' the reversible cause is usually ' + chip.causes.join(' or ') +
+        ', and this scenario says ' + htLabel(k.cause) + '. Check that it makes sense before you trust it.');
+    }
+
+    return { ok: errors.length === 0, errors: errors, warnings: warnings };
+  }
+
+  /* ------------------------------------------------------------- caching
+   * Content-addressed on topic + difficulty + length + schema version, so the
+   * same request is free the second time. Three rungs, cheapest first, exactly
+   * the ladder js/images.js and js/voice.js use:
+   *
+   *   1. memory   - this tab, this session
+   *   2. localStorage - this device, across reloads
+   *   3. /codeblue/scenarioCache/<hash> - SHARED. One student anywhere in the
+   *      cohort generates "DIC, expert, standard" and nobody pays for it again.
+   *
+   * Rung 3 needs a rule in firebase-rules.json (see SCENARIO_CACHE_RULES). It
+   * is written best-effort and every failure is swallowed: until that rule is
+   * published the shared rung simply misses and rungs 1 and 2 carry the load.
+   * ------------------------------------------------------------------- */
+
+  var SCENARIO_CACHE_PATH = 'codeblue/scenarioCache';
+  var LS_SCEN_PREFIX = 'mm.codeblue.scenario.';
+  var LS_SCEN_INDEX = 'mm.codeblue.scenarioIndex';
+  var LS_SCEN_CAP = 24;
+  var MEM_SCEN = {};
+
+  /* Paste-ready, and printed in the report rather than edited into the rules
+     file from here: the ruleset is shared with every other module and is not
+     this file's to rewrite. */
+  var SCENARIO_CACHE_RULES = [
+    '"codeblue": {',
+    '  "scenarioCache": {',
+    '    ".read": "auth != null",',
+    '    ".indexOn": ["createdAt"],',
+    '    "$hash": {',
+    '      ".write": "auth != null && !data.exists()",',
+    '      ".validate": "newData.hasChildren([\'case\',\'v\'])",',
+    '      "hits": { ".write": "auth != null" }',
+    '    }',
+    '  }',
+    '}'
+  ].join('\n');
+
+  function scenarioCacheKey(o) {
+    var opt = obj(o);
+    var topic = str(opt.topic).toLowerCase().replace(/\s+/g, ' ').trim();
+    return contentHash([
+      'codeblue-scenario', SCENARIO_SCHEMA_VERSION, topic,
+      genDiff(opt.difficulty).id, genLength(opt.length).id
+    ].join('\n'));
+  }
+
+  function cacheReadLocal(hash) {
+    var raw = lsGet(LS_SCEN_PREFIX + hash);
+    if (!raw) return null;
+    var v = null;
+    try { v = JSON.parse(raw); } catch (e) { v = null; }
+    if (!v || numOr(v.v, 0) !== SCENARIO_SCHEMA_VERSION) {
+      if (v) lsDel(LS_SCEN_PREFIX + hash);
+      return null;
+    }
+    return obj(v.kase);
+  }
+
+  function cacheWriteLocal(hash, kase) {
+    if (!lsSet(LS_SCEN_PREFIX + hash, JSON.stringify({
+      v: SCENARIO_SCHEMA_VERSION, at: nowMs(), kase: kase
+    }))) return;
+    /* A tiny LRU. Scenario JSON is a couple of kilobytes and a keen student
+       will generate dozens; unbounded growth in localStorage eventually throws
+       on write and takes the rest of the app's storage down with it. */
+    var idx = [];
+    try { idx = JSON.parse(lsGet(LS_SCEN_INDEX) || '[]'); } catch (e) { idx = []; }
+    if (!Array.isArray(idx)) idx = [];
+    idx = idx.filter(function (h) { return h !== hash; });
+    idx.push(hash);
+    while (idx.length > LS_SCEN_CAP) lsDel(LS_SCEN_PREFIX + idx.shift());
+    lsSet(LS_SCEN_INDEX, JSON.stringify(idx));
+  }
+
+  /** Read the shared index. Resolves with a case or null - never rejects. */
+  function cacheReadShared(db, hash) {
+    return new Promise(function (resolve) {
+      var d = db || MMx().db;
+      if (!d || !hash) { resolve(null); return; }
+      var done = false;
+      var finish = function (v) { if (!done) { done = true; resolve(v || null); } };
+      setTimeout(function () { finish(null); }, 4000);
+      try {
+        Promise.resolve(d.ref(SCENARIO_CACHE_PATH + '/' + hash).once('value')).then(function (snap) {
+          var rec = obj(snap && isFn(snap.val) ? snap.val() : null);
+          if (numOr(rec.v, 0) !== SCENARIO_SCHEMA_VERSION) { finish(null); return; }
+          var k = obj(rec.kase || rec['case']);
+          finish(str(k.id) ? k : null);
+        }, function () { finish(null); });
+      } catch (e) { finish(null); }
+    });
+  }
+
+  /** Publish to the shared index and count a hit. Best effort, always silent. */
+  function cacheWriteShared(db, hash, kase, topic) {
+    var d = db || MMx().db;
+    if (!d || !hash) return;
+    try {
+      var p = d.ref(SCENARIO_CACHE_PATH + '/' + hash).set({
+        v: SCENARIO_SCHEMA_VERSION,
+        topic: cut(str(topic), 120),
+        createdAt: nowMs(),
+        hits: 0,
+        'case': kase
+      });
+      if (p && isFn(p.then)) p.then(null, function () {});
+    } catch (e) { /* no rule published yet, or offline. Not a failure. */ }
+  }
+  function cacheCountHit(db, hash) {
+    var d = db || MMx().db;
+    if (!d || !hash) return;
+    try {
+      var ref = d.ref(SCENARIO_CACHE_PATH + '/' + hash + '/hits');
+      if (isFn(ref.transaction)) {
+        var p = ref.transaction(function (cur) { return numOr(cur, 0) + 1; });
+        if (p && isFn(p.then)) p.then(null, function () {});
+      }
+    } catch (e) {}
+  }
+
+  /** Look in all three rungs. Resolves {kase, source} or null. Never rejects. */
+  function cacheLookup(db, hash) {
+    if (MEM_SCEN[hash]) return Promise.resolve({ kase: MEM_SCEN[hash], source: 'memory' });
+    var local = cacheReadLocal(hash);
+    if (local && str(local.id)) {
+      MEM_SCEN[hash] = local;
+      return Promise.resolve({ kase: local, source: 'device' });
+    }
+    return cacheReadShared(db, hash).then(function (k) {
+      if (!k) return null;
+      MEM_SCEN[hash] = k;
+      cacheWriteLocal(hash, k);
+      cacheCountHit(db, hash);
+      return { kase: k, source: 'shared' };
+    });
+  }
+
+  function cachePublish(db, hash, kase, topic) {
+    /* The memory rung is bounded for the same reason the registry is: a keen
+       student can generate a lot of these in one sitting. */
+    var mk = keys(MEM_SCEN);
+    if (mk.length > LS_SCEN_CAP) delete MEM_SCEN[mk[0]];
+    MEM_SCEN[hash] = kase;
+    cacheWriteLocal(hash, kase);
+    cacheWriteShared(db, hash, kase, topic);
+  }
+
+  /* ---------------------------------------------------------- generation */
+
+  var GEN_STAGES = [
+    'Reading the topic...',
+    'Building the patient...',
+    'Writing the room...',
+    'Checking the clinical numbers...',
+    'Nearly there - this one is taking a moment...'
+  ];
+
+  function askScenario(o, problems, attempt) {
+    var ai = aiApi();
+    if (!isFn(ai.chat)) return Promise.reject({ code: 'ai-disabled' });
+    var call;
+    try {
+      call = ai.chat({
+        system: SCENARIO_SYSTEM,
+        messages: [{ role: 'user', content: scenarioUserMessage(o, problems) }],
+        maxTokens: GEN_MAX_TOKENS,
+        temperature: attempt > 0 ? GEN_RETRY_TEMP : GEN_TEMP,
+        json: true,
+        feature: 'codeblue'
+      });
+    } catch (e) { return Promise.reject(e); }
+    var timeout = new Promise(function (_, reject) {
+      setTimeout(function () { reject({ code: 'network' }); }, GEN_TIMEOUT_MS);
+    });
+    return Promise.race([Promise.resolve(call), timeout]);
+  }
+
+  /**
+   * generateCustomCase(opts) -> Promise<result>. NEVER rejects.
+   *
+   * opts: { topic, difficulty, length, db, seed, onProgress(stage, attempt) }
+   * result: { ok, kase, source, warnings[], problems[], attempts, error }
+   *
+   * `ok:true` means the case passed the schema gate AND the clinical gate and
+   * is safe to hand to createState. `ok:false` always carries an `error`
+   * sentence written for a student, and never a stack trace.
+   */
+  function generateCustomCase(opts) {
+    var o = obj(opts);
+    var topic = cut(str(o.topic).trim(), 160);
+    var db = o.db || MMx().db;
+    var progress = isFn(o.onProgress) ? o.onProgress : function () {};
+
+    if (!topic) {
+      return Promise.resolve({ ok: false, attempts: 0, problems: [],
+        error: 'Type what you want to practise, or pick one of the suggestions.' });
+    }
+
+    var hash = scenarioCacheKey({ topic: topic, difficulty: o.difficulty, length: o.length });
+    var caseId = 'custom-' + hash;
+
+    progress('Looking for one we already built...', 0);
+    return cacheLookup(db, hash).then(function (hit) {
+      if (hit && hit.kase) {
+        var k = registerCase(hit.kase);
+        if (k) {
+          return { ok: true, kase: k, source: hit.source, cached: true,
+                   warnings: arr(k.checkWarnings), problems: [], attempts: 0 };
+        }
+      }
+      return runGeneration();
+    }, function () { return runGeneration(); });
+
+    function runGeneration() {
+      var problems = [];
+      var attempt = 0;
+      var lastError = '';
+
+      function step() {
+        attempt++;
+        progress(GEN_STAGES[Math.min(attempt, GEN_STAGES.length - 1)], attempt);
+        return askScenario({
+          topic: topic, difficulty: o.difficulty, length: o.length,
+          seed: str(o.seed || '') + ':' + attempt
+        }, problems, attempt - 1).then(function (raw) {
+          var parsed = parseJsonReply(raw);
+          if (!parsed) parsed = completeTruncatedJSON(str(raw));
+          if (!parsed) {
+            problems = ['Your last reply was not valid JSON. Reply with the JSON object and nothing else.'];
+            lastError = 'The generator did not reply with usable JSON.';
+            return null;
+          }
+          var norm = normalizeGenerated(parsed, { topic: topic, hash: hash, caseId: caseId });
+          var kase = canonicalDoses(norm.kase);
+          if (norm.problems.length) {
+            problems = norm.problems;
+            lastError = 'The generated scenario was missing something the simulator needs.';
+            return null;
+          }
+          progress('Checking the clinical numbers...', attempt);
+          var chk = clinicalCheck(kase);
+          if (!chk.ok) {
+            problems = chk.errors;
+            lastError = 'The generated scenario contained a clinical value that could not be right.';
+            return null;
+          }
+          kase.checkWarnings = chk.warnings;
+          kase.generatedAt = nowMs();
+          registerCase(kase);
+          cachePublish(db, hash, kase, topic);
+          return { ok: true, kase: kase, source: 'generated', cached: false,
+                   warnings: chk.warnings, problems: [], attempts: attempt };
+        }, function (e) {
+          lastError = errText(e);
+          problems = [];
+          /* An auth/tier/quota refusal will refuse identically next time. */
+          var code = (e && e.code) ? str(e.code) : '';
+          if (code === 'no-auth' || code === 'tier-denied' || code === 'quota-exceeded' || code === 'ai-disabled') {
+            attempt = GEN_MAX_ATTEMPTS;
+          }
+          return null;
+        }).then(function (res) {
+          if (res) return res;
+          if (attempt >= GEN_MAX_ATTEMPTS) {
+            return {
+              ok: false, attempts: attempt, problems: problems,
+              error: (lastError || 'The generator could not produce a usable scenario.') +
+                ' Nothing was loaded - try a different wording, or run one of the written cases instead.'
+            };
+          }
+          return step();
+        });
+      }
+
+      return step().then(null, function (e) {
+        /* The contract is that this never rejects. Anything that gets here is a
+           bug in the code above, and a bug must still leave the student with a
+           sentence and a working lobby. */
+        return {
+          ok: false, attempts: GEN_MAX_ATTEMPTS, problems: [],
+          error: 'Something went wrong building that scenario (' +
+                 cut(str(e && e.message ? e.message : e), 80) + '). Nothing was loaded.'
+        };
+      });
+    }
   }
 
   /* ==========================================================================
@@ -2435,6 +3845,7 @@
       '.cb-log-i.err .cb-log-x{color:var(--red,#ef4444);font-weight:600}',
       '.cb-log-i.rhythm .cb-log-x{color:var(--text,#f1f5f9);font-weight:600}',
       '.cb-log-i.say .cb-log-x{font-style:italic}',
+      '.cb-log-i.pause .cb-log-x{color:var(--orange,#f59e0b)}',
       '.cb-log-i.unconf{background:rgba(245,158,11,0.10)}',
 
       /* ---- narration ---- */
@@ -2479,6 +3890,47 @@
       '.cb-banner.info{background:var(--tint-accent,rgba(59,130,246,0.12));border:1px solid var(--accent,#3b82f6);color:var(--text,#f1f5f9)}',
       '.cb-banner.bad{background:rgba(239,68,68,0.12);border:1px solid var(--red,#ef4444);color:var(--red,#ef4444)}',
 
+      /* ---- AI-generated labelling ----
+         A student must never have to guess whether the thing they are being
+         taught was written by their school or by a machine. The badge is
+         deliberately loud, it is on every screen the case appears on, and it
+         is not themeable away. */
+      '.cb-ai{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-2xs,11px);font-weight:800;',
+      'letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:var(--r-full,999px);',
+      'background:rgba(139,92,246,0.16);color:var(--accent2,#8b5cf6);',
+      'border:1px solid var(--accent2,#8b5cf6);white-space:nowrap}',
+      '.cb-ai-note{border-left:3px solid var(--accent2,#8b5cf6);background:rgba(139,92,246,0.08);',
+      'padding:9px 12px;border-radius:0 var(--r-md,10px) var(--r-md,10px) 0;color:var(--text2,#94a3b8);',
+      'font-size:var(--fs-xs,12px);line-height:1.5;margin-top:10px}',
+
+      /* ---- custom scenario builder ---- */
+      '.cb-topics{display:flex;flex-wrap:wrap;gap:6px}',
+      '.cb-topic{border:1px solid var(--border,#334155);background:var(--surface,#1e293b);',
+      'color:var(--text2,#94a3b8);border-radius:var(--r-full,999px);padding:7px 13px;font-size:var(--fs-xs,12px);',
+      'font-weight:600;cursor:pointer;min-height:34px}',
+      '.cb-topic:hover{border-color:var(--accent2,#8b5cf6)}',
+      '.cb-topic:focus-visible{outline:3px solid var(--accent,#3b82f6);outline-offset:2px}',
+      '.cb-topic[aria-pressed="true"]{border-color:var(--accent2,#8b5cf6);color:var(--text,#f1f5f9);',
+      'background:rgba(139,92,246,0.16)}',
+      '.cb-gen{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}',
+      '.cb-spin{width:16px;height:16px;border-radius:50%;flex:0 0 auto;',
+      'border:2px solid var(--surface3,#334155);border-top-color:var(--accent2,#8b5cf6);',
+      'animation:cbSpin .8s linear infinite}',
+      '@keyframes cbSpin{to{transform:rotate(360deg)}}',
+      '.cb-kv{display:flex;gap:8px;font-size:var(--fs-xs,12px);padding:3px 0;',
+      'border-bottom:1px dashed rgba(148,163,184,0.14)}',
+      '.cb-kv b{flex:0 0 118px;color:var(--text2,#94a3b8);font-weight:600}',
+      '.cb-kv span{flex:1 1 auto;min-width:0;color:var(--text,#f1f5f9);overflow-wrap:anywhere}',
+
+      /* ---- pause ---- */
+      '.cb-pausebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;',
+      'padding:9px 12px;border-radius:var(--r-md,10px);border:1px solid var(--border,#334155);',
+      'background:var(--surface,#1e293b)}',
+      '.cb-pausebar.on{border-color:var(--orange,#f59e0b);background:rgba(245,158,11,0.12)}',
+      '.cb-pausebar .who{flex:1 1 140px;min-width:0;font-size:var(--fs-sm,13px);color:var(--text,#f1f5f9)}',
+      '.cb-pausebar .who small{display:block;color:var(--text3,#64748b);font-size:var(--fs-2xs,11px)}',
+      '.cb-paused-clock{font-variant-numeric:tabular-nums;font-weight:800;color:var(--orange,#f59e0b)}',
+
       '.cb-two{display:grid;grid-template-columns:1fr;gap:12px}',
       '@media (min-width:860px){.cb-two{grid-template-columns:1.35fr 1fr}}',
       '@media (max-width:400px){',
@@ -2488,6 +3940,7 @@
       '}',
       '@media (prefers-reduced-motion:reduce){',
       '.cb-ecg-run{animation:none}.cb-pad.pulse{animation:none}.cb-pad:active{transform:none}',
+      '.cb-spin{animation:none;border-top-color:var(--accent2,#8b5cf6)}',
       '}'
     ].join('');
     document.head.appendChild(s);
@@ -2594,6 +4047,121 @@
           ce('span', { className: 'cb-log-x', key: 'x' }, str(l.text))
         ]);
       }));
+  }
+
+  /* --------------------------------------------- AI-generated labelling */
+
+  /** The badge. Wherever a generated case is on screen, so is this. */
+  function AiBadge(props) {
+    var p = obj(props);
+    if (!p.on) return null;
+    return ce('span', { className: 'cb-ai', title: 'Built by AI from a topic you typed' },
+      [ce('span', { key: 'i', 'aria-hidden': 'true' }, '✨'), ce('span', { key: 't' }, 'AI-built scenario')]);
+  }
+
+  /** The sentence that goes with the badge, plus anything the gate flagged. */
+  function AiNote(props) {
+    var p = obj(props);
+    if (!p.on) return null;
+    var warns = arr(p.warnings);
+    return ce('div', { className: 'cb-ai-note' }, [
+      ce('div', { key: 'a' },
+        'This case was written by AI from the topic you typed, not by your school. Its numbers were range-checked ' +
+        'before it loaded - every vital sign, lab value and weight-based dose has to be physiologically possible - ' +
+        'but a value can be possible and still not be the one your instructor would pick. Treat it as practice ' +
+        'reps, not as a source. Check anything you intend to memorise against your textbook.'),
+      warns.length ? ce('div', { key: 'w', style: { marginTop: 6, color: 'var(--orange,#f59e0b)' } },
+        'Flagged when this loaded: ' + warns.slice(0, 4).join(' ')) : null
+    ]);
+  }
+
+  /** Vitals, labs and history a generated case carries. Nothing when absent. */
+  function CaseFacts(props) {
+    var p = obj(props);
+    var k = obj(p.kase);
+    var v = obj(k.vitals), labs = arr(k.labs), hx = arr(k.history);
+    var rows = [];
+    function kv(label, value) {
+      if (value === null || value === undefined || value === '') return;
+      rows.push(ce('div', { className: 'cb-kv', key: label }, [
+        ce('b', { key: 'a' }, label), ce('span', { key: 'b' }, String(value))
+      ]));
+    }
+    var bp = (v.sbp !== null && v.sbp !== undefined && v.dbp !== null && v.dbp !== undefined)
+      ? (v.sbp + '/' + v.dbp) : null;
+    kv('Heart rate', v.hr !== null && v.hr !== undefined ? v.hr + ' bpm' : '');
+    kv('Blood pressure', bp || '');
+    kv('Respirations', v.rr !== null && v.rr !== undefined ? v.rr + ' / min' : '');
+    kv('SpO2', v.spo2 !== null && v.spo2 !== undefined ? v.spo2 + '%' : '');
+    kv('Temperature', v.tempC !== null && v.tempC !== undefined ? v.tempC + ' °C' : '');
+    kv('Glucose', v.glucoseMgDl !== null && v.glucoseMgDl !== undefined ? v.glucoseMgDl + ' mg/dL' : '');
+    if (labs.length) {
+      kv('Labs', labs.map(function (l) {
+        return str(l.name) + ' ' + str(l.text || l.value) + (l.unit ? ' ' + str(l.unit) : '');
+      }).join(' · '));
+    }
+    if (hx.length) kv('History', hx.join('; '));
+    if (k.weightKg) kv('Weight', fmtMg(k.weightKg) + ' kg');
+    if (!rows.length) return null;
+    return ce('div', { style: { marginTop: 10 } }, [
+      ce('div', { className: 'cb-sect-t', key: 't' },
+        'Last recorded before the call'),
+      ce('div', { key: 'r' }, rows)
+    ]);
+  }
+
+  /* --------------------------------------------------------------- pause */
+
+  /**
+   * PauseBar - the shared freeze, and who owns it.
+   *
+   * In a room this is not a local control: pressing it writes an event, the
+   * host applies it, and every client freezes off the same state. The bar says
+   * who paused so nobody has to ask in the voice channel, and it keeps counting
+   * so a room does not quietly sit paused for twenty minutes.
+   */
+  function PauseBar(props) {
+    var p = obj(props);
+    var st = obj(p.st);
+    var realNow = numOr(p.realNow, nowMs());
+    var players = obj(p.players);
+    if (st.phase !== 'running' && st.phase !== 'check') return null;
+
+    var on = !!st.paused;
+    var held = on ? Math.max(0, realNow - numOr(st.pausedAt, realNow)) : 0;
+    var byUid = str(st.pausedBy);
+    var byMe = byUid && byUid === str(p.myUid);
+    var byName = str(st.pausedByName) || (byUid ? (str(obj(players[byUid]).name) || 'a teammate') : 'someone');
+    var gone = !!(byUid && players[byUid] && obj(players[byUid]).connected === false);
+
+    var who;
+    if (!on) {
+      who = ce('div', { className: 'who' }, [
+        ce('span', { key: 'a' }, 'Anyone can pause this code.'),
+        ce('small', { key: 'b' }, 'Paused time is frozen out of the clock, the drug intervals and your score.')
+      ]);
+    } else {
+      who = ce('div', { className: 'who' }, [
+        ce('span', { key: 'a' }, 'Paused by ' + (byMe ? 'you' : byName) + ' · ',
+          ce('span', { className: 'cb-paused-clock' }, fmtClock(held))),
+        ce('small', { key: 'b' },
+          gone ? (byName + ' has dropped off. Anyone still here can restart it.')
+               : (held > PAUSE_NAG_MS
+                   ? 'Still paused. Nothing is running and nothing is being scored.'
+                   : 'Everything is frozen for everyone. Anyone can restart it.'))
+      ]);
+    }
+
+    return ce('div', { className: 'cb-pausebar' + (on ? ' on' : ''), role: 'status', 'aria-live': 'polite' }, [
+      ce('button', {
+        key: 'b', type: 'button', className: 'cb-btn' + (on ? ' go' : ' warn'),
+        style: { flex: '0 0 auto' },
+        onClick: function () { p.send(on ? 'sim_resume' : 'sim_pause', { name: str(p.myName) }); }
+      }, on ? '▶  Resume the code' : '❚❚  Pause'),
+      who,
+      (on && numOr(st.pausedTotalMs, 0) > 0) ? ce('span', { key: 't', className: 'cb-chip' },
+        'Paused ' + fmtClock(numOr(st.pausedTotalMs, 0)) + ' so far') : null
+    ]);
   }
 
   function RateMeter(props) {
@@ -2793,9 +4361,18 @@
               'everything, and you will still get the debrief.'));
     }
 
-    var running = st.phase === 'running' || st.phase === 'check';
+    /* Paused is not "running". One flag, and every disabled: !running on every
+       control in this panel - including the compression pad - goes dead at
+       once. A per-button pause check is the version of this that misses one. */
+    var running = (st.phase === 'running' || st.phase === 'check') && !st.paused;
     var out = [];
     var order = obj(st.order);
+
+    if (st.paused) {
+      out.push(ce('div', { className: 'cb-banner warn', key: 'pz' },
+        'The code is paused' + (str(st.pausedByName) ? ' by ' + str(st.pausedByName) : '') +
+        '. Nothing moves and nothing you press here counts until it restarts.'));
+    }
     var myOrder = (order.id && order.toUid === myUid && !order.doneAt) ? order : null;
 
     if (myOrder) {
@@ -3110,7 +4687,10 @@
     var send = useCallback(function (type, payload) {
       var st = stRef.current;
       if (!st) return;
-      applyEvent(st, { type: type, uid: myUid, payload: payload || {} }, nowMs());
+      /* Simulated time, always. applyEvent stamps the log and every interval
+         from this number, and a wall clock here would put a pause back into
+         all of them. */
+      applyEvent(st, { type: type, uid: myUid, payload: payload || {} }, simNow(st, nowMs()));
       bump();
     }, [myUid, bump]);
 
@@ -3118,10 +4698,19 @@
       var iv = setInterval(function () {
         var st = stRef.current;
         if (!st) return;
-        var now = nowMs();
+        var real = nowMs();
+        var now = simNow(st, real);
         if (st.phase === 'ended' || st.phase === 'briefing') { st.tickAt = now; return; }
+        /* Paused: the engine does not tick and the AI teammates do not act.
+           botStep() is a pure function of state, so leaving it running against
+           a frozen clock would still walk the bots through their whole
+           sequence while the student is away from the screen. */
+        if (st.paused) { bump(); return; }
         var mine = rolesOfUid(st, myUid);
-        if (mine.indexOf('compressions') !== -1) feedCpr(st, now, cprRef.current);
+        /* feedCpr compares the sample's timestamp with `now` to decide whether
+           hands are on the chest, and a tap is stamped off the WALL clock, so
+           this one call gets real time. Everything else in the loop is sim. */
+        if (mine.indexOf('compressions') !== -1) feedCpr(st, real, cprRef.current);
         else {
           /* A bot on compressions holds a believable, imperfect fraction: about
              nine seconds on, one second off, and a rate that drifts around 112.
@@ -3129,7 +4718,7 @@
           var cyc = (now - numOr(st.cycleStartedAt, now)) % 10000;
           feedCpr(st, now, { rate: 108 + Math.round(Math.sin(now / 9000) * 6), at: (cyc < 9000 ? now : 0) });
         }
-        if (mine.indexOf('airway') !== -1) feedVent(st, now, ventRef.current);
+        if (mine.indexOf('airway') !== -1) feedVent(st, real, ventRef.current);
         tick(st, now);
         var evs = botStep(st, now, mine), i;
         for (i = 0; i < evs.length; i++) applyEvent(st, evs[i], now);
@@ -3232,7 +4821,14 @@
       });
       try {
         base.child('cfg').once('value', function (snap) {
-          patchMeta({ cfg: obj(snap.val()), cfgReady: true });
+          var cfgVal = obj(snap.val());
+          /* An AI-built case is generated ONCE, by whoever created the room,
+             and travels with the room. Registering it here means every client
+             resolves caseById() to the same patient - nobody generates their
+             own copy and nobody ends up running a different scenario from the
+             person sitting next to them. */
+          registerCase(cfgVal.customCase);
+          patchMeta({ cfg: cfgVal, cfgReady: true });
         }, function () { patchMeta({ cfgReady: true }); });
         base.child('hostName').once('value', function (snap) {
           patchMeta({ hostName: str(snap.val()) });
@@ -3255,6 +4851,11 @@
       var onS = sRef.on('value', function (snap) {
         var v = snap.val();
         if (!v) return;
+        /* Belt and braces on the cfg read above: the whole generated case also
+           rides inside state, so a client whose cfg read lost the race - or a
+           player promoted to host mid-code - still resolves the right patient
+           from the first snapshot it sees. */
+        registerCase(obj(v).customCase);
         /* The host is the author of state; echoing its own write back over the
            live object would undo everything applied since. */
         if (hostRef.current === myUid && stRef.current) return;
@@ -3354,7 +4955,10 @@
         if (str(body.type) === 'start' && st.phase === 'briefing' && st.roleMode !== 'leader') {
           dealFromPlayers(st, playersRef.current, myUid);
         }
-        applyEvent(st, body, nowMs());
+        /* The host stamps every event with ITS OWN simulated clock. The `t` the
+           sender wrote is ignored on purpose: a phone whose clock is four
+           minutes fast would otherwise shift the whole code's timeline. */
+        applyEvent(st, body, simNow(st, nowMs()));
         st.lastEventKey = key;
         bump();
       });
@@ -3379,7 +4983,12 @@
         if (!alive) return;
         var st = stRef.current;
         if (!st) return;
-        var now = nowMs();
+        /* `real` is the wall clock - presence, heartbeats and the RTDB write
+           throttle all live on it. `now` is simulated time, which is what the
+           engine and everything derived from it run on. The two are the same
+           number until somebody pauses. */
+        var real = nowMs();
+        var now = simNow(st, real);
         var players = playersRef.current;
         var meta = metaRef.current;
         /* Roles are re-dealt on every tick until the code starts, so somebody
@@ -3387,11 +4996,28 @@
            code is running they freeze - a role changing hands mid-compression
            because a phone reconnected would be worse than an empty role. */
         if (st.phase === 'briefing' && st.roleMode !== 'leader') dealFromPlayers(st, players, myUid);
+
+        if (st.paused) {
+          /* Frozen, but still authoritative and still publishing: a client that
+             joins or refreshes during a pause has to be able to see that the
+             room is paused, and who paused it. So the heartbeat and the state
+             write continue and nothing else does. */
+          st.hostBeat = real;
+          bump();
+          if ((real - writeRef.current) >= 900) {
+            writeRef.current = real;
+            try { base.child('state').set(scrub(st)); } catch (e) {}
+          }
+          return;
+        }
+
         var cu = uidForRole(st, 'compressions');
         var au = uidForRole(st, 'airway');
         var sample = (cu === myUid) ? cprRef.current : obj(obj(players[cu]).cpr);
-        feedCpr(st, now, sample);
-        feedVent(st, now, (au === myUid) ? ventRef.current : obj(obj(players[au]).vent));
+        /* Compression and ventilation samples are stamped off the wall clock by
+           whoever is tapping, so their freshness is judged against it. */
+        feedCpr(st, real, sample);
+        feedVent(st, real, (au === myUid) ? ventRef.current : obj(obj(players[au]).vent));
         tick(st, now);
 
         /* A role whose owner has been gone longer than the rejoin grace is
@@ -3403,7 +5029,7 @@
             var owner = str(st.roles[rk[i]]);
             var f = obj(freshRef.current[owner]);
             var gone = owner && obj(players[owner]).connected === false &&
-                       f.at && (now - f.at) > REJOIN_MS;
+                       f.at && (real - f.at) > REJOIN_MS;
             if (!gone) continue;
             var cand = keys(players).filter(function (u) { return obj(players[u]).connected !== false; })
               .sort(function (a, b) { return rolesOfUid(st, a).length - rolesOfUid(st, b).length; })[0];
@@ -3418,11 +5044,11 @@
           if (changed) bump();
         }
 
-        st.hostBeat = now;
+        st.hostBeat = real;
         st.rev = numOr(st.rev, 0) + 1;
         bump();
-        if ((now - writeRef.current) >= 900) {
-          writeRef.current = now;
+        if ((real - writeRef.current) >= 900) {
+          writeRef.current = real;
           try { base.child('state').set(scrub(st)); } catch (e) {}
         }
         if (st.phase === 'ended' && str(obj(meta).status) !== 'done') {
@@ -3553,9 +5179,15 @@
   function GameScreen(props) {
     var p = obj(props);
     var st = obj(p.st);
-    var now = useNow(250);
+    var realNow = useNow(250);
+    /* Every clock this screen draws is a difference between two SIMULATED
+       timestamps, so the wall clock has to be converted once, here, before it
+       is handed to anything. Miss this and the cycle clock keeps counting down
+       through a pause while the engine behind it does not. */
+    var now = simNow(st, realNow);
     var reduce = useReducedMotion();
     var kase = caseById(st.caseId);
+    var generated = isGeneratedCase(kase);
     var narr = obj(st.narration);
     var players = obj(p.players);
     var mine = rolesOfUid(st, str(p.myUid));
@@ -3570,8 +5202,14 @@
     if (st.phase === 'briefing') {
       return ce('div', { className: 'cb-wrap' }, [
         ce('div', { className: 'cb-card', key: 'b' }, [
-          ce('h3', { key: 't' }, kase.icon + '  ' + kase.title),
+          ce('div', { className: 'cb-row', key: 't' }, [
+            ce('h3', { key: 'a', style: { margin: 0, flex: '1 1 200px', minWidth: 0 } },
+              kase.icon + '  ' + kase.title),
+            generated ? ce(AiBadge, { key: 'b', on: true }) : null
+          ]),
           ce('p', { className: 'cb-sub', key: 'l', style: { marginTop: 6 } }, kase.lead),
+          generated ? ce(CaseFacts, { key: 'f', kase: kase }) : null,
+          generated ? ce(AiNote, { key: 'n', on: true, warnings: arr(kase.checkWarnings) }) : null,
           ce('div', { className: 'cb-muted', key: 'm', style: { marginTop: 10 } },
             'You are ' + (mine.length ? mine.map(function (r) { return roleMeta(r).label; }).join(' + ') : 'observing') +
             '. Read your role card, then start when the team is ready.'),
@@ -3602,6 +5240,13 @@
 
     return ce('div', { className: 'cb-wrap' }, [
       p.voice ? ce(VoiceStrip, { key: 'v', voice: p.voice }) : null,
+
+      ce(PauseBar, {
+        key: 'pz', st: st, players: players, myUid: p.myUid, myName: p.myName,
+        realNow: realNow, send: p.send
+      }),
+      generated ? ce('div', { className: 'cb-row', key: 'aib', style: { marginBottom: 10 } },
+        ce(AiBadge, { on: true })) : null,
 
       (!p.solo && !p.isHost && p.hostStale) ? ce('div', { className: 'cb-banner warn', key: 'hs' },
         'The host has gone quiet. If they do not come back in a moment, one of you will pick the code up automatically.') : null,
@@ -3673,7 +5318,14 @@
       teamScore: obj(res).team,
       teamSize: numOr(st.teamSize, 0),
       solo: !!st.solo,
-      ccf: Math.round(clamp(numOr(m.ccf, 0), 0, 1) * 100)
+      ccf: Math.round(clamp(numOr(m.ccf, 0), 0, 1) * 100),
+      /* Written into the record, not just onto the screen. A dashboard that
+         cannot separate school-authored reps from machine-generated ones is a
+         dashboard that quietly launders one into the other. */
+      aiGenerated: !!isGeneratedCase(kase),
+      topic: cut(str(kase.topic), 120),
+      pausedMs: Math.round(numOr(m.pausedMs, 0)),
+      pauseCount: numOr(m.pauseCount, 0)
     };
     var MM = MMx();
     /* The page is handed setProgress as a prop; MM.setProgress is the fallback
@@ -3777,9 +5429,13 @@
           ce('div', { key: 'x', style: { flex: '1 1 160px', minWidth: 0 } }, [
             ce('h3', { key: 'a', style: { margin: 0 } }, om.headline),
             ce('div', { key: 'b', className: 'cb-muted' }, kase.title + ' - ' + kase.patient)
-          ])
+          ]),
+          isGeneratedCase(kase) ? ce(AiBadge, { key: 'ai', on: true }) : null
         ]),
         ce('p', { className: 'cb-sub', key: 'b', style: { marginTop: 10 } }, om.body),
+        isGeneratedCase(kase)
+          ? ce(AiNote, { key: 'ain', on: true, warnings: arr(kase.checkWarnings) })
+          : null,
         (st.outcome === 'death' || st.outcome === 'terminated')
           ? ce('p', { className: 'cb-sub', key: 'c', style: { marginTop: 8, color: 'var(--text3,#64748b)' } },
               'If this one sat heavily with you, that is the right response and not a weakness. ' +
@@ -3822,7 +5478,11 @@
               stat('Closed loop', res.loop.ordered ? (res.loop.reported + ' / ' + res.loop.ordered + ' closed') : 'no orders given',
                 res.loop.closeRate >= 0.7 ? 'good' : ''),
               stat('Total time', fmtClock(m.durationMs))
-            ])
+            ]),
+            numOr(m.pausedMs, 0) > 0 ? ce('div', { className: 'cb-muted', key: 'pz', style: { marginTop: 10 } },
+              'Paused ' + numOr(m.pauseCount, 0) + ' time' + (numOr(m.pauseCount, 0) === 1 ? '' : 's') +
+              ' for ' + fmtClock(m.pausedMs) + ' in total. None of that time appears in any number above - ' +
+              'every clock in this debrief stops while the code is paused.') : null
           ])
         ]),
         ce('div', { key: 'r' }, [
@@ -3987,6 +5647,193 @@
     ]);
   }
 
+  /**
+   * CustomScenarioPanel - "what do you want to practise?"
+   *
+   * Free text or a chip, a difficulty, a length, and a Build button. It owns
+   * its own inputs and reports upward with onGenerated(payload|null); changing
+   * any input clears the last result, because a case built for "DKA, student,
+   * short" is not the case the student is now asking for and silently keeping
+   * it would be the worst kind of stale.
+   *
+   * Nothing here can throw: generateCustomCase never rejects, and every failure
+   * path lands in the same one-sentence error with the school-authored cases
+   * still one tap away.
+   */
+  function CustomScenarioPanel(props) {
+    var p = obj(props);
+    var topicH = useState('');
+    var topic = topicH[0], setTopic = topicH[1];
+    var diffH = useState('competent');
+    var gdiff = diffH[0], setGdiff = diffH[1];
+    var lenH = useState('standard');
+    var glen = lenH[0], setGlen = lenH[1];
+    var genH = useState({ state: 'idle', stage: '', error: '', attempts: 0 });
+    var gen = genH[0], setGen = genH[1];
+    var resH = useState(null);
+    var result = resH[0], setResult = resH[1];
+    var aliveRef = useRef(true);
+    var reduce = useReducedMotion();
+    var onGenerated = p.onGenerated;
+
+    useEffect(function () { return function () { aliveRef.current = false; }; }, []);
+
+    var aiOk = (function () {
+      var ai = aiApi();
+      if (!isFn(ai.chat)) return false;
+      if (!isFn(ai.isAvailable)) return true;
+      try { return !!ai.isAvailable(); } catch (e) { return false; }
+    })();
+
+    /* Any change to the inputs invalidates whatever was built last. */
+    var invalidate = useCallback(function () {
+      setResult(null);
+      setGen({ state: 'idle', stage: '', error: '', attempts: 0 });
+      if (isFn(onGenerated)) onGenerated(null);
+    }, [onGenerated]);
+
+    function build() {
+      if (gen.state === 'busy') return;
+      setResult(null);
+      if (isFn(onGenerated)) onGenerated(null);
+      setGen({ state: 'busy', stage: 'Starting...', error: '', attempts: 0 });
+      generateCustomCase({
+        topic: topic, difficulty: gdiff, length: glen, db: p.db,
+        seed: str(p.myUid) + ':' + nowMs(),
+        onProgress: function (stage, attempt) {
+          if (!aliveRef.current) return;
+          setGen({ state: 'busy', stage: str(stage), error: '', attempts: numOr(attempt, 0) });
+        }
+      }).then(function (res) {
+        if (!aliveRef.current) return;
+        var r = obj(res);
+        if (!r.ok) {
+          setGen({ state: 'err', stage: '', error: str(r.error), attempts: numOr(r.attempts, 0) });
+          return;
+        }
+        setResult({ kase: r.kase, source: str(r.source), warnings: arr(r.warnings) });
+        setGen({ state: 'done', stage: '', error: '', attempts: numOr(r.attempts, 0) });
+        if (isFn(onGenerated)) {
+          onGenerated({
+            kase: r.kase,
+            engineDifficulty: genDiff(gdiff).engine,
+            cycles: genLength(glen).cycles,
+            source: str(r.source),
+            warnings: arr(r.warnings)
+          });
+        }
+      });
+    }
+
+    var chips = ce('div', { className: 'cb-topics', key: 'chips' }, TOPIC_CHIPS.map(function (c) {
+      return ce('button', {
+        key: c.id, type: 'button', className: 'cb-topic',
+        'aria-pressed': str(topic).toLowerCase() === c.label.toLowerCase() ? 'true' : 'false',
+        disabled: gen.state === 'busy',
+        onClick: function () { setTopic(c.label); invalidate(); }
+      }, c.label);
+    }));
+
+    var preview = result ? (function () {
+      var k = obj(result.kase);
+      return ce('div', { className: 'cb-card', key: 'prev', style: { marginTop: 12, marginBottom: 0 } }, [
+        ce('div', { className: 'cb-row', key: 'h' }, [
+          ce('span', { key: 'i', style: { fontSize: '1.4rem' }, 'aria-hidden': 'true' }, str(k.icon)),
+          ce('div', { key: 't', style: { flex: '1 1 160px', minWidth: 0 } }, [
+            ce('div', { key: 'a', style: { fontWeight: 700, color: 'var(--text,#f1f5f9)' } }, str(k.title)),
+            ce('div', { key: 'b', className: 'cb-muted' },
+              str(k.patient) + ' · ' + rhy(k.initialRhythm).short + ' · ' + str(k.category) +
+              (result.source === 'generated' ? '' : ' · reused from the cache, no AI call'))
+          ]),
+          ce(AiBadge, { key: 'ai', on: true })
+        ]),
+        ce('p', { className: 'cb-sub', key: 'l', style: { marginTop: 8 } }, cut(str(k.lead), 420)),
+        ce('div', { className: 'cb-muted', key: 'c', style: { marginTop: 6 } },
+          'The reversible cause is deliberately not shown here - finding it is the exercise.'),
+        ce(AiNote, { key: 'n', on: true, warnings: arr(result.warnings) }),
+        ce('div', { className: 'cb-row', key: 'b', style: { marginTop: 10 } }, [
+          ce('button', {
+            key: 'r', type: 'button', className: 'cb-btn', disabled: gen.state === 'busy',
+            onClick: build
+          }, 'Build a different one'),
+          ce('button', {
+            key: 'x', type: 'button', className: 'cb-btn', onClick: invalidate
+          }, 'Clear')
+        ])
+      ]);
+    })() : null;
+
+    return ce('div', null, [
+      ce('p', { className: 'cb-sub', key: 'intro' },
+        'Type a condition, a lab topic or anything you are being tested on, and the AI will build a code out of it. ' +
+        'Every scenario it writes is range-checked before it will load, and it is labelled as machine-written ' +
+        'everywhere it appears - including on your dashboard afterwards.'),
+
+      ce('div', { className: 'cb-sect', key: 'what' }, [
+        ce('div', { className: 'cb-sect-t', key: 't' }, 'What do you want to practise?'),
+        ce('input', {
+          key: 'i', className: 'cb-in', value: topic, maxLength: 160,
+          placeholder: 'HHS, DIC, acute increased ICP, post-op hemorrhage...',
+          disabled: gen.state === 'busy',
+          onChange: function (e) { setTopic(e.target.value); invalidate(); },
+          onKeyDown: function (e) { if (e.key === 'Enter' && aiOk && str(topic).trim()) build(); },
+          'aria-label': 'What do you want to practise?'
+        }),
+        ce('div', { key: 'c', style: { marginTop: 8 } }, chips)
+      ]),
+
+      ce('div', { className: 'cb-sect', key: 'diff' }, [
+        ce('div', { className: 'cb-sect-t', key: 't' }, 'How hard'),
+        ce('div', { className: 'cb-seg', key: 's' }, GEN_DIFFS.map(function (d) {
+          return ce('button', {
+            key: d.id, type: 'button', 'aria-pressed': gdiff === d.id ? 'true' : 'false',
+            disabled: gen.state === 'busy',
+            onClick: function () { setGdiff(d.id); invalidate(); }
+          }, d.label);
+        })),
+        ce('div', { className: 'cb-muted', key: 'm', style: { marginTop: 6 } }, genDiff(gdiff).brief + '.')
+      ]),
+
+      ce('div', { className: 'cb-sect', key: 'len' }, [
+        ce('div', { className: 'cb-sect-t', key: 't' }, 'How long'),
+        ce('div', { className: 'cb-seg', key: 's' }, GEN_LENGTHS.map(function (l) {
+          return ce('button', {
+            key: l.id, type: 'button', 'aria-pressed': glen === l.id ? 'true' : 'false',
+            disabled: gen.state === 'busy',
+            onClick: function () { setGlen(l.id); invalidate(); }
+          }, l.label);
+        })),
+        ce('div', { className: 'cb-muted', key: 'm', style: { marginTop: 6 } },
+          genLength(glen).cycles + ' two-minute cycles - ' + genLength(glen).about +
+          ' if it runs the whole way.')
+      ]),
+
+      !aiOk ? ce('div', { className: 'cb-banner warn', key: 'noai', style: { marginTop: 12 } },
+        'Custom scenarios need the AI, and it is not available on this account right now. ' +
+        'The written cases run either way.') : null,
+
+      ce('div', { className: 'cb-gen', key: 'go' }, [
+        ce('button', {
+          key: 'b', type: 'button', className: 'cb-btn go', style: { flex: '0 0 auto' },
+          disabled: !aiOk || gen.state === 'busy' || !str(topic).trim(),
+          onClick: build
+        }, gen.state === 'busy' ? 'Building...' : (result ? 'Rebuild' : '✨  Build the scenario')),
+        gen.state === 'busy' ? ce('span', { key: 's', className: 'cb-spin', 'aria-hidden': 'true' }) : null,
+        gen.state === 'busy' ? ce('span', { key: 'x', className: 'cb-muted', role: 'status', 'aria-live': 'polite' },
+          str(gen.stage) + (gen.attempts > 1 ? '  (attempt ' + gen.attempts + ' of ' + GEN_MAX_ATTEMPTS + ')' : '') +
+          (reduce ? '' : '')) : null
+      ]),
+      gen.state === 'busy' ? ce('div', { className: 'cb-muted', key: 'wait', style: { marginTop: 6 } },
+        'This usually takes ten to twenty seconds. It is written once and then cached, so building the same ' +
+        'topic again is instant and costs nothing.') : null,
+
+      gen.state === 'err' ? ce('div', { className: 'cb-banner bad', key: 'err', style: { marginTop: 10 } },
+        str(gen.error)) : null,
+
+      preview
+    ]);
+  }
+
   function Lobby(props) {
     var p = obj(props);
     var db = p.db, myUid = str(p.myUid), myName = str(p.myName);
@@ -4015,6 +5862,16 @@
     var mySlot = slotH[0], setMySlot = slotH[1];
     var tabH = useState('team');
     var tab = tabH[0], setTab = tabH[1];
+    /* Where the case comes from. Deliberately a setting shared by both tabs
+       rather than a third tab of its own: "AI built it" is a property of the
+       patient, not a different way of running a code, and a student who builds
+       one should be able to run it alone tonight and with their group
+       tomorrow without building it twice. */
+    var srcH = useState('library');
+    var caseSrc = srcH[0], setCaseSrc = srcH[1];
+    var customH = useState(null);
+    var custom = customH[0], setCustom = customH[1];
+    var onGenerated = useCallback(function (payload) { setCustom(payload || null); }, []);
 
     useEffect(function () {
       if (!db) { setLoading(false); return undefined; }
@@ -4039,17 +5896,33 @@
       return {
         id: k, name: str(r.name) || k, host: str(r.hostName) || 'Host',
         players: keys(r.players).length, cfg: obj(r.cfg),
+        custom: !!obj(obj(r.cfg).customCase).aiGenerated,
         createdAt: numOr(r.createdAt, 0), status: str(r.status)
       };
     }).filter(function (r) {
       return r.status === 'open' && (nowMs() - r.createdAt) < ROOM_STALE_MS;
     }).sort(function (a, b) { return b.createdAt - a.createdAt; }).slice(0, 20);
 
+    var usingCustom = caseSrc === 'custom' && !!obj(custom).kase;
+
     function cfgNow() {
-      return {
+      var c = {
         caseId: caseId, difficulty: difficulty, teamSize: teamSize,
-        roleMode: roleMode, seed: caseId + '-' + Math.floor(Math.random() * 1e9)
+        roleMode: roleMode, maxCycles: MAX_CYCLES,
+        seed: caseId + '-' + Math.floor(Math.random() * 1e9)
       };
+      if (usingCustom) {
+        var k = obj(custom).kase;
+        /* The whole case goes into cfg, which is written once when the room is
+           created and read by every client. Generated on the host, shared by
+           the room - never generated per client. */
+        c.caseId = str(k.id);
+        c.customCase = k;
+        c.difficulty = str(obj(custom).engineDifficulty) || difficulty;
+        c.maxCycles = clamp(Math.round(numOr(obj(custom).cycles, MAX_CYCLES)), 2, 20);
+        c.seed = str(k.id) + '-' + Math.floor(Math.random() * 1e9);
+      }
+      return c;
     }
 
     function doCreate() {
@@ -4096,8 +5969,21 @@
     var settings = ce('div', { key: 'settings' }, [
       ce('div', { className: 'cb-sect', key: 'case' }, [
         ce('div', { className: 'cb-sect-t', key: 't' }, 'The case'),
-        caseCards,
-        ce('p', { className: 'cb-sub', key: 'l', style: { marginTop: 8 } }, caseById(caseId).lead)
+        ce('div', { className: 'cb-seg', key: 'src', style: { marginBottom: 10 } }, [
+          { id: 'library', l: 'Written for your school' },
+          { id: 'custom', l: '✨ Build one with AI' }
+        ].map(function (o) {
+          return ce('button', {
+            key: o.id, type: 'button', 'aria-pressed': caseSrc === o.id ? 'true' : 'false',
+            onClick: function () { setCaseSrc(o.id); }
+          }, o.l);
+        })),
+        caseSrc === 'custom'
+          ? ce(CustomScenarioPanel, { key: 'gen', db: db, myUid: myUid, onGenerated: onGenerated })
+          : ce('div', { key: 'lib' }, [
+              caseCards,
+              ce('p', { className: 'cb-sub', key: 'l', style: { marginTop: 8 } }, caseById(caseId).lead)
+            ])
       ]),
       ce('div', { className: 'cb-sect', key: 'size' }, [
         ce('div', { className: 'cb-sect-t', key: 't' }, 'Team size'),
@@ -4129,7 +6015,17 @@
             ? 'The lead reassigns roles during the code, and is scored on it. Putting the strongest hands on the chest is a skill.'
             : 'Roles are dealt in join order. The host takes team lead.')
       ]),
-      ce('div', { className: 'cb-sect', key: 'diff' }, [
+      /* A custom scenario carries its own difficulty and its own length, set
+         next to the topic they belong to. Two difficulty pickers on one screen
+         disagreeing with each other is a bug report waiting to happen. */
+      caseSrc === 'custom' ? ce('div', { className: 'cb-sect', key: 'diff' }, [
+        ce('div', { className: 'cb-sect-t', key: 't' }, 'Difficulty'),
+        ce('div', { className: 'cb-muted', key: 'm' },
+          usingCustom
+            ? ('Set with the scenario above: ' + diffOf(str(obj(custom).engineDifficulty)).label + ' - ' +
+               diffOf(str(obj(custom).engineDifficulty)).blurb)
+            : 'Set with the scenario above.')
+      ]) : ce('div', { className: 'cb-sect', key: 'diff' }, [
         ce('div', { className: 'cb-sect-t', key: 't' }, 'Difficulty'),
         ce('div', { className: 'cb-seg', key: 's' }, DIFFS.map(function (d) {
           return ce('button', {
@@ -4140,6 +6036,12 @@
         ce('div', { className: 'cb-muted', key: 'm', style: { marginTop: 6 } }, diffOf(difficulty).blurb)
       ])
     ]);
+
+    /* Nothing may start with the custom path selected and nothing built - the
+       alternative is a room that silently runs the default case instead. */
+    var blocked = caseSrc === 'custom' && !usingCustom;
+    var blockedNote = blocked ? ce('div', { className: 'cb-muted', key: 'bn', style: { marginTop: 8 } },
+      'Build the scenario above first, or switch back to the cases written for your school.') : null;
 
     return ce('div', { className: 'cb-wrap' }, [
       ce('div', { className: 'cb-h', key: 'h' }, [
@@ -4173,8 +6075,9 @@
               'aria-label': 'Room name'
             }),
             ce('div', { key: 's', style: { marginTop: 12 } }, settings),
+            blockedNote,
             ce('button', {
-              key: 'b', type: 'button', className: 'cb-btn go', disabled: busy || !db,
+              key: 'b', type: 'button', className: 'cb-btn go', disabled: busy || !db || blocked,
               style: { marginTop: 14, width: '100%' }, onClick: doCreate
             }, busy ? 'Creating...' : 'Create the room and get a code')
           ])
@@ -4206,7 +6109,10 @@
                       ce('div', { key: 'a', style: { color: 'var(--text,#f1f5f9)', fontSize: 'var(--fs-sm,13px)' } }, r.name),
                       ce('div', { key: 'b', className: 'cb-muted' },
                         r.host + ' · ' + r.players + '/' + numOr(r.cfg.teamSize, 4) + ' · ' +
-                        caseById(r.cfg.caseId).short + ' · ' + (r.cfg.roleMode === 'leader' ? 'lead assigns' : 'roles dealt'))
+                        (r.custom ? (cut(str(obj(r.cfg.customCase).short), 32) || 'custom') : caseById(r.cfg.caseId).short) +
+                        ' · ' + (r.cfg.roleMode === 'leader' ? 'lead assigns' : 'roles dealt')),
+                      r.custom ? ce('div', { key: 'c', style: { marginTop: 4 } },
+                        ce(AiBadge, { on: true })) : null
                     ]),
                     ce('button', {
                       key: 'j', type: 'button', className: 'cb-btn', style: { flex: '0 0 auto' },
@@ -4235,8 +6141,10 @@
             }, slotLabel(s));
           }))
         ]),
+        blockedNote,
         ce('button', {
           key: 'go', type: 'button', className: 'cb-btn go', style: { marginTop: 14, width: '100%' },
+          disabled: blocked,
           onClick: function () {
             var c = cfgNow();
             c.solo = true;
@@ -4254,6 +6162,68 @@
    * hook order in every component is fixed for its whole life.
    * ======================================================================== */
 
+  /**
+   * usePauseControl - wire the mounted code into window.MMPause.
+   *
+   * Both runners call it, so exactly one code is ever attached and it detaches
+   * on unmount. The verbs go through send(), not through the state object: in a
+   * room the pause has to be everybody's.
+   */
+  function usePauseControl(st, send, myName) {
+    var stRef = useRef(null);
+    var sendRef = useRef(null);
+    var nameRef = useRef('');
+    stRef.current = st;
+    sendRef.current = send;
+    nameRef.current = str(myName);
+
+    useEffect(function () {
+      var can = function () {
+        var s = obj(stRef.current);
+        return s.phase === 'running' || s.phase === 'check';
+      };
+      var fire = function (type) {
+        if (!isFn(sendRef.current)) return false;
+        try { sendRef.current(type, { name: nameRef.current }); } catch (e) { return false; }
+        return true;
+      };
+      return cbPause._attach({
+        isPaused: function () { return isPaused(stRef.current); },
+        canPause: can,
+        pause: function () {
+          if (!can() || isPaused(stRef.current)) return false;
+          return fire('sim_pause');
+        },
+        resume: function () {
+          if (!isPaused(stRef.current)) return false;
+          return fire('sim_resume');
+        },
+        toggle: function () {
+          if (isPaused(stRef.current)) return fire('sim_resume');
+          if (!can()) return false;
+          return fire('sim_pause');
+        },
+        stats: function () {
+          var s = obj(stRef.current);
+          var ms = pausedMs(s, nowMs());
+          return {
+            active: s.phase === 'running' || s.phase === 'check',
+            paused: !!s.paused,
+            pauseCount: numOr(s.pauseCount, 0),
+            pausedMs: ms,
+            pausedSec: Math.floor(ms / 1000),
+            mode: 'codeblue',
+            simSec: Math.max(0, Math.round((numOr(s.tickAt, 0) - numOr(s.startedAt, 0)) / 1000))
+          };
+        }
+      });
+    }, []);
+
+    /* Subscribers are told when the flag actually changes, not once a second. */
+    var flag = isPaused(st);
+    useEffect(function () { cbPause._changed(); }, [flag]);
+  }
+
   function useBusyGuard(active) {
     useEffect(function () {
       if (!active) return undefined;
@@ -4269,6 +6239,7 @@
     var run = useSoloCode(p.cfg, p.myUid, p.myName);
     var st = obj(run.st);
     useBusyGuard(st.phase === 'running' || st.phase === 'check');
+    usePauseControl(st, run.send, p.myName);
 
     if (st.phase === 'ended') {
       return ce(DebriefScreen, {
@@ -4277,7 +6248,7 @@
       });
     }
     return ce(GameScreen, {
-      st: st, players: run.players, myUid: p.myUid, send: run.send,
+      st: st, players: run.players, myUid: p.myUid, myName: p.myName, send: run.send,
       isHost: true, solo: true, canStart: true,
       onCprSample: run.onCprSample, onVentSample: run.onVentSample,
       onLeave: p.onExit
@@ -4293,6 +6264,7 @@
     var meta = obj(run.meta);
     var players = obj(run.players);
     useBusyGuard(!!st && (st.phase === 'running' || st.phase === 'check'));
+    usePauseControl(st, run.send, p.myName);
 
     /* Auto-offer voice once, on entry. It is offered, never forced: the strip
        renders with a Join button and nothing opens the microphone until the
@@ -4350,7 +6322,7 @@
           keys(players).length + ' here · ' + (run.isHost ? 'you are hosting' : 'hosted by ' + (str(meta.hostName) || 'someone')))
       ]) : null,
       ce(GameScreen, {
-        key: 'g', st: st, players: players, myUid: p.myUid, send: run.send,
+        key: 'g', st: st, players: players, myUid: p.myUid, myName: p.myName, send: run.send,
         isHost: run.isHost, solo: false, canStart: run.isHost, voice: voice,
         hostStale: !!run.hostStale, error: run.error,
         onCprSample: run.onCprSample, onVentSample: run.onVentSample,
@@ -4447,6 +6419,64 @@
   CodeBlueMode.roleFeedback = roleFeedback;
   CodeBlueMode.shareLine = shareLine;
   CodeBlueMode.persistResult = persistResult;
+  /* ---- pause / resume ----------------------------------------------------
+   * TWO surfaces, and they are different on purpose.
+   *
+   * 1. THE SHARED CONTROL SURFACE. Exactly the names js/sim-engine.js and
+   *    js/ai-scenario.js expose, so anything that can pause one engine can
+   *    pause all three without knowing which is mounted. No arguments, acts on
+   *    whatever code is currently on screen, and goes through the room so that
+   *    in multiplayer it pauses for everybody.
+   *
+   * 2. THE ENGINE SURFACE. Pure functions over a state object, for tests, for
+   *    a future replay tool, and for the transports in this file. Suffixed
+   *    -State so neither surface can ever be mistaken for the other.
+   *
+   * The transport event ids are sim_pause / sim_resume rather than pause /
+   * resume because this module already had a 'resume' event, and it means
+   * "resume compressions after the rhythm check".
+   * --------------------------------------------------------------------- */
+  CodeBlueMode.pause = cbPause.pauseRun;
+  CodeBlueMode.resume = cbPause.resumeRun;
+  CodeBlueMode.togglePause = cbPause.togglePauseRun;
+  CodeBlueMode.isPaused = cbPause.isRunPaused;
+  CodeBlueMode.canPause = cbPause.canPauseRun;
+  CodeBlueMode.onPauseChange = cbPause.onPauseChange;
+  CodeBlueMode.pauseStats = cbPause.pauseStats;
+  CodeBlueMode.pauseControl = cbPause.pauseControl;
+
+  CodeBlueMode.pauseState = pause;
+  CodeBlueMode.resumeState = resume;
+  CodeBlueMode.stateIsPaused = isPaused;
+  CodeBlueMode.statePausedMs = pausedMs;
+  CodeBlueMode.simNow = simNow;
+  CodeBlueMode.PAUSE_EVENT = 'sim_pause';
+  CodeBlueMode.RESUME_EVENT = 'sim_resume';
+
+  /* ---- custom AI-built scenarios ---- */
+  CodeBlueMode.generateCustomCase = generateCustomCase;
+  CodeBlueMode.normalizeGenerated = normalizeGenerated;
+  CodeBlueMode.clinicalCheck = clinicalCheck;
+  CodeBlueMode.canonicalDoses = canonicalDoses;
+  CodeBlueMode.parseJsonReply = parseJsonReply;
+  CodeBlueMode.completeTruncatedJSON = completeTruncatedJSON;
+  CodeBlueMode.scenarioCacheKey = scenarioCacheKey;
+  CodeBlueMode.registerCase = registerCase;
+  CodeBlueMode.caseById = caseById;
+  CodeBlueMode.isGeneratedCase = isGeneratedCase;
+  CodeBlueMode.contentHash = contentHash;
+  CodeBlueMode.pediEpiMg = pediEpiMg;
+  CodeBlueMode.pediAmioMg = pediAmioMg;
+  CodeBlueMode.TOPIC_CHIPS = TOPIC_CHIPS;
+  CodeBlueMode.GEN_DIFFS = GEN_DIFFS;
+  CodeBlueMode.GEN_LENGTHS = GEN_LENGTHS;
+  CodeBlueMode.GEN_MAX_ATTEMPTS = GEN_MAX_ATTEMPTS;
+  CodeBlueMode.SCENARIO_SCHEMA_VERSION = SCENARIO_SCHEMA_VERSION;
+  CodeBlueMode.SCENARIO_CACHE_PATH = SCENARIO_CACHE_PATH;
+  CodeBlueMode.SCENARIO_CACHE_RULES = SCENARIO_CACHE_RULES;
+  CodeBlueMode.SCENARIO_SYSTEM = SCENARIO_SYSTEM;
+  CodeBlueMode.MAX_CYCLES = MAX_CYCLES;
+
   CodeBlueMode.parseNarration = parseNarration;
   CodeBlueMode.normalizeNarration = normalizeNarration;
   CodeBlueMode.fallbackNarration = fallbackNarration;
@@ -4479,6 +6509,9 @@
   CodeBlueMode.cprQuality = cprQuality;
 
   CodeBlueMode.EcgStrip = EcgStrip;
+  CodeBlueMode.PauseBar = PauseBar;
+  CodeBlueMode.CustomScenarioPanel = CustomScenarioPanel;
+  CodeBlueMode.AiBadge = AiBadge;
   CodeBlueMode.Monitor = Monitor;
   CodeBlueMode.GameScreen = GameScreen;
   CodeBlueMode.CycleClock = CycleClock;

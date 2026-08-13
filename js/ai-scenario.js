@@ -256,6 +256,186 @@
   var RE_FREE_CHART = /^\s*(?:show|open|pull up|check|look at|review|see)?[^a-z]*(?:me)?[^a-z]*(?:(?:the|his|her|their|patient'?s?)[^a-z]*){0,3}(?:charts|chart|records|record|labs|lab|orders|order|history|allergies|mar)\b[^a-z]*(?:again|now|please)?[^a-z]*$/i;
 
   /* ==========================================================================
+   * 0b. PAUSE / RESUME PLUMBING
+   * --------------------------------------------------------------------------
+   * Two pieces, both deliberately free of timers.
+   *
+   * createPauseClock() is the whole time model. Wall time is never used
+   * directly again: everything the student is shown, and everything that is
+   * scored, is wall time MINUS every interval the run spent paused. That is
+   * what makes resume free of a catch-up burst - the clock does not "come
+   * back and find out it is 40 seconds later", because those 40 seconds were
+   * never part of scenario time in the first place. It also keeps paused time
+   * separately (pausedMs) so timeliness scoring is not distorted.
+   *
+   * The registry below is a REGISTRATION, not a lifecycle of its own. The
+   * mounted RunScreen writes its controller in and clears it on unmount, so
+   * nothing here outlives the component - this module has a history of
+   * load-order races and a module-scope anything that ticks is exactly the
+   * bug we are not repeating.
+   * ======================================================================== */
+
+  /**
+   * createPauseClock(startedAtMs, nowFn) -> clock
+   *   pause()/resume()      -> bool (resume returns false if it was not paused)
+   *   isPaused()            -> bool
+   *   elapsedMs()/Sec()     -> scenario time, frozen while paused
+   *   pausedMs()            -> total time spent paused, including right now
+   *   sinceMs(mark, banked) -> unpaused time since a mark taken with bankedMs()
+   *   bankedMs()            -> paused total at the moment a mark is taken
+   * nowFn is injectable purely so this is unit-testable without sleeping.
+   */
+  function createPauseClock(startedAtMs, nowFn) {
+    var now = isFn(nowFn) ? nowFn : function () { return Date.now(); };
+    var startedAt = numOr(startedAtMs, now());
+    var pausedAt = 0;   /* 0 while running, otherwise the instant we paused */
+    var bankedMs = 0;   /* every COMPLETED paused interval, added up */
+
+    /* While paused the clock reads the instant of the pause, so every derived
+       value is frozen without a single timer being touched. */
+    function endMark() { return pausedAt || now(); }
+    function pausedMs() { return bankedMs + (pausedAt ? Math.max(0, now() - pausedAt) : 0); }
+    function elapsedMs() { return Math.max(0, endMark() - startedAt - bankedMs); }
+    function sinceMs(markMs, markBankedMs) {
+      return Math.max(0, endMark() - numOr(markMs, endMark()) - (bankedMs - numOr(markBankedMs, 0)));
+    }
+
+    return {
+      startedAt: function () { return startedAt; },
+      isPaused: function () { return !!pausedAt; },
+      pause: function () { if (!pausedAt) pausedAt = now(); return true; },
+      resume: function () {
+        if (!pausedAt) return false;
+        bankedMs = bankedMs + Math.max(0, now() - pausedAt);
+        pausedAt = 0;
+        return true;
+      },
+      bankedMs: function () { return bankedMs; },
+      pausedMs: pausedMs,
+      pausedSec: function () { return Math.floor(pausedMs() / 1000); },
+      elapsedMs: elapsedMs,
+      elapsedSec: function () { return Math.floor(elapsedMs() / 1000); },
+      sinceMs: sinceMs,
+      sinceSec: function (markMs, markBankedMs) { return Math.floor(sinceMs(markMs, markBankedMs) / 1000); }
+    };
+  }
+
+  /* ---- the shared pause convention -----------------------------------------
+   * Identical in shape to the hub in js/sim-engine.js, on purpose: every
+   * simulation engine in the app answers the same verbs, so the shell, a
+   * parent screen or a test can pause whatever is running without knowing
+   * which engine is on screen.
+   *
+   *   pauseRun(reason) resumeRun() togglePauseRun()
+   *   isRunPaused()    canPauseRun()
+   *   onPauseChange(cb) -> off()      cb(paused, snapshot)
+   *   pauseStats() -> {active,paused,pauseCount,pausedMs,pausedSec,mode}
+   *
+   * Bundled as `.pauseControl` and registered in the shared `window.MMPause`
+   * registry under this module's id, so MMPause.pauseAll() reaches it too.
+   * ------------------------------------------------------------------------ */
+  function createPauseHub(id) {
+    var host = null;
+    var subs = [];
+
+    function stats() {
+      if (!host) {
+        return { active: false, paused: false, pauseCount: 0, pausedMs: 0, pausedSec: 0, mode: '' };
+      }
+      return host.stats();
+    }
+    function emit() {
+      var snapshot = stats();
+      subs.slice().forEach(function (fn) {
+        try { fn(!!snapshot.paused, snapshot); } catch (e) { /* a bad subscriber is not our problem */ }
+      });
+    }
+
+    var hub = {
+      id: str(id) || 'sim',
+      /* every verb answers "is a run paused now?", and every one of them is
+         harmless with nothing mounted */
+      pauseRun: function (reason) { return !!(host && host.pause(reason)); },
+      resumeRun: function () { return !!(host && host.resume()); },
+      togglePauseRun: function () { return !!(host && host.toggle()); },
+      isRunPaused: function () { return !!(host && host.isPaused()); },
+      canPauseRun: function () { return !!(host && host.canPause()); },
+      pauseStats: stats,
+      onPauseChange: function (cb) {
+        if (!isFn(cb)) return function () { /* noop */ };
+        subs.push(cb);
+        return function () {
+          subs = subs.filter(function (f) { return f !== cb; });
+        };
+      },
+      /* used by the mounted runner only */
+      _attach: function (h) {
+        host = h; emit();
+        return function () { if (host === h) { host = null; emit(); } };
+      },
+      _changed: emit
+    };
+
+    hub.pauseControl = {
+      id: hub.id,
+      isActive: function () { return !!host; },
+      isPaused: hub.isRunPaused,
+      canPause: hub.canPauseRun,
+      pause: hub.pauseRun,
+      resume: hub.resumeRun,
+      toggle: hub.togglePauseRun,
+      stats: hub.pauseStats,
+      subscribe: hub.onPauseChange
+    };
+    return hub;
+  }
+
+  function registerPauseControl(ctl) {
+    try {
+      var reg = window.MMPause;
+      if (!reg || typeof reg !== 'object') { reg = window.MMPause = {}; }
+      if (!reg.controls || typeof reg.controls !== 'object') { reg.controls = {}; }
+      if (!isFn(reg.register)) {
+        reg.register = function (c) { if (c && c.id) { reg.controls[c.id] = c; } return c; };
+        reg.get = function (k) { return obj(reg.controls)[str(k)] || null; };
+        reg.all = function () {
+          return Object.keys(obj(reg.controls)).map(function (k) { return reg.controls[k]; });
+        };
+        reg.pauseAll = function (why) {
+          reg.all().forEach(function (c) { try { c.pause(why); } catch (e) { /* noop */ } });
+        };
+        reg.resumeAll = function () {
+          reg.all().forEach(function (c) { try { c.resume(); } catch (e) { /* noop */ } });
+        };
+      }
+      reg.register(ctl);
+    } catch (e) { /* a registry we cannot reach is not worth a broken mode */ }
+  }
+
+  var aiPause = createPauseHub('ai-scenario');
+  registerPauseControl(aiPause.pauseControl);
+
+  /**
+   * isTypingTarget(el) - the guard on the keyboard shortcut.
+   * This mode has a chat box, an SBAR box and (via SBARRecorder) other fields,
+   * so Space must never be stolen from a student mid-sentence.
+   */
+  function isTypingTarget(el) {
+    var n = el;
+    if (!n || typeof n !== 'object') return false;
+    try {
+      if (n.isContentEditable) return true;
+      var tag = str(n.tagName).toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'option') return true;
+      var role = isFn(n.getAttribute) ? str(n.getAttribute('role')).toLowerCase() : '';
+      if (role === 'textbox' || role === 'searchbox' || role === 'combobox') return true;
+      /* a field inside a component we do not own (SBARRecorder) still counts */
+      if (isFn(n.closest) && n.closest('input,textarea,select,[contenteditable="true"]')) return true;
+    } catch (e) { return false; }
+    return false;
+  }
+
+  /* ==========================================================================
    * 1. CONSTANTS
    * ======================================================================== */
 
@@ -1387,6 +1567,8 @@
       turns: numOr(r.turnCount, 0),
       hintsUsed: numOr(r.hintsUsed, 0),
       timeSec: numOr(r.timeSec, 0),
+      pausedSec: numOr(r.pausedSec, 0),
+      pauseCount: numOr(r.pauseCount, 0),
       missedCritical: arr(result.missedCritical).map(function (i) { return str(i.action); }),
       harmfulActions: arr(r.harmfulActions).slice(),
       difficulty: str(r.difficultyId),
@@ -1496,6 +1678,32 @@
       '.ais-escalate:active{transform:scale(.975)}',
       '.ais-escalate:disabled{opacity:.45;cursor:not-allowed}',
       '.ais-escalate:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
+
+      /* ---- pause: the state has to be unmistakable, not a subtle tint ---- */
+      '.ais-pause{margin-top:6px;width:100%;min-height:36px;padding:6px var(--sp-2);',
+      'border:1px solid var(--border);border-radius:var(--r-md);background:var(--bg);color:var(--text2);',
+      'font-size:var(--fs-2xs);font-weight:800;letter-spacing:.06em;text-transform:uppercase;',
+      'cursor:pointer;white-space:nowrap;',
+      'transition:border-color var(--dur-fast) ease,transform var(--dur-fast) ease}',
+      '.ais-pause:hover{border-color:var(--accent);color:var(--text)}',
+      '.ais-pause:active{transform:scale(.975)}',
+      '.ais-pause:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
+      '.ais-pause:disabled{opacity:.45;cursor:not-allowed}',
+      '.ais-pause.on{border-color:var(--accent);background:var(--accent);color:#fff}',
+      '.ais-pausebar{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;',
+      'border:2px solid var(--accent);border-radius:var(--r-md);padding:var(--sp-2) var(--sp-3);',
+      'background:color-mix(in srgb,var(--accent) 16%,var(--bg));color:var(--text)}',
+      '.ais-pausebar b{font-size:var(--fs-md);font-weight:800;letter-spacing:.16em;color:var(--text)}',
+      '.ais-pausebar span{font-size:var(--fs-xs);color:var(--text2);flex:1 1 180px;line-height:1.5}',
+      '.ais-pausebar .ais-pause{margin-top:0;width:auto;flex:0 0 auto}',
+      /* Everything that is not the pause control is visibly out of play. The
+         disabled attributes on the controls are the real lockout - this is the
+         part the student can see from across the room. */
+      '.ais-wrap.is-paused .ais-log,.ais-wrap.is-paused .ais-act,.ais-wrap.is-paused .ais-chart{',
+      'opacity:.34;pointer-events:none;filter:grayscale(.55)}',
+      '.ais-wrap.is-paused .ais-vitals,.ais-wrap.is-paused .ais-mon-text,',
+      '.ais-wrap.is-paused .ais-stab{opacity:.5}',
+      '.ais-wrap.is-paused .ais-escalate{opacity:.45;pointer-events:none}',
       '.ais-allergy{font-size:var(--fs-xs);font-weight:800;letter-spacing:.05em;color:var(--red-fg);',
       'border:1px solid var(--red);border-radius:var(--r-sm);padding:5px var(--sp-2);',
       'background:color-mix(in srgb,var(--red) 10%,var(--bg))}',
@@ -1724,9 +1932,9 @@
       '.ais-v.flash{animation:none;box-shadow:inset 3px 0 0 0 var(--accent)}',
       '.ais-dots i{animation:none;opacity:.7}',
       '.ais-turn{transition:none}',
-      '.ais-pick,.ais-opt,.ais-mini,.ais-seg button,.ais-escalate{transition:none}',
-      '.ais-pick:active,.ais-opt:active,.ais-mini:active,.ais-seg button:active,.ais-escalate:active{',
-      'transform:none;background:var(--surface3)}',
+      '.ais-pick,.ais-opt,.ais-mini,.ais-seg button,.ais-escalate,.ais-pause{transition:none}',
+      '.ais-pick:active,.ais-opt:active,.ais-mini:active,.ais-seg button:active,.ais-escalate:active,',
+      '.ais-pause:active{transform:none;background:var(--surface3)}',
       '}'
     ].join('');
     var st = document.createElement('style');
@@ -2328,6 +2536,13 @@
       phase: 'arrival',
       elapsedSec: 0,
 
+      /* Paused time is tracked SEPARATELY from scenario time. elapsedSec and
+         timeSec are both wall time minus this, so a student who steps away
+         mid-run is not scored as though they dithered at the bedside. */
+      pausedMs: 0,
+      pausedSec: 0,
+      pauseCount: 0,
+
       stability: d.baseline,
       lastDelta: 0,
       trend: 'stable',
@@ -2658,7 +2873,11 @@
   /** finalizeRun(run, scenario) -> {run, result} */
   function finalizeRun(run, scenario) {
     var next = cloneRun(run);
-    next.timeSec = Math.round((Date.now() - numOr(next.startedAt, Date.now())) / 1000);
+    /* Scenario time, not wall time: every second the run spent paused is
+       subtracted, and kept on the record in its own field. */
+    var wall = Math.max(0, Date.now() - numOr(next.startedAt, Date.now()));
+    next.pausedSec = Math.round(numOr(next.pausedMs, 0) / 1000);
+    next.timeSec = Math.max(0, Math.round((wall - numOr(next.pausedMs, 0)) / 1000));
 
     var perf = buildPerf(next, scenario);
     var base = scoreWithEngine(scenario, perf, 'practice');
@@ -2951,6 +3170,10 @@
     var sbarText = sbarHook[0], setSbarText = sbarHook[1];
     var sbarBusyHook = useState(false);
     var sbarBusy = sbarBusyHook[0], setSbarBusy = sbarBusyHook[1];
+    var pausedHook = useState(false);
+    var paused = pausedHook[0], setPaused = pausedHook[1];
+    var pausedSecHook = useState(0);
+    var pausedSec = pausedSecHook[0], setPausedSec = pausedSecHook[1];
 
     /* --- per-request wait state ------------------------------------------
      * `elapsed` above is the RUN clock. This is the clock for the ONE call
@@ -2987,6 +3210,25 @@
        the dashboard for one patient. */
     var finishedRef = useRef(false);
 
+    /* --- pause -----------------------------------------------------------
+     * `paused` is render state; pausedRef is the synchronous mirror, for the
+     * same reason inFlightRef exists - a promise settling, a keypress and a
+     * click can all be handled inside one frame, and every one of them has to
+     * see the CURRENT answer, not the last rendered one.
+     *
+     * heldRef is the in-flight turn's landing pad. A reply that arrives while
+     * the sim is paused is neither dropped nor applied: the whole apply step
+     * is closed over and parked here until resume, so a paused sim can never
+     * mutate patient state.
+     *
+     * speakQ is the TTS queue - see speakTurn().
+     * ------------------------------------------------------------------- */
+    var pausedRef = useRef(false);
+    var heldRef = useRef(null);
+    var speakQRef = useRef(null);
+    var clockRef = useRef(null);
+    if (!clockRef.current) clockRef.current = createPauseClock(runRef.current.startedAt);
+
     var vsup = isFn(voiceApi().isSupported) ? voiceApi().isSupported() : { stt: false, tts: false };
 
     function commit(next) {
@@ -3004,33 +3246,49 @@
       aliveRef.current = true;
       return function () {
         aliveRef.current = false;
+        /* Drop the speech queue and any turn parked by a pause. Both are
+           closures over this component; letting either survive the unmount is
+           how a stale world reaches into the next one. */
+        speakQRef.current = null;
+        heldRef.current = null;
+        pausedRef.current = false;
         if (isFn(voiceApi().stopSpeaking)) { try { voiceApi().stopSpeaking(); } catch (e) { /* noop */ } }
       };
     }, []);
 
-    /* elapsed clock */
+    /* elapsed clock - SCENARIO time, which is wall time minus paused time.
+       The interval keeps its own rhythm and simply stops reporting while
+       paused; because the value it reports is computed by the pause clock and
+       not accumulated, resume continues from the frozen number rather than
+       jumping forward by the length of the pause. */
     useEffect(function () {
-      var t0 = runRef.current.startedAt;
       var id = setInterval(function () {
         if (!aliveRef.current) return;
-        var s = Math.floor((Date.now() - t0) / 1000);
+        /* Paused: scenario time does not move, but the paused counter does -
+           the student should be able to see what they are not being charged
+           for. Nothing here touches the run. */
+        if (pausedRef.current) { setPausedSec(clockRef.current.pausedSec()); return; }
+        var s = clockRef.current.elapsedSec();
         runRef.current.elapsedSec = s;
         setElapsed(s);
       }, 1000);
       return function () { clearInterval(id); };
     }, []);
 
-    /* per-request wait clock - runs on its own interval, never on token arrival */
+    /* per-request wait clock - runs on its own interval, never on token arrival.
+       Also measured in unpaused time, so a paused student does not come back to
+       a request that appears to have taken four minutes. */
     useEffect(function () {
       if (!busy) {
         setWaitSec(0);
         return undefined;
       }
       var t0 = Date.now();
+      var banked = clockRef.current.bankedMs();
       setWaitSec(0);
       var id = setInterval(function () {
-        if (!aliveRef.current) return;
-        setWaitSec(Math.floor((Date.now() - t0) / 1000));
+        if (!aliveRef.current || pausedRef.current) return;
+        setWaitSec(clockRef.current.sinceSec(t0, banked));
       }, 1000);
       return function () { clearInterval(id); };
     }, [busy, reqId]);
@@ -3042,32 +3300,219 @@
       }
     }, [run.turns.length, busy]);
 
-    /* ------------------------------------------------------------- speech */
-    function speakTurn(turn) {
-      if (!voiceOn || !vsup.tts || !isFn(voiceApi().speak)) return;
+    /* ------------------------------------------------------------- speech
+     * MM.voice publishes speak(), stopSpeaking() and isSpeaking() - and that
+     * is the whole surface. Neither engine behind it (browser speechSynthesis
+     * or the ElevenLabs <audio> element) exposes a pause through this API, and
+     * voice.js is not ours to change. So pausing STOPS the clip outright, and
+     * the queue below remembers which line was cut off: resume re-speaks THAT
+     * one line from its start and then continues with the rest of the turn.
+     * One line repeats; the turn is never replayed from the top.
+     *
+     * The queue is also what makes "stop talking" reliable - the old promise
+     * chain kept firing the next job after a stopSpeaking(), because a
+     * cancelled clip resolves exactly like a finished one.
+     * ------------------------------------------------------------------- */
+    function runSpeakQueue() {
+      var q = speakQRef.current;
+      if (!q || pausedRef.current || !aliveRef.current) return;
+      if (q.i >= q.jobs.length) { speakQRef.current = null; return; }
       var speak = voiceApi().speak;
+      if (!isFn(speak)) { speakQRef.current = null; return; }
+
+      var job = q.jobs[q.i];
+      var pr;
+      try { pr = speak(job.text, job.opts); } catch (e) { pr = null; }
+
+      function step() {
+        if (!aliveRef.current) return;
+        if (speakQRef.current !== q) return;   /* a newer turn took the floor */
+        if (pausedRef.current) return;         /* cut off mid-clip: q.i stays put */
+        q.i = q.i + 1;
+        runSpeakQueue();
+      }
+      Promise.resolve(pr).then(step, step);
+    }
+
+    function speakJobs(jobs) {
+      if (!voiceOn || !vsup.tts || !isFn(voiceApi().speak)) { speakQRef.current = null; return; }
+      if (!arr(jobs).length) { speakQRef.current = null; return; }
+      speakQRef.current = { jobs: arr(jobs).slice(), i: 0 };
+      runSpeakQueue();
+    }
+
+    function stopSpeech(forget) {
+      var v = voiceApi();
+      if (isFn(v.stopSpeaking)) { try { v.stopSpeaking(); } catch (e) { /* noop */ } }
+      if (forget) speakQRef.current = null;
+    }
+
+    function speakTurn(turn) {
+      var who = SPEAKERS[turn.speaker];
       var jobs = [];
       if (turn.patientSpeech) {
-        jobs.push(function () {
-          return speak(turn.patientSpeech, { voice: SPEAKERS[turn.speaker] ? SPEAKERS[turn.speaker].voice : 'patient',
-            rate: 0.95, pitch: 1.02, force: true });
+        jobs.push({
+          text: turn.patientSpeech,
+          opts: { voice: who ? who.voice : 'patient', rate: 0.95, pitch: 1.02, force: true }
         });
       } else if (turn.speaker !== 'instructor' && turn.narration) {
-        jobs.push(function () {
-          return speak(turn.narration, { voice: SPEAKERS[turn.speaker] ? SPEAKERS[turn.speaker].voice : 'nurse',
-            rate: 1, pitch: 1, force: true });
+        jobs.push({
+          text: turn.narration,
+          opts: { voice: who ? who.voice : 'nurse', rate: 1, pitch: 1, force: true }
         });
       }
       if (turn.feedbackOnLastAction) {
-        jobs.push(function () {
-          return speak(turn.feedbackOnLastAction, { voice: 'instructor', rate: 0.92, pitch: 0.96, force: true });
+        jobs.push({
+          text: turn.feedbackOnLastAction,
+          opts: { voice: 'instructor', rate: 0.92, pitch: 0.96, force: true }
         });
       }
-      var chain = Promise.resolve();
-      jobs.forEach(function (j) {
-        chain = chain.then(function () { return aliveRef.current ? j() : null; })['catch'](function () { return null; });
-      });
+      speakJobs(jobs);
     }
+
+    /* --------------------------------------------------------------- pause */
+
+    /* A finished run has nothing left to freeze, and pausing the debrief would
+       only be a way to get stuck. */
+    function canPause() {
+      return !!aliveRef.current && !finishedRef.current && runRef.current.phase !== 'complete';
+    }
+
+    function pauseStatsNow() {
+      var c = clockRef.current;
+      return {
+        active: canPause(), paused: !!pausedRef.current, mode: 'ai-live',
+        pauseCount: numOr(runRef.current.pauseCount, 0),
+        pausedMs: c.pausedMs(),
+        pausedSec: c.pausedSec(),
+        simSec: c.elapsedSec(),
+        /* unique to this mode: a settled AI turn is parked and waiting */
+        holding: !!heldRef.current
+      };
+    }
+
+    function doPause(reason) {
+      if (pausedRef.current) return true;
+      if (!canPause()) return false;
+
+      /* the ref goes first: everything else - the speak() promise that is
+         about to settle, an AI reply landing in the same tick - must see the
+         paused state, not the state React last rendered */
+      pausedRef.current = true;
+      clockRef.current.pause();
+      runRef.current.pauseCount = numOr(runRef.current.pauseCount, 0) + 1;
+
+      stopSpeech(false);                         /* keep the queue's place */
+      var v = voiceApi();
+      if (isFn(v.stopListening)) { try { v.stopListening(); } catch (e) { /* noop */ } }
+
+      setPaused(true);
+      setPausedSec(clockRef.current.pausedSec());
+      announce((str(reason) ? str(reason) + ' ' : '') +
+        'Simulation paused. The clock, the patient and your controls are frozen.', false);
+      aiPause._changed();
+      return true;
+    }
+
+    function doResume() {
+      if (!pausedRef.current) return false;
+      pausedRef.current = false;
+      clockRef.current.resume();
+
+      var pms = clockRef.current.pausedMs();
+      runRef.current.pausedMs = pms;
+      runRef.current.pausedSec = Math.floor(pms / 1000);
+      runRef.current.elapsedSec = clockRef.current.elapsedSec();
+      setPaused(false);
+      setPausedSec(clockRef.current.pausedSec());
+      setElapsed(clockRef.current.elapsedSec());
+      announce('Simulation resumed. The clock picks up exactly where it stopped - ' +
+        'no time was skipped forward.', false);
+      aiPause._changed();
+
+      /* A turn that settled during the pause lands NOW - in the same order,
+         with the same freshness check, as if the student had never paused. */
+      var held = heldRef.current;
+      heldRef.current = null;
+      if (held) {
+        try { held(); } catch (e) { /* an apply that throws must not strand the run */ }
+      } else {
+        runSpeakQueue();
+      }
+      return true;
+    }
+
+    function togglePause() {
+      if (pausedRef.current) { doResume(); return false; }
+      return doPause();
+    }
+
+    /**
+     * holdOrRun(fn) - the one rule for every async result that mutates the run.
+     * Running: apply it now. Paused: park it, in arrival order, and apply it
+     * on resume. Nothing is ever dropped, and nothing lands mid-pause.
+     */
+    function holdOrRun(fn) {
+      if (!isFn(fn)) return;
+      if (!pausedRef.current) { fn(); return; }
+      var prev = heldRef.current;
+      heldRef.current = !isFn(prev) ? fn : function () {
+        try { prev(); } catch (e) { /* one bad apply must not eat the next */ }
+        fn();
+      };
+    }
+
+    /* The controller the outside world drives. Rebuilt every render so the
+       closures are current; the effect below registers a stable façade over
+       it exactly once, and takes it down on unmount. */
+    var ctlRef = useRef(null);
+    ctlRef.current = {
+      pause: doPause,
+      resume: function () { doResume(); return !!pausedRef.current; },
+      toggle: togglePause,
+      isPaused: function () { return !!pausedRef.current; },
+      canPause: canPause,
+      stats: pauseStatsNow
+    };
+
+    useEffect(function () {
+      /* The hub calls through the ref, so it always sees the current closures
+         rather than the ones from the render that happened to mount. */
+      var detach = aiPause._attach({
+        pause: function (r) { return ctlRef.current.pause(r); },
+        resume: function () { return ctlRef.current.resume(); },
+        toggle: function () { return ctlRef.current.toggle(); },
+        isPaused: function () { return ctlRef.current.isPaused(); },
+        canPause: function () { return ctlRef.current.canPause(); },
+        stats: function () { return ctlRef.current.stats(); }
+      });
+
+      /* Space or P toggles - but NEVER out from under a student who is typing
+         into the chat box, the SBAR box or anything else with a caret in it. */
+      function onKey(e) {
+        if (!e || e.defaultPrevented) return;
+        if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+        var k = str(e.key);
+        var isSpace = (k === ' ' || k === 'Spacebar' || e.keyCode === 32);
+        var isP = (k === 'p' || k === 'P');
+        if (!isSpace && !isP) return;
+        if (isTypingTarget(e.target)) return;
+        var c = ctlRef.current;
+        if (!c || (!c.isPaused() && !c.canPause())) return;
+        /* Space would otherwise scroll the page and re-fire whatever button
+           still has focus - which is the option the student just took. */
+        if (isFn(e.preventDefault)) e.preventDefault();
+        c.toggle();
+      }
+
+      var doc = (typeof document !== 'undefined') ? document : null;
+      if (doc && isFn(doc.addEventListener)) doc.addEventListener('keydown', onKey, false);
+
+      return function () {
+        if (isFn(detach)) detach();
+        if (doc && isFn(doc.removeEventListener)) doc.removeEventListener('keydown', onKey, false);
+      };
+    }, []);
 
     /* --------------------------------------------------------- AI plumbing */
 
@@ -3125,6 +3570,30 @@
         }
       }).then(function (res) {
         if (!fresh()) return;
+        /* PAUSED: the request already cost the student an AI message, so it is
+           not thrown away - but a paused sim may not mutate patient state, so
+           the entire apply step is parked and replayed on resume. */
+        holdOrRun(function () { applyTurn(res); });
+      }, function (e) {
+        if (!fresh()) return;
+        holdOrRun(function () { applyError(e); });
+      });
+
+      function applyError(e) {
+        if (!fresh()) return;
+        idle();
+        setErr({
+          code: (e && e.code) ? e.code : 'server',
+          opening: isOpening,
+          message: errText(e)
+        });
+      }
+
+      function applyTurn(res) {
+        /* Re-checked here and not only at settle time: a held turn applies
+           later than it arrived, and anything that bumped the request id in
+           between still wins. */
+        if (!fresh()) return;
 
         /* An opening that parsed but carries no patient is just as unplayable
            as one that did not parse at all - same retry, same error. */
@@ -3174,15 +3643,7 @@
         speakTurn(turn);
 
         if (next.phase === 'complete') finish(next);
-      }, function (e) {
-        if (!fresh()) return;
-        idle();
-        setErr({
-          code: (e && e.code) ? e.code : 'server',
-          opening: isOpening,
-          message: errText(e)
-        });
-      });
+      }
     }
 
     /* opening turn */
@@ -3201,8 +3662,9 @@
          re-rendered the disabled buttons, so the authoritative check is the
          ref. Without it a double-tap on a phone sent two turns for one action:
          two AI messages spent, two commits, and a transcript that skipped a
-         beat. */
-      if (!body || busy || inFlightRef.current) return;
+         beat. The paused check is the same argument: `disabled` on a button is
+         cosmetic, THIS is the lockout. */
+      if (!body || busy || inFlightRef.current || pausedRef.current) return;
 
       /* free data checks never cost a turn and never cost points */
       if (mode !== 'choice' && RE_FREE_VITALS.test(body)) { clearDraft(); showVitals(); return; }
@@ -3214,13 +3676,17 @@
       sendTurn(stateBlock(current, body, mode), { text: body, mode: mode }, TURN_TEMP);
     }
 
+    /* Reading the chart is free but it IS graded (chartTabsViewed feeds the
+       assessment score), so it is an action like any other while paused. */
     function creditChart(tab) {
+      if (pausedRef.current) return;
       var next = cloneRun(runRef.current);
       next.chartTabsViewed[tab] = true;
       commit(next);
     }
 
     function showVitals() {
+      if (pausedRef.current) return;
       var v = runRef.current.vitals;
       var next = pushFreeNote(runRef.current, 'monitor',
         'You glance at the monitor and the flowsheet. Current set: ' + (vitalsLine(v) || 'no numbers charted yet') + '.',
@@ -3231,12 +3697,13 @@
     }
 
     function openChart() {
+      if (pausedRef.current) return;
       setShowChart(!showChart);
       if (!showChart) creditChart('chart');
     }
 
     function requestHint() {
-      if (hint.busy || busy) return;
+      if (hint.busy || busy || pausedRef.current) return;
       var tier = Math.min(3, numOr(hint.tier, 0) + 1);
       setHint({ open: true, busy: true, text: '', tier: tier });
 
@@ -3268,15 +3735,16 @@
           : Promise.reject({ code: 'ai-disabled' });
       } catch (e) { pr = Promise.reject(e); }
 
+      /* A hint costs points, so it is patient-state too: held while paused. */
       Promise.resolve(pr).then(function (text) {
         if (!aliveRef.current) return;
         var body = str(text).trim() || (last && last.hint ? str(last.hint) : 'Go back to your ABCs and reassess.');
-        applyHint(tier, body);
+        holdOrRun(function () { applyHint(tier, body); });
       }, function () {
         if (!aliveRef.current) return;
         var body = (last && last.hint) ? str(last.hint)
           : 'Go back to your ABCs. What is the single finding here that could kill this patient soonest?';
-        applyHint(tier, body);
+        holdOrRun(function () { applyHint(tier, body); });
       });
     }
 
@@ -3286,20 +3754,21 @@
       next.hintLog.push({ turn: next.turnCount, tier: tier, text: body });
       commit(next);
       setHint({ open: false, busy: false, text: body, tier: tier });
-      if (voiceOn && vsup.tts && isFn(voiceApi().speak)) {
-        try { voiceApi().speak(body, { voice: 'instructor', rate: 0.92, pitch: 0.96, force: true }); } catch (e) { /* noop */ }
-      }
+      /* through the queue, so a pause stops it and a resume picks it up */
+      speakJobs([{ text: body, opts: { voice: 'instructor', rate: 0.92, pitch: 0.96, force: true } }]);
     }
 
     function toggleVoice() {
+      if (pausedRef.current) return;
       var on = !voiceOn;
       if (on && isFn(voiceApi().prime)) { try { voiceApi().prime(); } catch (e) { /* noop */ } }
-      if (!on && isFn(voiceApi().stopSpeaking)) { try { voiceApi().stopSpeaking(); } catch (e) { /* noop */ } }
+      if (!on) stopSpeech(true);
       setVoiceOn(on);
       lsSet(LS_VOICE, on ? '1' : '0');
     }
 
     function changeMode(id) {
+      if (pausedRef.current) return;
       setInputMode(id);
       lsSet(LS_INPUT_MODE, id);
     }
@@ -3328,11 +3797,14 @@
       return done;
     }
 
-    function finishWithSbar(sbarResult) { return finish(null, sbarResult || null); }
+    function finishWithSbar(sbarResult) {
+      if (pausedRef.current) return null;
+      return finish(null, sbarResult || null);
+    }
 
     function submitTypedSbar() {
       var body = str(sbarText).trim();
-      if (!body || sbarBusy || finishedRef.current) return;
+      if (!body || sbarBusy || finishedRef.current || pausedRef.current) return;
       setSbarBusy(true);
       var hs = handoffScenario(runRef.current, scenario);
       var ai = aiApi();
@@ -3342,24 +3814,30 @@
       try {
         pr = isFn(ai.gradeSBAR) ? ai.gradeSBAR(hs, body) : Promise.reject(new Error('no grader'));
       } catch (e) { pr = Promise.reject(e); }
+      /* A grade that lands during a pause is held exactly like a turn: the
+         report is not regraded and not lost, it simply finishes on resume. */
       Promise.resolve(pr).then(function (res) {
         if (!aliveRef.current) return;
         var r = obj(res);
-        finishWithSbar({
-          transcript: body, score: numOr(r.score, 0), maxScore: numOr(r.maxScore, 20),
-          pct: numOr(r.pct, Math.round((numOr(r.score, 0) / 20) * 100)),
-          breakdown: obj(r.breakdown), missing: arr(r.missing), feedback: str(r.feedback)
+        holdOrRun(function () {
+          finish(null, {
+            transcript: body, score: numOr(r.score, 0), maxScore: numOr(r.maxScore, 20),
+            pct: numOr(r.pct, Math.round((numOr(r.score, 0) / 20) * 100)),
+            breakdown: obj(r.breakdown), missing: arr(r.missing), feedback: str(r.feedback)
+          });
         });
       }, function () {
         if (!aliveRef.current) return;
         /* no grader: give partial credit for a substantive report rather than zero */
         var words = body.split(/\s+/).length;
         var pct = clamp(Math.round((words / 90) * 100), 10, 70);
-        finishWithSbar({
-          transcript: body, score: Math.round((pct / 100) * 20), maxScore: 20, pct: pct,
-          breakdown: {}, missing: [],
-          feedback: 'The AI grader was unavailable, so this report was credited on length and structure only. ' +
-                    'Compare it against the reference SBAR in the debrief.'
+        holdOrRun(function () {
+          finish(null, {
+            transcript: body, score: Math.round((pct / 100) * 20), maxScore: 20, pct: pct,
+            breakdown: {}, missing: [],
+            feedback: 'The AI grader was unavailable, so this report was credited on length and structure only. ' +
+                      'Compare it against the reference SBAR in the debrief.'
+          });
         });
       });
     }
@@ -3390,20 +3868,44 @@
     var stabZone = zoneFor(numOr(run.stability, 0));
     var zoneMeta = ZONE_META[stabZone] || ZONE_META.stable;
     var showEscalate = zoneMeta.rank >= 2 && !run.escalated && run.phase !== 'handoff';
+    /* One word for "the student may not act right now", used by every control
+       on the screen. `busy` dims; `paused` freezes. */
+    var locked = busy || paused;
+
+    var pauseBtn = ce('button', {
+      key: 'pause', type: 'button',
+      className: 'ais-pause' + (paused ? ' on' : ''),
+      'aria-pressed': paused ? 'true' : 'false',
+      disabled: !paused && !canPause(),
+      title: 'Space or P',
+      onClick: togglePause
+    }, paused ? '▶ Resume (Space)' : '❚❚ Pause (Space)');
 
     var strip = ce('div', { className: 'ais-strip z-' + stabZone, key: 'strip' }, [
+      paused
+        ? ce('div', { className: 'ais-pausebar', key: 'pb', role: 'status', 'aria-live': 'polite' }, [
+            ce('b', { key: 'b' }, 'PAUSED'),
+            ce('span', { key: 's' },
+              'The clock, the patient and every control are frozen. Paused for ' + fmtClock(pausedSec) +
+              ' so far - paused time is tracked separately and is not scored against you.' +
+              (busy ? ' A reply is on its way and is being held until you resume.' : '')),
+            pauseBtn
+          ])
+        : null,
       ce('div', { className: 'ais-strip-row', key: 'r1' }, [
         ce(StabilityMeter, {
           key: 's', stability: run.stability, trend: run.trend, delta: run.lastDelta
         }),
         ce('div', { className: 'ais-clock', key: 'c' }, [
           ce('b', { key: 'a' }, fmtClock(elapsed)),
-          ce('span', { key: 'b' }, 'Turn ' + Math.max(1, run.turnCount) + ' of ' + TURN_CAP)
+          ce('span', { key: 'b' }, 'Turn ' + Math.max(1, run.turnCount) + ' of ' + TURN_CAP),
+          pausedSec ? ce('span', { key: 'p' }, 'Paused ' + fmtClock(pausedSec)) : null,
+          paused ? null : pauseBtn
         ])
       ]),
       showEscalate
         ? ce('button', {
-            key: 'esc', type: 'button', className: 'ais-escalate', disabled: busy,
+            key: 'esc', type: 'button', className: 'ais-escalate', disabled: locked,
             onClick: function () { takeAction('Activate the rapid response team', 'choice'); }
           }, 'Call the rapid response team')
         : null,
@@ -3426,7 +3928,7 @@
             ' · ' + (str(chart.codeStatus) || 'Code status not set'))
         : null,
       ce('button', {
-        className: 'ais-mini', key: 'id', type: 'button', onClick: openChart,
+        className: 'ais-mini', key: 'id', type: 'button', onClick: openChart, disabled: paused,
         'aria-expanded': showChart ? 'true' : 'false'
       }, [str(chart.name) ||
             /* No chart and no call in flight means the opening failed. Saying
@@ -3475,8 +3977,8 @@
           : str(err.message) + ' Your run is intact - nothing has been lost.'),
       ce('div', { className: 'ais-row', key: 'b' }, [
         ce('button', {
-          key: 'r', type: 'button', className: 'btn btn-primary btn-sm',
-          onClick: function () { if (isFn(retryRef.current)) retryRef.current(); }
+          key: 'r', type: 'button', className: 'btn btn-primary btn-sm', disabled: paused,
+          onClick: function () { if (paused) return; if (isFn(retryRef.current)) retryRef.current(); }
         }, openingFailed ? 'Try admitting the patient again' : 'Retry this turn'),
         (openingFailed || err.code === 'quota-exceeded' || err.code === 'tier-denied' || err.code === 'no-auth')
           ? ce('button', {
@@ -3494,7 +3996,7 @@
       options.length
         ? options.map(function (o) {
             return ce('button', {
-              key: o.id, type: 'button', className: 'ais-opt', disabled: busy,
+              key: o.id, type: 'button', className: 'ais-opt', disabled: locked,
               onClick: function () { takeAction(o.text, 'choice'); }
             }, [
               ce('span', { className: 'ltr', key: 'l' }, o.id),
@@ -3507,7 +4009,7 @@
 
     var textUI = ce('div', { className: 'ais-col', key: 'text' }, [
       ce('textarea', {
-        key: 'ta', className: 'ais-ta', value: draft, disabled: busy,
+        key: 'ta', className: 'ais-ta', value: draft, disabled: locked,
         placeholder: 'What do you do next? Say it the way you would to your preceptor - "auscultate all lung fields and check work of breathing".',
         'aria-label': 'Your next nursing action',
         onChange: function (e) { setDraft(e.target.value); },
@@ -3518,7 +4020,7 @@
       ce('div', { className: 'ais-row', key: 'b' }, [
         ce('button', {
           key: 'go', type: 'button', className: 'btn btn-primary btn-sm',
-          disabled: busy || !str(draft).trim(),
+          disabled: locked || !str(draft).trim(),
           onClick: function () { takeAction(draft, 'text'); }
         }, 'Take this action'),
         ce('span', { className: 'ais-lab', key: 'h' }, 'Ctrl+Enter also submits')
@@ -3529,8 +4031,8 @@
     var voiceUI = ce('div', { className: 'ais-col', key: 'voice' }, [
       (vsup.stt && isFn(VB))
         ? ce(VB, {
-            key: 'vb', size: 'lg', continuous: false, disabled: busy,
-            label: busy ? 'Working...' : 'Hold the mic and say your action',
+            key: 'vb', size: 'lg', continuous: false, disabled: locked,
+            label: paused ? 'Paused' : (busy ? 'Working...' : 'Hold the mic and say your action'),
             onInterim: function (text) { setInterim(str(text)); },
             onTranscript: function (text) {
               var t = str(text).trim();
@@ -3553,18 +4055,20 @@
       : null;
 
     var freeRow = ce('div', { className: 'ais-free', key: 'free' }, [
-      ce('button', { key: 'v', type: 'button', className: 'ais-mini', onClick: showVitals, disabled: busy },
+      ce('button', { key: 'v', type: 'button', className: 'ais-mini', onClick: showVitals, disabled: locked },
         'What are my vitals again? (free)'),
-      ce('button', { key: 'c', type: 'button', className: 'ais-mini' + (showChart ? ' on' : ''), onClick: openChart },
-        showChart ? 'Hide the chart' : 'Show the chart (free)'),
       ce('button', {
-        key: 'h', type: 'button', className: 'ais-mini', disabled: busy || hint.busy,
+        key: 'c', type: 'button', className: 'ais-mini' + (showChart ? ' on' : ''),
+        onClick: openChart, disabled: paused
+      }, showChart ? 'Hide the chart' : 'Show the chart (free)'),
+      ce('button', {
+        key: 'h', type: 'button', className: 'ais-mini', disabled: locked || hint.busy,
         title: 'Costs ' + HINT_COST + ' points',
         onClick: requestHint
       }, 'Ask for a hint (-' + HINT_COST + ' points, used ' + numOr(run.hintsUsed, 0) + ')'),
       ce('button', {
         key: 'm', type: 'button', className: 'ais-mini' + (voiceOn ? ' on' : ''),
-        'aria-pressed': voiceOn ? 'true' : 'false', disabled: !vsup.tts, onClick: toggleVoice
+        'aria-pressed': voiceOn ? 'true' : 'false', disabled: !vsup.tts || paused, onClick: toggleVoice
       }, voiceOn ? 'Mute audio' : 'Unmute audio')
     ]);
 
@@ -3594,13 +4098,17 @@
           'Give your report. Situation, background, assessment, recommendation. Speak it or type it - it is graded ' +
           'for completeness and for whether you led with the priority.'),
         (isFn(SBARComp))
+          /* SBARRecorder is not ours to add a `disabled` prop to, so the pause
+             lockout for it is threefold: the CSS makes the whole action area
+             inert, doPause() calls MM.voice.stopListening(), and every way it
+             can finish the run goes through finishWithSbar(). */
           ? ce(SBARComp, {
               key: 'rec', scenario: hs,
               onComplete: function (res) { finishWithSbar(res); }
             })
           : ce('div', { className: 'ais-col', key: 'fallback' }, [
               ce('textarea', {
-                key: 'ta', className: 'ais-ta', value: sbarText, disabled: sbarBusy,
+                key: 'ta', className: 'ais-ta', value: sbarText, disabled: sbarBusy || paused,
                 style: { minHeight: '140px' },
                 'aria-label': 'Your SBAR report',
                 placeholder: 'S: ...  B: ...  A: ...  R: ...',
@@ -3608,11 +4116,11 @@
               }),
               ce('button', {
                 key: 'go', type: 'button', className: 'btn btn-primary',
-                disabled: sbarBusy || !str(sbarText).trim(), onClick: submitTypedSbar
+                disabled: sbarBusy || paused || !str(sbarText).trim(), onClick: submitTypedSbar
               }, sbarBusy ? 'Grading...' : 'Give report and finish')
             ]),
         ce('button', {
-          key: 'skip', type: 'button', className: 'ais-mini',
+          key: 'skip', type: 'button', className: 'ais-mini', disabled: paused,
           onClick: function () { finishWithSbar(null); }
         }, 'Skip the handoff and go to the debrief')
       ]);
@@ -3632,7 +4140,10 @@
        body, so tokens usually all land at once at the very end. */
     var isOpeningWait = run.turnCount === 0;
     var waitLabel;
-    if (chars > 0) {
+    if (paused) {
+      /* Never claim the scene is advancing while it is frozen. */
+      waitLabel = 'Paused. Anything the model sends back is held until you resume.';
+    } else if (chars > 0) {
       /* Characters really have arrived, so say the true thing. Because the
          function buffers the SSE body this usually flips straight from a stage
          message to the finished turn - which is exactly why the stage messages
@@ -3656,14 +4167,14 @@
     /* A 130s client timeout is a terrible thing to hit in silence. At 30s we
        say so and hand back control; Retry bumps the request id, so the reply
        still in flight is discarded rather than landing on top of the new one. */
-    var slowBox = (busy && waitSec >= SLOW_WARN_AT)
+    var slowBox = (busy && !paused && waitSec >= SLOW_WARN_AT)
       ? ce('div', { className: 'ais-note ais-slow', key: 'slow', role: 'status' }, [
           ce('div', { key: 'm' },
             'This model is slow right now - ' + waitSec + ' seconds so far. You can keep waiting, or retry.'),
           ce('div', { className: 'ais-row', key: 'b' }, [
             ce('button', {
               key: 'r', type: 'button', className: 'btn btn-outline btn-sm',
-              onClick: function () { if (isFn(retryRef.current)) retryRef.current(); }
+              onClick: function () { if (paused) return; if (isFn(retryRef.current)) retryRef.current(); }
             }, isOpeningWait ? 'Retry admitting the patient' : 'Retry this turn')
           ])
         ])
@@ -3677,7 +4188,10 @@
            would be pretending there is a patient to act on; the error box above
            owns this state. */
         ? null
-      : ce('div', { className: 'ais-act' + (busy ? ' busy' : ''), key: 'act' }, [
+      : ce('div', {
+          className: 'ais-act' + (busy ? ' busy' : ''), key: 'act',
+          'aria-disabled': paused ? 'true' : 'false'
+        }, [
           busy ? ce(Thinking, {
             key: 'think', seconds: waitSec,
             showSeconds: showWaitSecs, note: waitNote, label: waitLabel
@@ -3691,7 +4205,10 @@
             ce(Segmented, {
               key: 's', label: 'Input mode', value: inputMode,
               items: INPUT_MODES.map(function (m) {
-                return { id: m.id, label: m.label, hint: m.hint, disabled: m.id === 'voice' && !vsup.stt };
+                return {
+                  id: m.id, label: m.label, hint: m.hint,
+                  disabled: paused || (m.id === 'voice' && !vsup.stt)
+                };
               }),
               onChange: changeMode
             }),
@@ -3701,7 +4218,7 @@
           freeRow
         ]);
 
-    return ce('div', { className: 'ais-wrap' }, [
+    return ce('div', { className: 'ais-wrap' + (paused ? ' is-paused' : '') }, [
       strip,
       errorBox,
       chartDrawer,
@@ -3709,11 +4226,14 @@
       actionUI,
       ce('div', { className: 'ais-row', key: 'foot', style: { justifyContent: 'space-between' } }, [
         ce('span', { className: 'ais-lab', key: 'l' },
-          str(run.difficultyId) + ' · hints ' + numOr(run.hintsUsed, 0)),
+          str(run.difficultyId) + ' · hints ' + numOr(run.hintsUsed, 0) +
+          (numOr(run.pausedSec, 0) || pausedSec ? ' · paused ' + fmtClock(pausedSec) : '')),
+        /* Deliberately NOT locked while paused: a student who has stepped away
+           must always be able to leave, and leaving mutates nothing. */
         ce('button', {
           key: 'q', type: 'button', className: 'ais-mini',
           onClick: function () {
-            if (isFn(voiceApi().stopSpeaking)) { try { voiceApi().stopSpeaking(); } catch (e) { /* noop */ } }
+            stopSpeech(true);
             if (isFn(p.onExit)) p.onExit();
           }
         }, 'End the run')
@@ -4128,6 +4648,41 @@
   AIScenarioMode.completeTruncatedJSON = completeTruncatedJSON;
   AIScenarioMode.MIN_TURNS_FOR_OUTCOME = MIN_TURNS_FOR_OUTCOME;
   AIScenarioMode.HINT_COST = HINT_COST;
+
+  /* ---- pause API -----------------------------------------------------------
+   * The shared convention, mirrored by js/sim-engine.js so a caller never has
+   * to know which engine is on screen:
+   *
+   *   pauseRun(reason) / resumeRun() / togglePauseRun() -> bool: IS IT PAUSED NOW
+   *   isRunPaused()  -> bool
+   *   canPauseRun()  -> bool (false once the run is over, false with nothing mounted)
+   *   pauseStats()   -> {active,paused,pauseCount,pausedMs,pausedSec,mode,...}
+   *   onPauseChange(fn) -> off()   fn(paused, snapshot)
+   *   pauseControl   -> the same thing as one object, also registered in the
+   *                     shared window.MMPause registry under 'ai-scenario'
+   *
+   * All of them are safe with no run mounted: they answer false and do nothing.
+   * The controller behind them is attached by the mounted RunScreen and
+   * detached on unmount - nothing in module scope here ticks, and nothing
+   * survives the component.
+   * ------------------------------------------------------------------------ */
+  AIScenarioMode.pauseControl = aiPause.pauseControl;
+  AIScenarioMode.pauseRun = aiPause.pauseRun;
+  AIScenarioMode.resumeRun = aiPause.resumeRun;
+  AIScenarioMode.togglePauseRun = aiPause.togglePauseRun;
+  AIScenarioMode.isRunPaused = aiPause.isRunPaused;
+  AIScenarioMode.canPauseRun = aiPause.canPauseRun;
+  AIScenarioMode.pauseStats = aiPause.pauseStats;
+  AIScenarioMode.onPauseChange = aiPause.onPauseChange;
+  /* short aliases - the same functions, for call sites that read better
+     without the Run suffix */
+  AIScenarioMode.pause = aiPause.pauseRun;
+  AIScenarioMode.resume = aiPause.resumeRun;
+  AIScenarioMode.togglePause = aiPause.togglePauseRun;
+  AIScenarioMode.isPaused = aiPause.isRunPaused;
+  AIScenarioMode.canPause = aiPause.canPauseRun;
+  AIScenarioMode.createPauseClock = createPauseClock;
+  AIScenarioMode.isTypingTarget = isTypingTarget;
 
   window.AIScenarioMode = AIScenarioMode;
   window.AIScenarioSetup = SetupScreen;

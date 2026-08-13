@@ -104,6 +104,7 @@
 <script defer src="data/scenarios-ob.js"></script>
 <script defer src="data/scenarios-peds.js"></script>
 <script defer src="data/medadmin.js"></script>
+<script defer src="data/ms2lab.js"></script>
 
 <!-- FEATURE MODULES (core first, then consumers) -->
 <script defer src="js/ai.js"></script>
@@ -115,6 +116,7 @@
 <script defer src="js/ai-tutor.js"></script>
 <script defer src="js/ai-scenario.js"></script>
 <script defer src="js/codeblue.js"></script>
+<script defer src="js/ms2lab.js"></script>
 
 <!-- ==========================================================
      ON-DEMAND MODULE LOADER
@@ -3749,6 +3751,7 @@ const NAV_SECTIONS = [
       {id:'analyze',     icon:'🔬',   label:'Question Analyzer'} ]},
   { id:'clinical', label:'Clinical', items:[
       {id:'simulations', icon:'🩺',   label:'Simulations', since:24},
+      {id:'ms2lab',      icon:'📋',   label:'MS2 Sim Lab', since:39},
       {id:'aiscenario',  icon:'🧑‍⚕️', label:'Live AI Patient', since:24},
       {id:'codeblue',    icon:'🚨', label:'Code Blue Team', since:32},
       {id:'medadmin',    icon:'💉',   label:'Med Admin Signoff', since:24} ]},
@@ -3774,6 +3777,7 @@ NAV_EXTRA.forEach(i => { NAV_INDEX[i.id] = i; });
 // dumping the student on Home with no explanation.
 const NAV_ALIAS = {
   practice:'guided', formulalab:'learn', 'formula-lab':'learn',
+  simlab:'ms2lab', 'sim-lab':'ms2lab', 'ms2-lab':'ms2lab', medsurg:'ms2lab',
   signoff:'medadmin', 'med-admin':'medadmin', boards:'leaderboard',
   stats:'dashboard', 'my-stats':'dashboard', formulabuilder:'formulas',
   analyzer:'analyze', 'lab-day':'labday', 'ai-tutor':'tutor',
@@ -10964,6 +10968,7 @@ function App() {
       case 'simulations': return modulePage('SimulationHub', 'Clinical Simulations', {progress, setProgress, authUser});
       case 'aiscenario': return modulePage('AIScenarioMode', 'Live AI Patient', {progress, setProgress, authUser});
       case 'codeblue': return modulePage('CodeBlueMode', 'Code Blue Team', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
+      case 'ms2lab': return modulePage('MS2LabMode', 'MS2 Simulation Lab', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
       case 'medadmin': return modulePage('MedAdminTrainer', 'Med Admin Trainer', {progress, setProgress, authUser});
       case 'community': return modulePage('CommunityHub', 'Community', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
       case 'tutor': return modulePage('AITutorPage', 'AI Tutor', {progress, setProgress, authUser});

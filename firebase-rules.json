@@ -144,6 +144,25 @@
           ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
           ".write": "auth != null && auth.uid === $uid"
         }
+      },
+      "scenarioCache": {
+        ".read": "auth != null",
+        ".indexOn": ["createdAt"],
+        "$hash": {
+          ".write": "auth != null && !data.exists()",
+          ".validate": "newData.hasChildren(['case','v'])",
+          "hits": { ".write": "auth != null" }
+        }
+      }
+    },
+
+    "ms2lab": {
+      "results": {
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || (auth.token.email === 'codingky@gmail.com' && auth.token.email_verified === true))",
+          ".write": "auth != null && auth.uid === $uid",
+          ".indexOn": ["date"]
+        }
       }
     },
 
