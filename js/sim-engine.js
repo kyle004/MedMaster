@@ -268,16 +268,39 @@
       'cursor:pointer;min-height:44px;transition:transform var(--dur-fast) ease;}',
       '.sim-tab[aria-selected="true"]{background:var(--accent);border-color:var(--accent);color:#fff;}',
       '.sim-tab:active{transform:scale(.975);}',
-      '.sim-actions{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:9px;}',
-      '.sim-action{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);',
+      /* The vitals dock. --sim-dock-top is the height the sticky header
+         occupies; the dock parks directly beneath it so the numbers stay on
+         screen no matter how long the action list is. */
+      '.sim-vitalsdock{position:sticky;top:var(--sim-dock-top,72px);z-index:15;',
+      'background:var(--bg);padding-bottom:8px;}',
+      /* A capped, internally scrolling action list. Fifty actions in a flat
+         two-column grid made the page several screens tall, which is what
+         pushed the vitals away in the first place. Capping it means the whole
+         simulation - vitals, tabs, actions - fits one screen on a laptop. */
+      '.sim-actions{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:9px;',
+      'max-height:min(46vh,420px);overflow-y:auto;overscroll-behavior:contain;',
+      'padding:2px 4px 2px 2px;}',
+      '.sim-actions:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}',
+      /* a hairline so it reads as a scroll region rather than a clipped list */
+      '.sim-actionwrap{position:relative;}',
+      '.sim-actionwrap::after{content:"";position:absolute;left:0;right:0;bottom:0;height:18px;',
+      'pointer-events:none;background:linear-gradient(to bottom,transparent,var(--surface));}',
+      /* color is NOT optional here. A <button> does not inherit colour from
+         its parent - the UA applies `buttontext`, which is near-black. Setting
+         a dark background without also setting the text colour produced
+         black-on-navy cards that were genuinely unreadable. */
+      '.sim-action{background:var(--surface);color:var(--text);border:1px solid var(--border);',
+      'border-radius:var(--r-lg);font:inherit;',
       'padding:var(--sp-3);display:flex;gap:9px;align-items:flex-start;text-align:left;cursor:pointer;',
       'width:100%;min-height:44px;',
       'transition:border-color var(--dur-fast) ease,transform var(--dur-fast) ease;}',
       '.sim-action:hover:not(:disabled){border-color:var(--accent);transform:translateY(-1px);}',
       '.sim-action:active:not(:disabled){transform:scale(.975);background:var(--surface3);}',
       '.sim-action:disabled{opacity:.45;cursor:not-allowed;}',
-      '.sim-action .txt{font-size:13px;font-weight:600;line-height:1.35;}',
-      '.sim-action .sub{font-size:11px;color:var(--text3);margin-top:3px;}',
+      /* block, or the label and its dose run together as one sentence:
+         "Administer Pantoprazole80 mg IV bolus" */
+      '.sim-action .txt{display:block;font-size:13px;font-weight:600;line-height:1.35;color:var(--text);}',
+      '.sim-action .sub{display:block;font-size:11px;color:var(--text3);margin-top:3px;line-height:1.4;}',
       '.sim-action.done{border-color:var(--sim-ok-br);background:var(--sim-ok-bg);}',
       '.sim-action.usedbad{border-color:var(--sim-bad-br);background:var(--sim-bad-bg);}',
 
@@ -379,6 +402,15 @@
 
       /* ---- mobile ---- */
       '@media (max-width:900px){.sim-stage{grid-template-columns:1fr;}.sim-two{grid-template-columns:1fr;}}',
+      /* On a phone the sticky dock would eat most of the screen, and an inner
+         scroll region nested in the page scroll is miserable to use with a
+         thumb. Below 900px the vitals ride with the page and the action list
+         runs at full length. */
+      '@media (max-width:900px){.sim-vitalsdock{position:static;padding-bottom:0;}',
+      '.sim-actions{max-height:none;overflow:visible;}',
+      '.sim-actionwrap::after{display:none;}}',
+      /* Short laptop screens: give the list less room, not more scroll. */
+      '@media (min-width:901px) and (max-height:760px){.sim-actions{max-height:34vh;}}',
       '@media (max-width:640px){',
       '.sim-grid{grid-template-columns:1fr;}',
       '.sim-actions{grid-template-columns:1fr;}',
@@ -1645,7 +1677,11 @@
           }, t.label + ' (' + n + ')');
         })),
       visible.length
-        ? ce('div', { className: 'sim-actions' }, visible.map(function (a) {
+        ? ce('div', { className: 'sim-actionwrap' },
+          ce('div', {
+            className: 'sim-actions', tabIndex: 0, role: 'group',
+            'aria-label': visible.length + ' available actions, scrollable'
+          }, visible.map(function (a) {
             var used = doneMap[a.id];
             var cls = 'sim-action' + (used === 'good' ? ' done' : used === 'bad' ? ' usedbad' : '');
             return ce('button', {
@@ -1660,7 +1696,7 @@
                 a.sub ? ce('span', { className: 'sub' }, a.sub) : null,
                 used ? ce('span', { className: 'sub' },
                   used === 'good' ? '✓ performed' : '✕ performed - see debrief') : null));
-          }))
+          })))
         : ce('div', { className: 'sim-empty' }, 'No actions match that search.'));
   }
 
@@ -2968,12 +3004,15 @@
 
       ce('div', { className: 'sim-stage' },
         ce('div', { style: { display: 'grid', gap: '12px' } },
-          ce(VitalsMonitor, {
-            vitals: monVitals, band: monBand, trend: monTrend,
-            name: str(monPatient.name), age: str(monPatient.age), dx: str(monPatient.diagnosis),
-            switcher: switcherNode, clock: null,
-            stabilizer: showSecondary ? null : (isExam ? null : stabilizer())
-          }),
+          /* Docked: the patient's numbers are the thing you reason FROM, so
+             they must never scroll away behind a long action list. */
+          ce('div', { className: 'sim-vitalsdock' },
+            ce(VitalsMonitor, {
+              vitals: monVitals, band: monBand, trend: monTrend,
+              name: str(monPatient.name), age: str(monPatient.age), dx: str(monPatient.diagnosis),
+              switcher: switcherNode, clock: null,
+              stabilizer: showSecondary ? null : (isExam ? null : stabilizer())
+            })),
           ce('div', { className: 'sim-panel' },
             ce('div', { className: 'sim-tabs', role: 'tablist', 'aria-label': 'Simulation panels' },
               panelTabs.map(function (t) {
