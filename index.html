@@ -106,6 +106,10 @@
 <script defer src="data/medadmin.js"></script>
 <script defer src="data/signoff-drugs.js"></script>
 <script defer src="data/signoff-mars.js"></script>
+<!-- MedSim reads mar12/percocet out of the two signoff data files above, so it
+     must stay after them; it falls back to inline copies if they ever move. -->
+<script defer src="data/medsim-rubric.js"></script>
+<script defer src="data/medsim-scenarios.js"></script>
 <script defer src="data/ms2lab.js"></script>
 <script defer src="data/nur2212-scenarios.js"></script>
 <script defer src="data/nur2212-study.js"></script>
@@ -117,6 +121,7 @@
 <script defer src="js/sim-engine.js"></script>
 <script defer src="js/medadmin-trainer.js"></script>
 <script defer src="js/signoff.js"></script>
+<script defer src="js/medsim.js"></script>
 <script defer src="js/community.js"></script>
 <script defer src="js/ai-tutor.js"></script>
 <script defer src="js/ai-scenario.js"></script>
@@ -3763,7 +3768,8 @@ const NAV_SECTIONS = [
       {id:'aiscenario',  icon:'🧑‍⚕️', label:'Live AI Patient', since:24},
       {id:'codeblue',    icon:'🚨', label:'Code Blue Team', since:32},
       {id:'medadmin',    icon:'💉',   label:'Med Admin Signoff', since:24},
-      {id:'signoff',     icon:'📋',   label:'Med Admin Signoff Sim'} ]},
+      {id:'signoff',     icon:'📋',   label:'Med Admin Signoff Sim'},
+      {id:'medsim',      icon:'🎯',   label:'Med Admin Simulation'} ]},
   { id:'simprep', label:'Clinical Simulation Prep', items:[
       {id:'simprep',        icon:'📚', label:'Sim Prep Home', since:40},
       {id:'simprepsim',     icon:'🎬', label:'Simulation Mode', since:40},
@@ -10993,6 +10999,7 @@ function App() {
       case 'simpreppartner': return modulePage('SimPrepPartner', 'Partner Practice', {progress, setProgress, authUser, isAdmin, isSuperAdmin, onNav: navTo});
       case 'medadmin': return modulePage('MedAdminTrainer', 'Med Admin Trainer', {progress, setProgress, authUser});
       case 'signoff': return modulePage('SignoffTrainer', 'Med Admin Signoff Sim', {progress, setProgress, authUser});
+      case 'medsim': return modulePage('MedSimTrainer', 'Med Admin Simulation', {progress, setProgress, authUser});
       case 'community': return modulePage('CommunityHub', 'Community', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
       case 'tutor': return modulePage('AITutorPage', 'AI Tutor', {progress, setProgress, authUser});
       case 'guided': return React.createElement(GuidedPractice, {progress, setProgress});

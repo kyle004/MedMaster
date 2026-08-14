@@ -1,82 +1,102 @@
 /* =============================================================================
  * data/medsim-scenarios.js  ->  window.MEDSIM_SCENARIOS
  * -----------------------------------------------------------------------------
- * MedSimScenario objects per MEDSIM_SPEC/architecture.md section 9.
+ * MedSimScenario objects per MEDSIM_SPEC/architecture.md §9. Phase-1 ships
+ * exactly one: `medsim_mar12_oxycodone`, an ORAL-only scenario (no injections,
+ * no sharps, no distractions, no calculation trap) per §13's MVP scope.
  *
- * REUSE, DON'T RE-DERIVE (architecture.md's own instruction): the patient/MAR
- * facts here are read from window.SIGNOFF_MARS's `mar12` entry and the drug
- * facts from window.SIGNOFF_DRUGS's `percocet` entry at load time, not
- * retyped — if those source files aren't loaded yet this file will fall back
- * to an inline literal copy of the same values (so the module still works
- * standalone) but SIGNOFF_MARS/SIGNOFF_DRUGS are the source of truth. This
- * file's <script> tag must load AFTER data/signoff-mars.js and
- * data/signoff-drugs.js in index.html for the reuse path to run.
+ * REUSE, DON'T RE-DERIVE (architecture.md's own instruction). Every clinical
+ * value below is read at load time from the already-verified source data:
+ *   - patient / vitals / MRN / MAR colour+times  <- window.SIGNOFF_MARS `mar12`
+ *   - drug class, hold parameters, teaching       <- window.SIGNOFF_DRUGS `percocet`
+ * Nothing clinical is retyped. Inline fallbacks exist ONLY so the module still
+ * renders if those files failed to load (script-order accident); they are
+ * byte-identical copies of the same source values, and `dataSource` on the
+ * scenario records which path actually ran so the UI can say so honestly.
+ * This file's <script> tag must load AFTER data/signoff-mars.js and
+ * data/signoff-drugs.js.
  *
- * Phase-1 scenario only: medsim_mar12_oxycodone, derived from mar12
- * (Eric Doe, 77M, Chronic Pain) per architecture.md section 13's MVP scope.
- *
- * DOB (architecture.md Open Question 1, already decided — do not re-litigate):
- * the mar12 photo carries no date of birth. The scenario fabricates one
- * consistent with "77yo" and the patient states it naturally when asked. This
- * is clearly simulation content, not a real chart fact — flagged inline below.
+ * The one fabricated value: DATE OF BIRTH. The mar12 photo carries no DOB, but
+ * two-identifier verification needs one (the rubric says "name & date of birth
+ * (NOT room number or age)"). architecture.md Open Question 1 resolved this by
+ * fabricating a DOB consistent with age 77 and having the patient state it when
+ * asked. It is listed in `fabricatedFactKeys` so the UI can label it as
+ * simulation content rather than a chart fact. The value here (June 2, 1948)
+ * matches MedSimScenarioData.swift verbatim — §17 requires scenario content to
+ * stay identical across platforms.
  * ========================================================================== */
 (function () {
   'use strict';
 
-  function findMar(id) {
-    var list = (window.SIGNOFF_MARS || []);
-    for (var i = 0; i < list.length; i++) { if (list[i].id === id) return list[i]; }
-    return null;
-  }
-  function findDrug(id) {
-    var list = (window.SIGNOFF_DRUGS || []);
-    for (var i = 0; i < list.length; i++) { if (list[i].id === id) return list[i]; }
+  function findById(list, id) {
+    var l = list || [];
+    for (var i = 0; i < l.length; i++) { if (l[i] && l[i].id === id) { return l[i]; } }
     return null;
   }
 
-  var mar12 = findMar('mar12');
-  var percocetDrug = findDrug('percocet');
+  var mar12 = findById(window.SIGNOFF_MARS, 'mar12');
+  var percocet = findById(window.SIGNOFF_DRUGS, 'percocet');
 
-  /* Fallback literals mirror mar12/percocet exactly, only used if the source
-     data files failed to load (script-order issue, or a page that only
-     includes medsim.js). Kept intentionally identical to SIGNOFF_MARS/DRUGS. */
-  var patientSrc = mar12 ? mar12.patient : {
+  /* ---- patient / chart, read from mar12 where available -------------------- */
+
+  var patientSrc = (mar12 && mar12.patient) || {
     name: 'Eric Doe', age: 77, sex: 'M', weightKg: 72,
-    codeStatus: 'Full Code', allergies: ['NKDA']
+    codeStatus: 'Full Code', allergies: ['NKDA'], iv: ['LFA #20']
   };
-  var mrn = mar12 ? mar12.mrn : '00012';
-  var vitalsSrc = mar12 ? mar12.vitals : {
-    bp: '114/79', hr: 77, rr: 22, temp: '99.0 F', spo2: 95
+  var mrn        = (mar12 && mar12.mrn) || '00012';
+  var admitDx    = (mar12 && mar12.admittingDx) || 'Chronic Pain';
+  var pmh        = (mar12 && mar12.pmh) || ['Chronic Constipation', 'kyphoplasty', 'Hypertension'];
+  var vitalsSrc  = (mar12 && mar12.vitals) || {
+    bp: '114/79', hr: 77, rr: 22, temp: '99.0 F', spo2: 95, painScore: null,
+    notes: 'Pt AOX4, ambulate by self, right great toe lesion with purulent drainage, fistula RUE, bruit and thrill present.'
   };
-  var medOrderSrc = (mar12 && mar12.meds) ? (function () {
-    for (var i = 0; i < mar12.meds.length; i++) { if (mar12.meds[i].rxKey === 'percocet') return mar12.meds[i]; }
-    return null;
-  })() : null;
-  var orderText = medOrderSrc ? medOrderSrc.orderText : 'Oxycodone/Acetaminophen 5/325 mg by mouth every 4 hours';
-  var scheduledTime = medOrderSrc && medOrderSrc.scheduledTimes && medOrderSrc.scheduledTimes[0]
-    ? medOrderSrc.scheduledTimes[0] : '12:00';
-  var lastGiven = medOrderSrc && medOrderSrc.givenTimes && medOrderSrc.givenTimes[0]
-    ? medOrderSrc.givenTimes[0] : '07:23';
-  var marColor = medOrderSrc ? medOrderSrc.color : 'yellow';
+  var simTime    = (mar12 && mar12.currentTime) || '12:00';
+
+  /* ---- the single ordered medication, read from mar12.meds[rxKey=percocet] -- */
+
+  var medSrc = null;
+  if (mar12 && mar12.meds) {
+    for (var i = 0; i < mar12.meds.length; i++) {
+      if (mar12.meds[i] && mar12.meds[i].rxKey === 'percocet') { medSrc = mar12.meds[i]; break; }
+    }
+  }
+  var orderText     = (medSrc && medSrc.orderText) || 'Oxycodone/Acetaminophen 5/325 mg by mouth every 4 hours';
+  var scheduledTime = (medSrc && medSrc.scheduledTimes && medSrc.scheduledTimes[0]) || '12:00';
+  var givenTimes    = (medSrc && medSrc.givenTimes) ? medSrc.givenTimes.slice() : ['07:23'];
+  var marColor      = (medSrc && medSrc.color) || 'yellow';
+  var marNotes      = (medSrc && medSrc.notes) ||
+    'Q4h. Last given 0723 (green). Yellow at 1200 - due now (window 1100-1300).';
+
+  /* ---- hold parameters, read from the percocet drug entry ------------------ */
+
+  var holdConditions = (percocet && percocet.holdParameters)
+    ? percocet.holdParameters.slice()
+    : ['RR <12', 'Sedation scale >=3', 'SpO2 <92% on room air'];
 
   var SCENARIOS = [
     {
       id: 'medsim_mar12_oxycodone',
-      title: 'MAR 12 — Chronic Pain, 1200 Oxycodone/Acetaminophen',
+      title: 'Eric Doe — Oxycodone/Acetaminophen 5/325mg PO',
       difficulty: 'beginner',
+
+      /* Provenance: 'source' when the signoff data files were loaded and read,
+         'fallback' when the inline copies were used. Rendered in the hub so a
+         mis-ordered script tag is visible rather than silent. */
+      dataSource: (mar12 && percocet) ? 'source' : 'fallback',
 
       patient: {
         name: patientSrc.name,
-        /* Fabricated per Open Question 1's resolution — no DOB on the source
-           MAR photo. Patient states it naturally if asked; never surfaced by
-           the engine as a "real chart" fact anywhere else. */
-        dob: '1949-03-14',
+        dob: '06/02/1948',            // fabricated — see file header + fabricatedFactKeys
         age: patientSrc.age,
         sex: patientSrc.sex,
         weightKg: patientSrc.weightKg,
         codeStatus: patientSrc.codeStatus,
-        allergies: patientSrc.allergies.slice(),
-        mrn: mrn
+        allergies: (patientSrc.allergies || ['NKDA']).slice(),
+        mrn: mrn,
+        iv: (patientSrc.iv || []).slice(),
+        admittingDx: admitDx,
+        pmh: (pmh || []).slice(),
+        room: '412'                   // presentational only; explicitly NOT a valid identifier
       },
 
       environment: {
@@ -85,74 +105,88 @@
       },
 
       orders: [
-        { medId: 'percocet', orderText: orderText, scheduledTime: scheduledTime, route: 'PO', prn: false }
+        {
+          medId: 'percocet',
+          orderText: orderText,
+          scheduledTime: scheduledTime,
+          route: 'PO',
+          prn: false
+        }
       ],
 
       mar: [
-        { medId: 'percocet', color: marColor, givenTimes: [lastGiven] }
+        { medId: 'percocet', color: marColor, givenTimes: givenTimes, notes: marNotes }
       ],
 
       vitals: {
-        bp: vitalsSrc.bp, hr: vitalsSrc.hr, rr: vitalsSrc.rr,
-        temp: vitalsSrc.temp, spo2: vitalsSrc.spo2
+        bp: vitalsSrc.bp,
+        hr: vitalsSrc.hr,
+        rr: vitalsSrc.rr,
+        temp: vitalsSrc.temp,
+        spo2: vitalsSrc.spo2,
+        notes: vitalsSrc.notes
       },
-      labs: {},
+      labs: {},                        // mar12 has no labs; pre_admin_assessment resolves on vitals
 
-      /* No labs this scenario — pre_admin_assessment's `vitals_viewed OR
-         labs_viewed` OR-slot resolves to vitals_viewed being the only
-         satisfying path, which is what `relevantTo` records for the UI/report. */
-      assessment: { relevantTo: ['vitals', 'swallow_ability'] },
+      assessment: { relevantTo: ['vitals', 'ability_to_swallow', 'sedation_level'] },
 
       medicationsAvailable: ['percocet'],
       drugGuideEntries: ['percocet'],
-      expectedAssessments: ['pain_level', 'sedation_level', 'respiratory_rate'],
-
-      holdParameters: percocetDrug ? percocetDrug.holdParameters.map(function (h) {
-        return { medId: 'percocet', condition: h };
-      }) : [
-        { medId: 'percocet', condition: 'RR <12' },
-        { medId: 'percocet', condition: 'Sedation scale >=3' },
-        { medId: 'percocet', condition: 'SpO2 <92% on room air' }
+      expectedAssessments: [
+        'Verify respiratory rate and sedation level before administering (opioid).',
+        'Confirm the patient can swallow a PO tablet safely.',
+        'Review total daily acetaminophen intake from all sources (APAP ceiling).'
       ],
+
+      holdParameters: holdConditions.map(function (c) {
+        return { medId: 'percocet', condition: c };
+      }),
       criticalConditions: [],
 
+      /* §8 reveal-gating source of truth. The ENGINE owns these values; the
+         patient-reply model only ever sees the subset the student has already
+         asked about (see js/medsim.js buildPatientReplySystemPrompt). */
       patientFacts: [
-        { key: 'name', value: patientSrc.name },
-        { key: 'dob', value: 'March 14th, 1949' },
-        { key: 'mrn', value: mrn },
-        { key: 'allergies', value: 'No known drug allergies (NKDA).' },
-        { key: 'pain_level', value: 'About a 3 out of 10 right now — comes and goes, worse when I try to walk.' },
-        { key: 'pain_location', value: 'Mostly my lower back and that sore toe.' },
-        { key: 'med_understanding', value: 'I know it\'s the little yellow pill for pain — the doctor said take it when it hurts.' },
-        { key: 'last_dose_time', value: 'I think I took one this morning, maybe around 7:30.' },
-        { key: 'swallow_ability', value: 'No trouble swallowing pills, never have.' },
-        { key: 'appetite', value: 'I ate breakfast fine this morning.' },
-        { key: 'toe', value: 'My right big toe has been draining some yellowish stuff, it\'s tender.' },
-        { key: 'constipation', value: 'I\'ve been pretty backed up the last couple days, if I\'m honest.' },
-        { key: 'iv_site', value: 'I\'ve got that IV in my right arm, it\'s a little sore where it\'s taped.' },
-        { key: 'mood', value: 'I\'m alright, just tired of being poked at.' }
+        { key: 'name', value: 'Eric Doe' },
+        { key: 'dob', value: 'June 2, 1948' },
+        { key: 'allergies', value: 'No known drug allergies.' },
+        { key: 'pain_level', value: 'About a 6 out of 10 — a dull ache in my lower back, I\'ve had it a long time.' },
+        { key: 'understanding_of_med', value: 'I know it\'s for my back pain — the same pill I\'ve been getting.' },
+        { key: 'admitting_reason', value: 'I\'m in for my chronic back pain, I had a kyphoplasty a while back.' },
+        { key: 'last_dose_time', value: 'I think I got a pill early this morning, maybe around 7.' },
+        { key: 'constipation_history', value: 'Yes, I have ongoing trouble with constipation — I take something for it.' },
+        { key: 'code_status', value: 'Full code, as far as I know.' }
       ],
       patientPersona: {
-        tone: 'Calm, a little stoic about pain, cooperative once he feels heard. Elderly male, plainspoken.',
+        tone: 'calm, a little tired, cooperative but soft-spoken — an elderly man managing chronic pain',
         behaviors: [
-          'Tends to downplay his pain rather than exaggerate it',
-          'Answers only what is asked — does not launch into his whole history unprompted',
-          'Appreciates being addressed by name and having things explained in plain language',
-          'Gets a little short if rushed or talked over'
+          'May mention that his back hurts if asked how he\'s feeling, but does not volunteer anything else unprompted.',
+          'If asked something outside his known facts, politely says he isn\'t sure and suggests checking with the nurse or his chart.',
+          'Never states a fact he hasn\'t been asked about, even if it would help the student.'
         ]
       },
 
       distractions: [],
+
+      /* §13: injection/sharps/distraction machinery exists in the engine but this
+         scenario does not exercise it, so those criteria are excluded from the
+         denominator rather than scored 0. `special_precautions` is deliberately
+         NOT overridden — this opioid has real hold parameters (RR, sedation),
+         so it IS scored. Matches MedSimScenarioData.swift exactly. */
       rubricOverrides: [
         { criterionId: 'sharps_violation', notApplicable: true },
         { criterionId: 'injection_technique', notApplicable: true },
-        { criterionId: 'limiting_distractions', notApplicable: true },
-        { criterionId: 'special_precautions', notApplicable: true }
+        { criterionId: 'limiting_distractions', notApplicable: true }
       ],
 
       requiresCalculation: false,
       expiredMedicationPresent: false,
-      currentSimTime: '12:00'
+
+      /* Sim-clock reading at t=0. right_time maps elapsed ms onto this. */
+      currentSimTime: simTime,
+
+      /* Fact keys whose value is scenario fabrication, not a real chart fact. */
+      fabricatedFactKeys: ['dob']
     }
   ];
 
