@@ -80,7 +80,7 @@
             levels: ['Did not check.', 'Incomplete or inaccurate check.', 'Correctly checked and reported.'], starred: true },
           { id: 'right_drug',      text: 'Right Drug: Matches order/MAR exactly.',
             levels: ['Did not match.', 'Incomplete or inaccurate match.', 'Correctly matched.'], starred: true },
-          { id: 'right_dose',      text: 'Right Dose: Correct calculation. Shows weight-based conversions (kg = lbs / 2.2) and IV rates if applicable.',
+          { id: 'right_dose',      text: 'Right Dose: Correct calculation. Shows weight-based conversions (kg = lbs ÷ 2.2) and IV rates if applicable.',
             levels: ['Did not calculate.', 'Incomplete or inaccurate calculation.', 'Correctly calculated.'], starred: true },
           { id: 'right_route',     text: 'Right Route: Matches order. Assesses patient ability to receive via that route. Correct drug form for route.',
             levels: ['Did not assess.', 'Incomplete assessment.', 'Correctly assessed.'], starred: true },

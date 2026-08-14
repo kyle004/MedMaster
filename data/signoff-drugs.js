@@ -834,6 +834,31 @@
       ],
       sideEffects: ['Reflex tachycardia', 'Headache', 'Palpitations', 'Nausea', 'Lupus-like syndrome'],
       antidote: null, ivPushRate: 'IV push slow over >=1 min; monitor BP'
+    },
+    // Added post-spec — the MAR-12 photo has a Lidocaine Patch order, and any
+    // drug that can appear on a MAR needs to be on the allow-list.
+    {
+      id: 'lidocaine_patch', generic: 'lidocaine 5% patch', brand: 'Lidoderm',
+      class: 'Topical local anesthetic (amide)',
+      routes: ['Topical'],
+      usualAdultDose: 'Up to 3 patches to intact skin, once daily; 12 hr ON, 12 hr OFF (max 12 hr / 24 hr).',
+      highAlert: false,
+      holdParameters: ['Broken/inflamed skin at site'],
+      onset: '30 min', peak: '2-3 hr', duration: '4-12 hr topical',
+      keyTeaching: [
+        'Apply to clean, DRY, intact skin. Never on open wounds or rashes.',
+        'DATE, TIME, and initial the patch when applied — critical for the next nurse.',
+        '12 hours ON, then 12 hours OFF — never continuous.',
+        'Fold used patches sticky-sides-in and dispose safely (still contains drug; pet/child risk).',
+        'May cut patch to size with backing intact if instructed.'
+      ],
+      criticalConsiderations: [
+        'Not for acute severe pain — chronic localized pain only.',
+        'Systemic absorption is possible on broken skin — do not use.',
+        'If a heating pad is placed over the patch, absorption goes up sharply — do not do it.'
+      ],
+      sideEffects: ['Local irritation', 'Erythema', 'Rare systemic toxicity if overused'],
+      antidote: null, ivPushRate: null
     }
   ];
 
@@ -844,7 +869,8 @@
     kcl:1, plavix:1, synthroid:1, zolpidem:1, prednisone:1, loperamide:1, miralax:1,
     cardizem:1, lactulose:1, kayexalate:1, metformin:1, methergine:1, amiodarone:1,
     glucagon:1, lorazepam:1, haloperidol:1, cefazolin:1, morphine:1, ceftriaxone:1,
-    insulin_regular:1, insulin_nph:1, insulin_humalog:1, dilaudid:1, hydralazine:1
+    insulin_regular:1, insulin_nph:1, insulin_humalog:1, dilaudid:1, hydralazine:1,
+    lidocaine_patch:1
   };
   var filtered = [];
   for (var i = 0; i < DRUGS.length; i++) {

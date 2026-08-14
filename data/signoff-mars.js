@@ -13,113 +13,99 @@
   'use strict';
 
   var MARS = [
-    /* ==== mar12 -- photo-derived scenario 1 ================================= */
+    /* ==== mar12 -- photo-verbatim: Eric Doe 77M, Chronic Pain, 1200 ============
+     * Transcribed exactly from the MAR-12 photo the user provided.  If a value
+     * here disagrees with the printed sheet in class, the printed sheet wins.
+     * ======================================================================= */
     {
       id: 'mar12',
-      title: 'MAR 12 - Med/Surg AM pass',
+      title: 'MAR 12 - Chronic pain, 1200 pass',
       mrn: '00012',
       patient: {
-        name: 'Robert Delgado', age: 68, sex: 'M', weightKg: 82,
+        name: 'Eric Doe', age: 77, sex: 'M', weightKg: 72,
         codeStatus: 'Full Code',
         allergies: ['NKDA'],
-        iv: ['R forearm 20g #18, saline lock, patent, no redness']
+        iv: ['LFA #20']
       },
-      admittingDx: 'HTN, HFrEF exacerbation',
-      pmh: ['HTN', 'HFrEF EF 35%', 'AFib on warfarin', 'BPH'],
-      vitals: { bp: '128/78', hr: 58, rr: 18, temp: '98.4 F', spo2: 96, painScore: 2, notes: 'AM assessment; apical taken x60 sec' },
-      labs: { k: 3.6, na: 138, bun: 22, cr: 1.1, inr: 2.3, dig_level: 1.2 },
-      currentTime: '09:00',
+      admittingDx: 'Chronic Pain',
+      pmh: ['Chronic Constipation', 'kyphoplasty', 'Hypertension'],
+      vitals: { bp: '114/79', hr: 77, rr: 22, temp: '99.0 F', spo2: 95, painScore: null,
+                notes: 'Pt AOX4, ambulate by self, right great toe lesion with purulent drainage, fistula RUE, bruit and thrill present.' },
+      labs: {},
+      currentTime: '12:00',
       meds: [
         {
-          rxKey: 'digoxin',
-          orderText: 'Digoxin 0.125 mg PO daily',
-          scheduledTimes: ['09:00'], givenTimes: [], color: 'yellow',
-          holdIfHRBelow: 60,
-          notes: 'Take apical pulse full 60 sec. Hold if <60.',
+          rxKey: 'percocet',
+          orderText: 'Oxycodone/Acetaminophen 5/325 mg by mouth every 4 hours',
+          scheduledTimes: ['12:00'], givenTimes: ['07:23'], color: 'yellow',
+          notes: 'Q4h. Last given 0723 (green). Yellow at 1200 - due now (window 1100-1300).',
           traps: []
         },
         {
-          rxKey: 'warfarin',
-          orderText: 'Warfarin 5 mg PO daily at 1700',
-          scheduledTimes: ['17:00'], givenTimes: [], color: 'white',
-          notes: 'Not due at 09:00 - do not give.',
-          traps: [
-            { type: 'wrong_time', severity: 'major',
-              explain: 'Warfarin is scheduled 17:00 - outside the ±1 hr window at 09:00. Do not administer now.' }
-          ]
-        },
-        {
-          rxKey: 'lasix',
-          orderText: 'Furosemide 40 mg PO daily in AM',
-          scheduledTimes: ['09:00'], givenTimes: [], color: 'yellow',
-          notes: 'Check K+ (3.6 - low-normal). Daily weight. Watch orthostasis.',
+          rxKey: 'lidocaine_patch',
+          orderText: 'Lidocaine Patch every 12 hours to lower back',
+          scheduledTimes: ['12:00'], givenTimes: [], color: 'yellow',
+          notes: 'Q12h topical. Apply to clean, dry skin over lower back; date+time+initial. Max 12h ON, then 12h OFF.',
           traps: []
         },
         {
-          rxKey: 'tamsulosin',
-          orderText: 'Tamsulosin 0.4 mg PO at bedtime',
-          scheduledTimes: ['21:00'], givenTimes: [], color: 'white',
-          notes: 'Bedtime dose. Do not give at 09:00.',
+          rxKey: 'dilaudid',
+          orderText: 'Hydromorphone 1 mg IV every 2 hours PRN for pain >5. Vial contains 2 mg/mL',
+          scheduledTimes: [], givenTimes: ['09:43'], prn: true, color: 'white',
+          notes: 'PRN pain >5. Last given 0943 (green). At 1200 pt reports pain 3/10 - do NOT give (below PRN threshold).',
           traps: [
-            { type: 'wrong_time', severity: 'minor',
-              explain: 'Tamsulosin is bedtime dosing (first-dose orthostasis). Not due at 09:00.' }
+            { type: 'wrong_dose', severity: 'major',
+              explain: 'Vial is 2 mg/mL, order is 1 mg = 0.5 mL. Drawing 1 mL would be a 2 mg dose (double). Verify calculation before pushing.' }
           ]
         }
       ]
     },
 
-    /* ==== mar14 -- photo-derived scenario 2 ================================= */
+    /* ==== mar14 -- photo-verbatim: Eric Doe 64M, Cellulitis, 0900 =============
+     * Transcribed exactly from the MAR-14 photo the user provided.
+     * ======================================================================= */
     {
       id: 'mar14',
-      title: 'MAR 14 - Antibiotic + insulin AM pass',
+      title: 'MAR 14 - Cellulitis, 0900 pass',
       mrn: '00014',
       patient: {
-        name: 'Anita Chen', age: 54, sex: 'F', weightKg: 74,
+        name: 'Eric Doe', age: 64, sex: 'M', weightKg: 72,
         codeStatus: 'Full Code',
-        allergies: ['Penicillin - hives'],
-        iv: ['L AC 20g, primary NS at 75 mL/hr, patent']
+        allergies: ['NSAIDs'],
+        iv: ['RUE PICC']
       },
-      admittingDx: 'Cellulitis L lower extremity; T2DM',
-      pmh: ['T2DM', 'HTN', 'Obesity'],
-      vitals: { bp: '132/80', hr: 84, rr: 18, temp: '100.6 F', spo2: 97, painScore: 4, notes: '' },
-      labs: { k: 4.2, na: 139, bun: 14, cr: 0.9, bg: 212, wbc: 13.4 },
-      currentTime: '08:00',
+      admittingDx: 'Cellulitis',
+      pmh: ['Hypertension', 'MI 2 years ago', 'CAD', 'CHF'],
+      vitals: { bp: '163/88', hr: 83, rr: 18, temp: '99.6 F', spo2: 96, painScore: null,
+                notes: 'Pt AOX4, ambulate with assist, edema with redness and tenderness to Left calf and lateral aspect.' },
+      labs: {},
+      currentTime: '09:00',
       meds: [
         {
-          rxKey: 'cefazolin',
-          orderText: 'Cefazolin 1 g IV q8h - infuse over 30 min',
+          rxKey: 'lasix',
+          orderText: 'Furosemide 60 mg by mouth every 6 hours',
           scheduledTimes: ['08:00'], givenTimes: [], color: 'yellow',
-          notes: 'Verify allergy - PCN cross-sensitivity ~1-5%. Report before hanging.',
-          traps: [
-            { type: 'allergy_conflict', severity: 'critical',
-              explain: 'Patient lists PCN allergy (hives). Cross-reactivity with cephalosporins is low but non-zero - CLARIFY with provider before administering. Do not give until reconciled.' }
-          ]
-        },
-        {
-          rxKey: 'insulin_regular',
-          orderText: 'Insulin Regular SubQ per sliding scale AC and HS. BG 212 => 4 units SubQ',
-          scheduledTimes: ['07:30'], givenTimes: [], color: 'yellow',
-          notes: 'Independent double-check. Meal tray at bedside.',
+          notes: 'Q6h PO. Yellow at 0800 - within ±1 hr window at 0900. Give now. Check K+ before if available; monitor for orthostasis.',
           traps: []
         },
         {
-          rxKey: 'insulin_nph',
-          orderText: 'Insulin NPH 20 units IV BID',
-          scheduledTimes: ['08:00'], givenTimes: [], color: 'yellow',
-          notes: '',
+          rxKey: 'kcl',
+          orderText: 'K-DUR 20 mEq by mouth twice daily',
+          scheduledTimes: ['10:00'], givenTimes: [], color: 'yellow',
+          notes: 'BID PO. Yellow at 1000 - NOT due at 0900 (outside ±1 hr window). Take with food, full glass of water; do not crush ER tab.',
           traps: [
-            { type: 'wrong_route', severity: 'critical',
-              explain: 'NPH insulin is NEVER given IV - only regular insulin is IV-safe. Clarify with prescriber; refuse to administer.' }
+            { type: 'wrong_time', severity: 'major',
+              explain: 'K-DUR is scheduled for 1000 - the ±1 hr window opens at 0900 but 0900 is the earliest allowable. If clock reads 0900 exactly it is borderline; giving before 0900 is a wrong-time error. Verify current clock time before pulling.' }
           ]
         },
         {
-          rxKey: 'metformin',
-          orderText: 'Metformin 1000 mg PO BID with meals',
-          scheduledTimes: ['08:00'], givenTimes: [], color: 'yellow',
-          notes: 'Patient scheduled for CT with IV contrast this afternoon.',
+          rxKey: 'vancomycin',
+          orderText: 'Vancomycin 1 g IV daily',
+          scheduledTimes: ['07:00'], givenTimes: ['06:55'], color: 'green',
+          notes: 'Daily IV. Given 0655 (green). Do NOT re-administer. Infuse over at least 60 min (rapid = red-person/red-man syndrome).',
           traps: [
-            { type: 'contraindication', severity: 'critical',
-              explain: 'Metformin must be HELD 48 hr before AND after IV contrast - lactic acidosis risk. Clarify with team; do not give.' }
+            { type: 'wrong_color', severity: 'major',
+              explain: 'Cell is green = already given at 0655. Giving again at 0900 would be a duplicate dose - critical for a narrow-therapeutic drug like vancomycin.' }
           ]
         }
       ]
