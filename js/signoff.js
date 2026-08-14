@@ -159,8 +159,25 @@
     { key: 'lasix', title: 'Furosemide watch - "LOOP"',
       body: 'Low K+, Orthostasis, Ototoxicity if fast push, Photosensitivity.' },
     { key: 'kcl', title: 'KCl - "Kill Con Level"',
-      body: 'Kills if pushed, Central line only for >10 mEq/hr, Level above 5 => hold.' }
+      body: 'Kills if pushed, Central line only for >10 mEq/hr, Level above 5 => hold.' },
+    // Priority study group additions
+    { key: 'ace', title: 'ACE inhibitor (lisinopril) - "ACE"',
+      body: 'Angioedema, Cough (dry), Elevated K+.' },
+    { key: 'amlodipine', title: 'Amlodipine ankles',
+      body: 'Dihydropyridine CCBs (amlodipine) swell ankles, not slow the heart - hold parameter is BP, not HR (unlike diltiazem).' },
+    { key: 'lasix_vs_ace', title: 'Furosemide vs. Lisinopril - opposite K+',
+      body: 'Furosemide (loop diuretic) LOWERS potassium. Lisinopril (ACE inhibitor) RAISES potassium. Given together, K+ can land anywhere - always check the level, never assume.' },
+    { key: 'anticoag_pair', title: 'Anticoagulant monitoring pair',
+      body: 'Heparin -> aPTT. Warfarin -> INR. Different drug, different lab, do not mix them up.' },
+    { key: 'antiplatelet', title: 'Antiplatelet vs. anticoagulant',
+      body: 'Clopidogrel (Plavix) blocks platelets from clumping - it is NOT reversed by vitamin K (that is warfarin) and does NOT have an aPTT/INR to monitor.' }
   ];
+
+  /* The user's own priority cramming list: Furosemide, Amlodipine, Lisinopril,
+   * Digoxin, Dilantin, Heparin, Warfarin, Clopidogrel. Drives the top section of
+   * the Cheat Sheet and the "Priority Group" filter in Flashcards. Kept in sync
+   * with SignoffData.priorityGroupIds on iOS. */
+  var PRIORITY_GROUP_IDS = ['lasix', 'amlodipine', 'lisinopril', 'digoxin', 'dilantin', 'heparin', 'warfarin', 'plavix'];
 
   /* Injection quick reference verbatim from lab_skills_verbatim.txt. */
   var INJECTION_REF = [
@@ -783,12 +800,38 @@
     var all = DRUGS();
     var highAlertIds = { digoxin:1, heparin:1, warfarin:1, insulin_regular:1, insulin_nph:1, insulin_humalog:1, kcl:1, hydralazine:1, morphine:1, dilaudid:1, dilantin:1, methergine:1, amiodarone:1, lorazepam:1, cardizem:1 };
     function sortKey(d) { return (highAlertIds[d.id] ? 0 : 1) + '-' + (d.klass || '') + '-' + d.generic; }
-    var sorted = all.slice().sort(function (a, b) { return sortKey(a).localeCompare(sortKey(b)); });
+    var priorityGroup = PRIORITY_GROUP_IDS.map(function (id) {
+      return all.filter(function (d) { return d.id === id; })[0];
+    }).filter(Boolean);
+    var rest = all.filter(function (d) { return PRIORITY_GROUP_IDS.indexOf(d.id) === -1; });
+    var sorted = rest.slice().sort(function (a, b) { return sortKey(a).localeCompare(sortKey(b)); });
 
     return ce('div', { className: 'sg-root' },
       ce('div', { className: 'sg-card' },
         ce('h3', null, 'Cheat Sheet'),
         ce('div', { className: 'sg-muted' }, 'HIGH-ALERT drugs first, then by class. Print-friendly. If a value looks wrong, defer to the instructor answer key.')
+      ),
+      ce('div', { className: 'sg-card', style: { background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.4)' } },
+        ce('div', { style: { fontWeight: 700, marginBottom: 6, color: 'var(--orange,#f59e0b)' } }, '⭐ YOUR PRIORITY GROUP'),
+        ce('div', { className: 'sg-muted', style: { marginBottom: 8 } }, 'Furosemide, Amlodipine, Lisinopril, Digoxin, Dilantin, Heparin, Warfarin, Clopidogrel.'),
+        ce('div', { style: { overflowX: 'auto' } },
+          ce('table', { className: 'sg-cheat-table' },
+            ce('thead', null, ce('tr', null,
+              ce('th', null, 'Name'), ce('th', null, 'Class'), ce('th', null, 'Hold if'), ce('th', null, 'Antidote / Watch'), ce('th', null, 'Key teaching'))),
+            ce('tbody', null, priorityGroup.map(function (d) {
+              var hold = (d.holdParameters || []).join(' | ') || '-';
+              var watch = d.antidote ? ('Antidote: ' + d.antidote) : ((d.sideEffects || []).slice(0, 2).join(', '));
+              var teach = (d.keyTeaching || [])[0] || '';
+              return ce('tr', { key: d.id },
+                ce('td', { className: d.highAlert ? 'hi' : '' }, (d.highAlert ? '⚠️ ' : '') + d.generic + (d.brand ? ' (' + d.brand + ')' : '')),
+                ce('td', null, d.klass),
+                ce('td', null, hold),
+                ce('td', null, watch),
+                ce('td', null, teach)
+              );
+            }))
+          )
+        )
       ),
       ce('div', { className: 'sg-card' },
         ce('div', { style: { fontWeight: 700, marginBottom: 6 } }, 'Antidotes to memorize'),
@@ -876,7 +919,9 @@
     drugs.forEach(function (d) {
       // headline card
       var headline = (d.criticalConsiderations || [])[0] || (d.keyTeaching || [])[0] || d.klass;
-      cards.push({ id: 'drug-' + d.id, front: d.generic + (d.brand ? ' (' + d.brand + ')' : '') + '\nKey fact?', back: headline, tags: ['drug', d.klass] });
+      var headlineTags = ['drug', d.klass];
+      if (PRIORITY_GROUP_IDS.indexOf(d.id) !== -1) headlineTags.push('priority');
+      cards.push({ id: 'drug-' + d.id, front: d.generic + (d.brand ? ' (' + d.brand + ')' : '') + '\nKey fact?', back: headline, tags: headlineTags });
       // hold rule if present
       if (d.holdParameters && d.holdParameters.length) {
         cards.push({ id: 'hold-' + d.id, front: 'When do you HOLD ' + d.generic + '?', back: d.holdParameters.join(' | '), tags: ['hold'] });
@@ -898,6 +943,21 @@
     cards.push({ id: 'digoxin-hold', front: 'Apical HR is 54 in an adult on digoxin. What do you do?', back: 'HOLD the dose, notify the provider. (Adult hold threshold is <60. Also check K+ - low K+ potentiates toxicity.)', tags: ['hold'] });
     cards.push({ id: 'methergine-hold', front: 'BP is 158/98 in a postpartum patient and methergine is ordered. What do you do?', back: 'HOLD the methergine. It is a vasoconstrictor - contraindicated in HTN or preeclampsia. Ask for an alternate uterotonic (oxytocin, carboprost, misoprostol).', tags: ['hold'] });
     cards.push({ id: 'metformin-contrast', front: 'Metformin patient has an IV-contrast CT scheduled at noon. What do you do?', back: 'Hold metformin 48 hr before AND after IV contrast - lactic acidosis risk.', tags: ['hold'] });
+    // Priority-group comparison cards - the pairings that are easy to mix up under
+    // time pressure, which is exactly when they get tested. Kept in sync with the
+    // iOS SignoffData.flashcards priorityCompare set.
+    cards.push({ id: 'priority-k-direction', front: 'Furosemide vs. Lisinopril - which raises K+, which lowers it?',
+      back: 'Furosemide (loop diuretic) LOWERS potassium - hold if K+ is already low. Lisinopril (ACE inhibitor) RAISES potassium - hold/flag if K+ is already high. Opposite directions; check the actual lab value, do not guess from the drug class alone.', tags: ['priority', 'comparison'] });
+    cards.push({ id: 'priority-anticoag-monitor', front: 'Heparin vs. Warfarin - which lab, which antidote?',
+      back: 'Heparin -> monitored by aPTT, reversed by protamine sulfate (fast-acting, IV). Warfarin -> monitored by INR, reversed by vitamin K (slow) or PCC/FFP (fast, for active bleeding).', tags: ['priority', 'comparison'] });
+    cards.push({ id: 'priority-ccb-vs-ace', front: 'Amlodipine vs. Lisinopril - same job (BP), different hold parameter?',
+      back: 'Amlodipine (CCB): hold is about BP/symptomatic hypotension - it does not slow the heart (dihydropyridine). Lisinopril (ACE inhibitor): hold is about BP AND potassium - check both before giving.', tags: ['priority', 'comparison'] });
+    cards.push({ id: 'priority-digoxin-vs-dilantin', front: 'Digoxin vs. Dilantin - both need a level checked, but what else differs?',
+      back: 'Digoxin: therapeutic 0.5-2 ng/mL, hold if apical HR <60, toxicity = SICK (slow pulse, vision changes, confusion/GI). Dilantin (phenytoin): therapeutic 10-20 mcg/mL, IV push <=50 mg/min through a filter (saline only - precipitates in dextrose), watch gingival hyperplasia long-term.', tags: ['priority', 'comparison'] });
+    cards.push({ id: 'priority-antiplatelet-vs-anticoag', front: 'Clopidogrel - anticoagulant or antiplatelet, and does it have a lab to check?',
+      back: 'Antiplatelet, not an anticoagulant - different mechanism than heparin/warfarin. No routine aPTT/INR to check. Still a bleeding risk: watch for bruising, GI bleeding, and hold before surgery per provider order.', tags: ['priority', 'comparison'] });
+    cards.push({ id: 'priority-all-eight-bleed-risk', front: 'Of the 8 priority drugs, which ones raise bleeding risk?',
+      back: 'Heparin, Warfarin, and Clopidogrel - three different mechanisms (anticoagulant, anticoagulant, antiplatelet), same clinical concern: assess for bleeding/bruising before administering any of the three, and know they should never casually be combined without a specific order.', tags: ['priority', 'comparison'] });
     return cards;
   }
 
@@ -924,7 +984,7 @@
 
     useEffect(function () { setIdx(0); }, [filter]);
     var current = filtered[idx % (filtered.length || 1)];
-    var tags = ['', 'drug', 'hold', 'antidote', 'rate', 'rights', 'insulin', 'infusion'];
+    var tags = ['', 'priority', 'drug', 'hold', 'antidote', 'rate', 'rights', 'insulin', 'infusion'];
 
     return ce('div', { className: 'sg-root' },
       ce('div', { className: 'sg-card' },
@@ -932,8 +992,9 @@
         ce('div', { className: 'sg-muted' }, 'Tap the card to flip. ' + cards.length + ' cards total.'),
         ce('div', { className: 'sg-btnrow' },
           tags.map(function (t) {
+            var label = t === 'priority' ? '⭐ Priority Group' : (t || 'All');
             return ce('button', { key: t, className: 'sg-btn ' + (filter === t ? 'on' : ''), onClick: function () { setFilter(t); } },
-              t || 'All');
+              label);
           })
         )
       ),

@@ -471,6 +471,52 @@
       sideEffects: ['Bradycardia', 'Hypotension', 'AV block', 'Peripheral edema', 'Constipation'],
       antidote: 'IV calcium gluconate; glucagon; vasopressors', ivPushRate: 'IV bolus over 2 min; then continuous infusion 5-15 mg/hr'
     },
+    // Added for the user's priority study group (Furosemide, Amlodipine, Lisinopril,
+    // Digoxin, Dilantin, Heparin, Warfarin, Clopidogrel) - the other 6 already existed.
+    {
+      id: 'amlodipine', generic: 'amlodipine', brand: 'Norvasc',
+      klass: 'Dihydropyridine calcium channel blocker',
+      routes: ['PO'],
+      usualAdultDose: '5-10 mg PO once daily',
+      highAlert: false,
+      holdParameters: ['Symptomatic hypotension', 'SBP below the ordered threshold'],
+      onset: '30-50 min', peak: '6-12 hr', duration: '24 hr+ (long half-life, ~30-50 hr)',
+      keyTeaching: [
+        'Check BP before dosing, especially the first few doses',
+        "Peripheral (ankle) edema is the classic side effect - NOT reflex tachycardia, since it's a dihydropyridine (vascular-selective) CCB, unlike diltiazem/verapamil",
+        'Do not stop abruptly',
+        'Avoid grapefruit juice'
+      ],
+      criticalConsiderations: [
+        "Compare vs. Cardizem (diltiazem): amlodipine does NOT slow HR/AV conduction the way a non-dihydropyridine CCB does - it's a vasodilator, so its hold parameter is BP, not HR",
+        'Additive hypotension with other antihypertensives (e.g. Lisinopril) - check BP trend across the MAR, not just one reading'
+      ],
+      sideEffects: ['Peripheral edema', 'Headache', 'Flushing', 'Dizziness', 'Reflex tachycardia (uncommon vs. short-acting CCBs)'],
+      antidote: 'IV calcium; vasopressors for severe overdose-related hypotension', ivPushRate: null,
+      mnemonic: 'Amlodipine ankles - dihydropyridine CCBs swell ankles, not slow the heart.'
+    },
+    {
+      id: 'lisinopril', generic: 'lisinopril', brand: 'Prinivil, Zestril',
+      klass: 'ACE inhibitor',
+      routes: ['PO'],
+      usualAdultDose: '10-40 mg PO once daily',
+      highAlert: false,
+      holdParameters: ['SBP below the ordered threshold', 'K+ above normal (ACE inhibitors raise K+)', 'Pregnancy (contraindicated)'],
+      onset: '1 hr', peak: '6 hr', duration: '24 hr',
+      keyTeaching: [
+        'Check BP and K+ before dosing',
+        'The classic side effect is a persistent DRY COUGH (bradykinin-mediated) - if a patient reports one, this is the drug to suspect, not amlodipine',
+        'Watch for angioedema (lips/tongue/throat swelling) - rare but life-threatening; a first sign is reason to hold and notify',
+        'Never in pregnancy (fetal renal toxicity)'
+      ],
+      criticalConsiderations: [
+        'ACE inhibitors RAISE potassium - dangerous combined with K-sparing diuretics or K+ supplements (K-DUR); the opposite of what Furosemide/Lasix does',
+        'First-dose hypotension can be significant, especially if the patient is also on a diuretic (volume-depleted)'
+      ],
+      sideEffects: ['Dry cough', 'Hyperkalemia', 'Angioedema (rare, serious)', 'Hypotension', 'Renal function changes'],
+      antidote: null, ivPushRate: null,
+      mnemonic: 'ACE = Angioedema, Cough, Elevated K+.'
+    },
     {
       id: 'lactulose', generic: 'lactulose', brand: 'Enulose, Kristalose',
       klass: 'Osmotic laxative / ammonia detoxicant',
@@ -870,7 +916,7 @@
     cardizem:1, lactulose:1, kayexalate:1, metformin:1, methergine:1, amiodarone:1,
     glucagon:1, lorazepam:1, haloperidol:1, cefazolin:1, morphine:1, ceftriaxone:1,
     insulin_regular:1, insulin_nph:1, insulin_humalog:1, dilaudid:1, hydralazine:1,
-    lidocaine_patch:1
+    lidocaine_patch:1, amlodipine:1, lisinopril:1
   };
   var filtered = [];
   for (var i = 0; i < DRUGS.length; i++) {
