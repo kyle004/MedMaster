@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <title>MedMaster</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b82f6'/%3E%3Cstop offset='1' stop-color='%236366f1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M32 12c-2.5 0-4.5 1-4.5 3v9h-7c-2 0-3 2-3 4.5s1 4.5 3 4.5h7v9h-7c-2 0-3 2-3 4.5s1 4.5 3 4.5h7v1c0 2 2 3.5 4.5 3.5s4.5-1.5 4.5-3.5v-1h7c2 0 3-2 3-4.5s-1-4.5-3-4.5h-7v-9h7c2 0 3-2 3-4.5s-1-4.5-3-4.5h-7v-9c0-2-2-3-4.5-3z' fill='white' opacity='0.95'/%3E%3C/svg%3E">
-<meta name="app-version" content="38">
+<!-- Debug breadcrumb only. version.json is the source of truth for the
+     update checker (see "Auto-update checker" near the bottom of this file). -->
+<meta name="app-version" content="40">
 
 <!-- Two third-party origins are on the critical path. Warm the DNS + TLS
      handshake now instead of paying for it when the parser reaches the
@@ -11277,10 +11279,26 @@ if (document.readyState === 'loading') {
    and asks again before discarding it.
    ------------------------------------------------------------------ */
 (function() {
-  var meta = document.querySelector('meta[name="app-version"]');
-  var currentVersion = meta ? meta.content : null;
+  /* WHY THE BASELINE IS FETCHED, NOT READ FROM THE META TAG
+     ------------------------------------------------------
+     This used to compare version.json against <meta name="app-version">.
+     That is two hand-maintained copies of one number, and this is a static
+     site with no build step (netlify.toml: command = ""), so nothing kept
+     them in sync. They drifted — meta said 38, version.json said 40 — and
+     because the check is "these differ", the banner fired on every poll,
+     forever, without anybody deploying anything.
+
+     Now the baseline is whatever version.json said when this page loaded.
+     One source of truth, so drift cannot happen, and the comparison finally
+     means what it claims: "the deployed version changed since you loaded". */
+  var currentVersion = null;  // set by the first successful poll
   var checkInterval = 300000; // check every 5 minutes
-  var dismissedFor = null;    // version the student said "not now" to
+  var DISMISS_KEY = 'mm.updateDismissedFor';
+
+  // Persisted, so "Not now" survives a reload. Previously this was a plain
+  // variable: dismissing did nothing past the next page load.
+  var dismissedFor = null;
+  try { dismissedFor = window.localStorage.getItem(DISMISS_KEY); } catch (e) { /* private mode */ }
 
   function activityInProgress() {
     // 1. A module said so explicitly (MM.setBusy). Most precise; nothing
@@ -11307,8 +11325,11 @@ if (document.readyState === 'loading') {
     fetch(base + 'version.json?_t=' + Date.now(), { cache: 'no-store' })
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        if (data && data.version && data.version !== currentVersion
-            && data.version !== dismissedFor) {
+        if (!data || !data.version) return;
+        // First successful poll only establishes what "current" means for this
+        // page instance. It must never itself raise a banner.
+        if (currentVersion === null) { currentVersion = data.version; return; }
+        if (data.version !== currentVersion && data.version !== dismissedFor) {
           showUpdateBanner(data.version);
         }
       })
@@ -11347,6 +11368,7 @@ if (document.readyState === 'loading') {
     later.setAttribute('aria-label', 'Dismiss update notice');
     later.onclick = function() {
       dismissedFor = newVersion;
+      try { window.localStorage.setItem(DISMISS_KEY, newVersion); } catch (e) { /* private mode */ }
       if (banner.parentNode) banner.parentNode.removeChild(banner);
     };
 
@@ -11369,6 +11391,8 @@ if (document.readyState === 'loading') {
     document.body.prepend(banner);
   }
 
+  // Establish the baseline immediately; the first call never banners.
+  checkForUpdate();
   setInterval(checkForUpdate, checkInterval);
 })();
 </script>
