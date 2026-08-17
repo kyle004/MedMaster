@@ -306,7 +306,7 @@
       '.sg-chip.hi{background:rgba(239,68,68,0.16);color:var(--red,#ef4444);border:1px solid rgba(239,68,68,0.4);}',
       '.sg-chip.warn{background:rgba(245,158,11,0.16);color:var(--orange,#f59e0b);border:1px solid rgba(245,158,11,0.4);}',
       '.sg-chip.ok{background:rgba(34,197,94,0.14);color:var(--green,#22c55e);border:1px solid rgba(34,197,94,0.4);}',
-      '.sg-chip.acc{background:rgba(59,130,246,0.16);color:var(--accent,#3b82f6);border:1px solid rgba(59,130,246,0.4);}',
+      '.sg-chip.acc{background:rgba(var(--accent-rgb),0.16);color:var(--accent,#3b82f6);border:1px solid rgba(var(--accent-rgb),0.4);}',
       '.sg-cell{padding:6px 10px;border-radius:6px;font-weight:600;text-align:center;color:#0f172a;font-size:0.85rem;}',
       '.sg-cell.yellow{background:#facc15;}',
       '.sg-cell.green{background:#4ade80;}',
@@ -329,7 +329,7 @@
       '.sg-trap{background:rgba(239,68,68,0.09);border-left:3px solid var(--red,#ef4444);padding:8px 10px;',
       'margin:6px 0;border-radius:0 6px 6px 0;font-size:0.85rem;}',
       '.sg-trap.major{background:rgba(245,158,11,0.09);border-left-color:var(--orange,#f59e0b);}',
-      '.sg-trap.minor{background:rgba(59,130,246,0.09);border-left-color:var(--accent,#3b82f6);}',
+      '.sg-trap.minor{background:rgba(var(--accent-rgb),0.09);border-left-color:var(--accent,#3b82f6);}',
       '.sg-teach{background:var(--surface2,#334155);padding:10px;border-radius:8px;margin:8px 0;font-size:0.86rem;}',
       '.sg-teach ul{margin:6px 0 0 18px;padding:0;}',
       '.sg-teach li{margin:2px 0;}',
@@ -360,7 +360,7 @@
       '.sg-input,.sg-select,.sg-textarea{background:var(--surface2,#334155);color:var(--text,#f1f5f9);',
       'border:1px solid var(--surface2,#334155);border-radius:6px;padding:6px 10px;font-size:0.9rem;font-family:inherit;}',
       '.sg-textarea{width:100%;min-height:60px;resize:vertical;}',
-      '.sg-note{background:rgba(59,130,246,0.09);border-left:3px solid var(--accent,#3b82f6);',
+      '.sg-note{background:rgba(var(--accent-rgb),0.09);border-left:3px solid var(--accent,#3b82f6);',
       'padding:8px 10px;border-radius:0 6px 6px 0;margin:8px 0;font-size:0.85rem;}',
       '.sg-progress{background:var(--surface2,#334155);height:6px;border-radius:999px;overflow:hidden;margin:6px 0;}',
       '.sg-progress > i{display:block;height:100%;background:var(--accent,#3b82f6);border-radius:999px;transition:width 0.25s ease;}',
@@ -1142,7 +1142,7 @@
     }
 
     return ce('div', { className: 'sg-root' },
-      ce('div', { className: 'sg-card', style: { background: 'linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.15))', borderColor: 'var(--accent,#3b82f6)' } },
+      ce('div', { className: 'sg-card', style: { background: 'linear-gradient(135deg, rgba(var(--accent-rgb),0.15), rgba(139,92,246,0.15))', borderColor: 'var(--accent,#3b82f6)' } },
         ce('h2', { style: { margin: '0 0 6px' } }, 'Med Admin Signoff Sim'),
         ce('div', { className: 'sg-muted' }, 'The focused practice mode for the school medication administration skills check. Drug list, MAR format, and rubric are the ones your instructor actually uses.')
       ),

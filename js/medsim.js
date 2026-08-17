@@ -1201,13 +1201,13 @@
       '.ms-btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}',
       '.ms-chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:0.74rem;',
       'font-weight:700;background:var(--surface2,#334155);color:var(--text,#f1f5f9);}',
-      '.ms-chip.acc{background:rgba(59,130,246,0.18);color:var(--accent,#3b82f6);border:1px solid rgba(59,130,246,0.42);}',
+      '.ms-chip.acc{background:rgba(var(--accent-rgb),0.18);color:var(--accent,#3b82f6);border:1px solid rgba(var(--accent-rgb),0.42);}',
       '.ms-chip.ok{background:rgba(34,197,94,0.16);color:var(--green,#22c55e);border:1px solid rgba(34,197,94,0.42);}',
       '.ms-chip.warn{background:rgba(245,158,11,0.16);color:var(--orange,#f59e0b);border:1px solid rgba(245,158,11,0.42);}',
       '.ms-chip.bad{background:rgba(239,68,68,0.16);color:var(--red,#ef4444);border:1px solid rgba(239,68,68,0.42);}',
       /* ---- schematic location panel (deliberately NOT photorealistic) ---- */
       '.ms-scene{border:1px solid var(--surface2,#334155);border-radius:12px;padding:16px;',
-      'background:linear-gradient(160deg,rgba(59,130,246,0.07),rgba(15,23,42,0.25));min-height:210px;}',
+      'background:linear-gradient(160deg,rgba(var(--accent-rgb),0.07),rgba(15,23,42,0.25));min-height:210px;}',
       '.ms-scene-hd{display:flex;align-items:center;gap:10px;margin-bottom:12px;}',
       '.ms-scene-hd .ms-ico{font-size:1.7rem;line-height:1;}',
       '.ms-scene-hd h4{margin:0;font-size:1rem;}',
@@ -1278,9 +1278,9 @@
       '.ms-tl{max-height:340px;overflow-y:auto;font-size:0.83rem;}',
       '.ms-tl-row{display:flex;gap:9px;padding:4px 0;border-bottom:1px solid var(--surface2,#334155);}',
       '.ms-tl-row .t{color:var(--text2,#94a3b8);min-width:52px;font-variant-numeric:tabular-nums;}',
-      '.ms-tl-row.cur{background:rgba(59,130,246,0.14);border-radius:5px;}',
+      '.ms-tl-row.cur{background:rgba(var(--accent-rgb),0.14);border-radius:5px;}',
       '.ms-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:11px;}',
-      '.ms-hint{background:rgba(59,130,246,0.1);border-left:3px solid var(--accent,#3b82f6);',
+      '.ms-hint{background:rgba(var(--accent-rgb),0.1);border-left:3px solid var(--accent,#3b82f6);',
       'padding:8px 11px;border-radius:0 8px 8px 0;margin:8px 0;font-size:0.87rem;}',
       '.ms-note{background:rgba(245,158,11,0.09);border-left:3px solid var(--orange,#f59e0b);',
       'padding:8px 11px;border-radius:0 8px 8px 0;margin:8px 0;font-size:0.85rem;}',
@@ -2051,7 +2051,7 @@
       ce('div', {
         className: 'ms-card',
         style: {
-          background: 'linear-gradient(135deg, rgba(59,130,246,0.16), rgba(139,92,246,0.16))',
+          background: 'linear-gradient(135deg, rgba(var(--accent-rgb),0.16), rgba(139,92,246,0.16))',
           borderColor: 'var(--accent,#3b82f6)'
         }
       },

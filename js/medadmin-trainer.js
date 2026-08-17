@@ -389,7 +389,7 @@
     tintG: 'var(--tint-green,rgba(34,197,94,0.12))',
     tintR: 'var(--tint-red,rgba(239,68,68,0.12))',
     tintO: 'var(--tint-orange,rgba(245,158,11,0.12))',
-    tintA: 'var(--tint-accent,rgba(59,130,246,0.12))',
+    tintA: 'var(--tint-accent,rgba(var(--accent-rgb),0.12))',
     tintP: 'var(--tint-purple,rgba(139,92,246,0.12))',
     fs2xs: 'var(--fs-2xs,11px)',
     fsXs: 'var(--fs-xs,12px)',

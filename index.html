@@ -9,6 +9,68 @@
      update checker (see "Auto-update checker" near the bottom of this file). -->
 <meta name="app-version" content="40">
 
+<!-- ============================================================
+     THEME CONTROLLER — must stay INLINE and BEFORE any stylesheet
+     that reads the tokens.
+     Applying the saved theme after first paint gives a visible
+     flash of the dark default on a light-mode device, so this
+     runs synchronously in <head> rather than at boot with the
+     rest of the app.
+     Storage keys and values match the iOS ThemeStore exactly.
+     ============================================================ -->
+<script>
+(function () {
+  var THEME_KEY  = 'mm.theme.appearance';   // 'system' | 'light' | 'dark'
+  var ACCENT_KEY = 'mm.theme.accent';       // blue | violet | emerald | rose | amber
+  var root = document.documentElement;
+
+  function read(key, fallback) {
+    try { return window.localStorage.getItem(key) || fallback; }
+    catch (e) { return fallback; }          // private mode / storage disabled
+  }
+
+  // Always resolve to a concrete theme. The stylesheet then needs one override
+  // block instead of duplicating every token into a media query.
+  function resolve(pref) {
+    if (pref === 'light' || pref === 'dark') return pref;
+    try {
+      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    } catch (e) { return 'dark'; }
+  }
+
+  function apply() {
+    var pref = read(THEME_KEY, 'system');
+    root.setAttribute('data-theme', resolve(pref));
+    root.setAttribute('data-accent', read(ACCENT_KEY, 'blue'));
+  }
+
+  apply();
+
+  // Exposed so the settings UI can change it without a reload.
+  window.MM_THEME = {
+    get appearance() { return read(THEME_KEY, 'system'); },
+    get accent() { return read(ACCENT_KEY, 'blue'); },
+    setAppearance: function (v) {
+      try { window.localStorage.setItem(THEME_KEY, v); } catch (e) {}
+      apply();
+    },
+    setAccent: function (v) {
+      try { window.localStorage.setItem(ACCENT_KEY, v); } catch (e) {}
+      apply();
+    },
+    APPEARANCES: ['system', 'light', 'dark'],
+    ACCENTS: ['blue', 'violet', 'emerald', 'rose', 'amber']
+  };
+
+  // Follow the OS live, but only while the student is on "system".
+  try {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function () {
+      if (read(THEME_KEY, 'system') === 'system') apply();
+    });
+  } catch (e) { /* older Safari: no listener, initial resolve still applied */ }
+})();
+</script>
+
 <!-- Two third-party origins are on the critical path. Warm the DNS + TLS
      handshake now instead of paying for it when the parser reaches the
      first <script src>. Nothing below this line can start until React and
@@ -193,6 +255,9 @@
 
     /* ---------- BRAND ---------- */
     --accent:      #3b82f6;  /* fills only                                    */
+    /* Comma-separated channels of --accent, for rgba() tints. CSS cannot
+       derive this from the hex, so it is maintained beside every accent. */
+    --accent-rgb:  59,130,246;
     --accent-fg:   #60a5fa;  /* accent AS TEXT — 5.75 on surface              */
     --accent-hov:  #2563eb;
     --accent2:     #8b5cf6;
@@ -218,7 +283,7 @@
     --tint-green:  rgba(34,197,94,0.12);
     --tint-red:    rgba(239,68,68,0.12);
     --tint-orange: rgba(245,158,11,0.12);
-    --tint-accent: rgba(59,130,246,0.12);
+    --tint-accent: rgba(var(--accent-rgb),0.12);
     --tint-purple: rgba(139,92,246,0.12);
     --tint-strong: 0.22;   /* multiplier convention for hover/active states */
 
@@ -266,6 +331,69 @@
     /* ---------- BREAKPOINTS (documented; @media cannot read custom props) ---------- */
     --bp-sm: 480px;  --bp-md: 768px;  --bp-lg: 1024px;
   }
+
+  /* ============================================================
+     THEMING  (added alongside the iOS app's MMColor tokens)
+     ------------------------------------------------------------
+     `:root` above is the DARK palette and stays the default, so
+     anything that never sets data-theme looks exactly as before.
+
+     The controller at the bottom of this file always resolves the
+     preference to a concrete value and writes data-theme="light"
+     or "dark" — it never leaves it as "system". That keeps this
+     stylesheet to one override block per theme instead of
+     duplicating each into a prefers-color-scheme query.
+
+     Values are byte-for-byte the ones in the iOS Colors.swift, so
+     the two platforms cannot drift apart.
+     ============================================================ */
+  html[data-theme="light"] {
+    --bg:          #f6f8fb;
+    --surface:     #ffffff;
+    --surface2:    #f1f5f9;
+    --surface3:    #e2e8f0;
+    --scrim:       rgba(15,23,42,0.72);
+
+    --border:      #e4e9f0;
+    --border-str:  #cbd5e1;
+
+    --text:        #0f172a;
+    --text2:       #475569;
+    --text3:       #64748b;
+    /* Inverted: light-mode chips fill with a saturated accent, so the label
+       on top of them has to be white rather than near-black. */
+    --text-on-fill:#ffffff;
+
+    --green:  #16a34a;  --green-fg:  #15803d;
+    --red:    #dc2626;  --red-fg:    #b91c1c;
+    --orange: #d97706;  --orange-fg: #b45309;
+    --info:   #0284c7;  --info-fg:   #0284c7;
+
+    --zone-stable:     #16a34a;
+    --zone-concerning: #b45309;
+    --zone-critical:   #e11d48;
+    --zone-arrest:     #9333ea;
+
+    --tier-free: #64748b;
+    --tier-plus: #2563eb;
+    --tier-pro:  #7c3aed;
+    --tier-inst: #0d9488;
+  }
+
+  /* ---------- ACCENTS ----------
+     Brand ramp only. Semantic colours are deliberately NOT themeable: green
+     has to keep meaning pass and red critical whichever accent is chosen. */
+  html[data-accent="violet"]  { --accent-rgb:139,92,246; --accent:#8b5cf6; --accent-fg:#a78bfa; --accent-hov:#7c3aed; --accent2:#60a5fa; --accent2-fg:#93c5fd; }
+  html[data-accent="emerald"] { --accent-rgb:16,185,129; --accent:#10b981; --accent-fg:#34d399; --accent-hov:#059669; --accent2:#2dd4bf; --accent2-fg:#5eead4; }
+  html[data-accent="rose"]    { --accent:#f43f5e; --accent-fg:#fb7185; --accent-hov:#e11d48; --accent2:#e879f9; --accent2-fg:#f0abfc; }
+  html[data-accent="amber"]   { --accent:#f59e0b; --accent-fg:#fbbf24; --accent-hov:#d97706; --accent2:#fb923c; --accent2-fg:#fdba74; }
+
+  html[data-theme="light"][data-accent="blue"]    { --accent-rgb:37,99,235; --accent:#2563eb; --accent-fg:#2563eb; --accent-hov:#1d4ed8; --accent2:#7c3aed; --accent2-fg:#7c3aed; }
+  html[data-theme="light"][data-accent="violet"]  { --accent-rgb:124,58,237; --accent:#7c3aed; --accent-fg:#7c3aed; --accent-hov:#6d28d9; --accent2:#2563eb; --accent2-fg:#2563eb; }
+  html[data-theme="light"][data-accent="emerald"] { --accent-rgb:5,150,105; --accent:#059669; --accent-fg:#047857; --accent-hov:#047857; --accent2:#0d9488; --accent2-fg:#0f766e; }
+  html[data-theme="light"][data-accent="rose"]    { --accent-rgb:225,29,72; --accent:#e11d48; --accent-fg:#be123c; --accent-hov:#be123c; --accent2:#c026d3; --accent2-fg:#a21caf; }
+  html[data-theme="light"][data-accent="amber"]   { --accent:#d97706; --accent-fg:#b45309; --accent-hov:#b45309; --accent2:#ea580c; --accent2-fg:#c2410c; }
+
   * { margin:0; padding:0; box-sizing:border-box; }
   html { -webkit-text-size-adjust:100%; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height:100vh; overflow-x:hidden; }
@@ -333,7 +461,7 @@
   .sidebar-nav { flex:1; overflow-y:auto; padding:0 8px; }
   .sidebar-item { display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:10px; cursor:pointer; font-size:0.88rem; font-weight:500; color:var(--text2); transition:all 0.15s; border:none; background:none; width:100%; text-align:left; }
   .sidebar-item:hover { background:var(--surface3); color:var(--text); }
-  .sidebar-item.active { background:rgba(59,130,246,0.15); color:var(--accent); font-weight:600; }
+  .sidebar-item.active { background:rgba(var(--accent-rgb),0.15); color:var(--accent); font-weight:600; }
   .sidebar-item .si-icon { width:22px; text-align:center; font-size:1rem; flex-shrink:0; }
   .sidebar-item .si-label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sidebar-item .si-badge { margin-left:auto; background:var(--red); color:white; font-size:0.7rem; font-weight:700; padding:2px 7px; border-radius:10px; }
@@ -433,8 +561,8 @@
   .step-calc-expr-text { flex:1; font-size:1.05rem; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:22px; }
   .step-calc-expr-text.placeholder { color:var(--text3); font-style:italic; font-size:0.9rem; font-family:inherit; }
   .step-calc-result { font-weight:700; font-size:1.1rem; white-space:nowrap; }
-  .step-calc-hint { display:inline-flex; align-items:center; gap:4px; padding:4px 12px; margin:6px 10px; border-radius:20px; font-size:0.82rem; cursor:pointer; transition:background 0.15s,transform 0.1s; background:rgba(59,130,246,0.12); color:var(--accent); border:1px solid rgba(59,130,246,0.2); user-select:none; -webkit-user-select:none; }
-  .step-calc-hint:hover { background:rgba(59,130,246,0.22); }
+  .step-calc-hint { display:inline-flex; align-items:center; gap:4px; padding:4px 12px; margin:6px 10px; border-radius:20px; font-size:0.82rem; cursor:pointer; transition:background 0.15s,transform 0.1s; background:rgba(var(--accent-rgb),0.12); color:var(--accent); border:1px solid rgba(var(--accent-rgb),0.2); user-select:none; -webkit-user-select:none; }
+  .step-calc-hint:hover { background:rgba(var(--accent-rgb),0.22); }
   .step-calc-hint:active { transform:scale(0.96); }
   .step-calc-pad { display:grid; grid-template-columns:repeat(5,1fr); gap:1px; padding:4px 6px 6px; }
   .step-calc-btn { height:38px; border:none; border-radius:8px; cursor:pointer; font-size:1rem; font-weight:500; background:rgba(255,255,255,0.06); color:var(--text); transition:background 0.1s,transform 0.06s; display:flex; align-items:center; justify-content:center; margin:2px; user-select:none; -webkit-user-select:none; font-family:-apple-system,system-ui,sans-serif; }
@@ -462,8 +590,8 @@
   /* MULTIPLE CHOICE */
   .mc-options { display:grid; gap:10px; margin-top:12px; }
   .mc-option { padding:14px 18px; border-radius:10px; border:2px solid var(--border); cursor:pointer; transition:all 0.2s; display:flex; align-items:center; gap:12px; }
-  .mc-option:hover { border-color:var(--accent); background:rgba(59,130,246,0.05); }
-  .mc-option.selected { border-color:var(--accent); background:rgba(59,130,246,0.1); }
+  .mc-option:hover { border-color:var(--accent); background:rgba(var(--accent-rgb),0.05); }
+  .mc-option.selected { border-color:var(--accent); background:rgba(var(--accent-rgb),0.1); }
   .mc-option.correct { border-color:var(--green); background:rgba(34,197,94,0.1); }
   .mc-option.wrong { border-color:var(--red); background:rgba(239,68,68,0.1); }
   .mc-letter { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; background:var(--surface3); font-size:0.85rem; flex-shrink:0; }
@@ -495,8 +623,8 @@
   .calc-btn { height:52px; border:none; border-radius:50%; cursor:pointer; font-size:1.25rem; font-weight:400; background:rgba(255,255,255,0.08); color:#fff; transition:background 0.1s,transform 0.08s; display:flex; align-items:center; justify-content:center; margin:3px; user-select:none; -webkit-user-select:none; font-family:-apple-system,system-ui,sans-serif; }
   .calc-btn:hover { background:rgba(255,255,255,0.15); }
   .calc-btn:active { transform:scale(0.92); background:rgba(255,255,255,0.2); }
-  .calc-btn.op { background:rgba(59,130,246,0.2); color:var(--accent); font-size:1.4rem; }
-  .calc-btn.op:hover { background:rgba(59,130,246,0.35); }
+  .calc-btn.op { background:rgba(var(--accent-rgb),0.2); color:var(--accent); font-size:1.4rem; }
+  .calc-btn.op:hover { background:rgba(var(--accent-rgb),0.35); }
   .calc-btn.op.active { background:var(--accent); color:#fff; }
   .calc-btn.eq { background:var(--accent); color:white; font-size:1.4rem; }
   .calc-btn.eq:hover { background:var(--accent-hov); }
@@ -519,7 +647,7 @@
   .tag { display:inline-block; padding:3px 10px; border-radius:20px; font-size:0.75rem; font-weight:600; }
   .tag-green { background:rgba(34,197,94,0.15); color:var(--green); }
   .tag-red { background:rgba(239,68,68,0.15); color:var(--red); }
-  .tag-blue { background:rgba(59,130,246,0.15); color:var(--accent); }
+  .tag-blue { background:rgba(var(--accent-rgb),0.15); color:var(--accent); }
   .tag-orange { background:rgba(245,158,11,0.15); color:var(--orange); }
 
   /* CATEGORY FILTER */
@@ -610,7 +738,7 @@
   .hl-convert { background:rgba(245,158,11,0.2); padding:2px 5px; border-radius:4px; color:var(--orange); font-weight:600; border-bottom:2px dashed var(--orange); }
 
   /* QUESTION NAVIGATOR */
-  .qnav-toggle { position:fixed; right:16px; top:50%; transform:translateY(-50%); z-index:90; width:40px; height:40px; border-radius:50%; background:var(--accent); color:white; border:none; cursor:pointer; font-size:1.1rem; font-weight:700; box-shadow:0 2px 10px rgba(59,130,246,0.4); display:flex; align-items:center; justify-content:center; }
+  .qnav-toggle { position:fixed; right:16px; top:50%; transform:translateY(-50%); z-index:90; width:40px; height:40px; border-radius:50%; background:var(--accent); color:white; border:none; cursor:pointer; font-size:1.1rem; font-weight:700; box-shadow:0 2px 10px rgba(var(--accent-rgb),0.4); display:flex; align-items:center; justify-content:center; }
   .qnav-panel { position:fixed; right:0; top:0; bottom:0; width:260px; background:var(--surface); border-left:1px solid var(--border); z-index:95; padding:16px; overflow-y:auto; transform:translateX(100%); transition:transform 0.3s ease; box-shadow:-4px 0 20px rgba(0,0,0,0.3); }
   .qnav-panel.open { transform:translateX(0); }
   .qnav-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin-top:12px; }
@@ -619,7 +747,7 @@
   .qnav-dot.current { background:var(--accent); border-color:var(--accent); color:white; }
   .qnav-dot.done { background:rgba(34,197,94,0.15); border-color:var(--green); color:var(--green); }
   .qnav-dot.wrong { background:rgba(239,68,68,0.1); border-color:var(--red); color:var(--red); }
-  .qnav-dot.answered { background:rgba(59,130,246,0.1); border-color:var(--accent); color:var(--accent); }
+  .qnav-dot.answered { background:rgba(var(--accent-rgb),0.1); border-color:var(--accent); color:var(--accent); }
   .qnav-dot.exam-dot { box-shadow:0 0 0 2px rgba(239,68,68,0.3); }
   .qnav-close { position:absolute; top:12px; right:12px; background:none; border:none; color:var(--text3); cursor:pointer; font-size:1.2rem; }
   .qnav-legend { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
@@ -666,13 +794,13 @@
   .pharm-subnav button.active { background:var(--accent2); color:white; }
 
   .med-card { background:var(--surface); border-radius:12px; padding:20px; border:1px solid var(--border); cursor:pointer; transition:all 0.3s; position:relative; overflow:hidden; }
-  .med-card:hover { border-color:var(--accent); transform:translateY(-2px); box-shadow:0 4px 16px rgba(59,130,246,0.15); }
+  .med-card:hover { border-color:var(--accent); transform:translateY(-2px); box-shadow:0 4px 16px rgba(var(--accent-rgb),0.15); }
   .med-card.flipped { background:var(--bg); }
   .med-card-name { font-size:1.15rem; font-weight:700; margin-bottom:6px; }
   .med-card-class { font-size:0.85rem; color:var(--accent2); font-weight:600; margin-bottom:10px; }
   .med-card-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
   .med-tag { padding:3px 10px; border-radius:20px; font-size:0.75rem; font-weight:600; }
-  .med-tag-route { background:rgba(59,130,246,0.15); color:var(--accent); }
+  .med-tag-route { background:rgba(var(--accent-rgb),0.15); color:var(--accent); }
   .med-tag-system { background:rgba(139,92,246,0.15); color:var(--accent2); }
   .suffix-hl { background:rgba(245,158,11,0.3); color:var(--orange); padding:1px 4px; border-radius:4px; font-weight:700; }
   .med-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:14px; }
@@ -683,7 +811,7 @@
   .reverse-hint { color:var(--text2); font-size:0.95rem; margin-bottom:20px; }
   .reverse-options { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
   .reverse-opt { padding:12px; border:2px solid var(--border); border-radius:10px; cursor:pointer; font-weight:600; font-size:0.95rem; background:var(--bg); color:var(--text); transition:all 0.2s; }
-  .reverse-opt:hover { border-color:var(--accent); background:rgba(59,130,246,0.08); }
+  .reverse-opt:hover { border-color:var(--accent); background:rgba(var(--accent-rgb),0.08); }
   .reverse-opt.correct { border-color:var(--green); background:rgba(34,197,94,0.15); color:var(--green); }
   .reverse-opt.wrong { border-color:var(--red); background:rgba(239,68,68,0.1); color:var(--red); }
 
@@ -693,7 +821,7 @@
   .suffix-col h3 { text-align:center; margin-bottom:12px; font-size:0.95rem; color:var(--text2); }
   .suffix-item { padding:12px 16px; border:2px solid var(--border); border-radius:10px; margin-bottom:8px; cursor:pointer; font-weight:600; font-size:1rem; text-align:center; transition:all 0.2s; background:var(--surface); }
   .suffix-item:hover { border-color:var(--accent); }
-  .suffix-item.selected { border-color:var(--accent); background:rgba(59,130,246,0.15); color:var(--accent); }
+  .suffix-item.selected { border-color:var(--accent); background:rgba(var(--accent-rgb),0.15); color:var(--accent); }
   .suffix-item.matched { border-color:var(--green); background:rgba(34,197,94,0.12); color:var(--green); opacity:0.7; pointer-events:none; }
   .suffix-item.wrong-flash { border-color:var(--red); background:rgba(239,68,68,0.15); color:var(--red); animation:shake 0.4s; }
   @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
@@ -735,7 +863,7 @@
   .sim-pulse { width:10px; height:10px; border-radius:50%; background:var(--red); animation:pulse 1s infinite; display:inline-block; }
   .sim-input-area { display:flex; align-items:center; gap:10px; padding:12px 0; border-top:1px solid var(--border); }
   .sim-mic-btn { width:64px; height:64px; border-radius:50%; border:3px solid var(--border); background:var(--surface); cursor:pointer; font-size:1.5rem; display:flex; flex-direction:column; align-items:center; justify-content:center; transition:all 0.2s; color:var(--text); }
-  .sim-mic-btn:hover { border-color:var(--accent); background:rgba(59,130,246,0.1); }
+  .sim-mic-btn:hover { border-color:var(--accent); background:rgba(var(--accent-rgb),0.1); }
   .sim-mic-btn.listening { border-color:var(--red); background:rgba(239,68,68,0.15); animation:pulse-ring 1.5s infinite; }
   .sim-mic-btn:disabled { opacity:0.4; cursor:not-allowed; }
   @keyframes pulse-ring { 0%{box-shadow:0 0 0 0 rgba(239,68,68,0.3)} 70%{box-shadow:0 0 0 12px rgba(239,68,68,0)} 100%{box-shadow:0 0 0 0 rgba(239,68,68,0)} }
@@ -775,7 +903,7 @@
   /* TOAST MESSAGES */
   .toast-container { position:fixed; top:60px; right:16px; z-index:9998; display:flex; flex-direction:column; gap:8px; max-width:360px; }
   .toast { padding:12px 16px; border-radius:12px; background:var(--surface); border:1px solid var(--accent2); box-shadow:0 4px 16px rgba(0,0,0,0.3); animation:slideIn 0.3s ease, fadeOut 0.5s ease 4.5s forwards; font-size:0.9rem; }
-  .toast-admin { border-color:var(--accent); background:linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1)); }
+  .toast-admin { border-color:var(--accent); background:linear-gradient(135deg, rgba(var(--accent-rgb),0.1), rgba(139,92,246,0.1)); }
   @keyframes slideIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
   @keyframes fadeOut { to{opacity:0;transform:translateY(-10px)} }
 
@@ -3347,7 +3475,7 @@ function StudyRooms({ authUser, isAdmin }) {
       React.createElement('div', {style:{display:'flex', gap:8, flexWrap:'wrap', marginBottom:12}},
         activeMembers.map(m => {
           const isInVoice = voice.voiceParticipants.some(v => v.uid === m.uid);
-          return React.createElement('span', {key:m.uid, style:{padding:'4px 12px', borderRadius:20, background: m.uid === myId ? 'rgba(59,130,246,0.2)' : 'var(--surface)', fontSize:'0.85rem', color: m.uid === myId ? 'var(--accent)' : 'var(--text2)', display:'flex', alignItems:'center', gap:4}},
+          return React.createElement('span', {key:m.uid, style:{padding:'4px 12px', borderRadius:20, background: m.uid === myId ? 'rgba(var(--accent-rgb),0.2)' : 'var(--surface)', fontSize:'0.85rem', color: m.uid === myId ? 'var(--accent)' : 'var(--text2)', display:'flex', alignItems:'center', gap:4}},
             isInVoice && React.createElement('span', {style:{fontSize:'0.7rem'}}, '\uD83C\uDF99\uFE0F'),
             m.name + (m.uid === myId ? ' (you)' : ''),
             isAdmin && m.uid !== myId && React.createElement('button', {
@@ -3709,7 +3837,7 @@ function Leaderboard({ authUser }) {
       ? React.createElement('div', {style:{textAlign:'center', padding:40, color:'var(--text3)'}}, 'No data yet. Start studying to appear on the leaderboard!')
       : sorted.map((u, i) => {
           const isMe = u.uid === myId;
-          return React.createElement('div', {key:u.uid, style:{display:'flex', alignItems:'center', gap:12, padding:'12px 16px', background: isMe ? 'rgba(59,130,246,0.1)' : (i % 2 === 0 ? 'var(--surface)' : 'transparent'), borderRadius:10, marginBottom:4}},
+          return React.createElement('div', {key:u.uid, style:{display:'flex', alignItems:'center', gap:12, padding:'12px 16px', background: isMe ? 'rgba(var(--accent-rgb),0.1)' : (i % 2 === 0 ? 'var(--surface)' : 'transparent'), borderRadius:10, marginBottom:4}},
             React.createElement('span', {style:{width:30, textAlign:'center', fontSize: i < 3 ? '1.2rem' : '0.9rem', fontWeight:700, color:'var(--text3)'}}, i < 3 ? medals[i] : (i + 1)),
             React.createElement('div', {style:{flex:1}},
               React.createElement('div', {style:{fontWeight:600, color: isMe ? 'var(--accent)' : 'var(--text)'}}, (u.username || 'Anonymous') + (isMe ? ' (you)' : '')),
@@ -3769,9 +3897,14 @@ const NAV_SECTIONS = [
       {id:'ms2lab',      icon:'📋',   label:'MS2 Sim Lab', since:39},
       {id:'aiscenario',  icon:'🧑‍⚕️', label:'Live AI Patient', since:24},
       {id:'codeblue',    icon:'🚨', label:'Code Blue Team', since:32},
-      {id:'medadmin',    icon:'💉',   label:'Med Admin Signoff', since:24},
-      {id:'signoff',     icon:'📋',   label:'Med Admin Signoff Sim'},
-      {id:'medsim',      icon:'🎯',   label:'Med Admin Simulation'} ]},
+      // These three were "Med Admin Signoff", "Med Admin Signoff Sim" and
+      // "Med Admin Simulation" — three near-identical names for genuinely
+      // different things, which is most of why the sidebar felt duplicated.
+      // Renamed to say what each one IS (same ids, so every route, alias and
+      // siteConfig.features key still works). Matches the iOS Med Admin hub.
+      {id:'signoff',     icon:'📋',   label:'Signoff Sim'},
+      {id:'medsim',      icon:'🎯',   label:'Med Admin Simulation'},
+      {id:'medadmin',    icon:'💉',   label:'Six Rights Trainer', since:24} ]},
   { id:'simprep', label:'Clinical Simulation Prep', items:[
       {id:'simprep',        icon:'📚', label:'Sim Prep Home', since:40},
       {id:'simprepsim',     icon:'🎬', label:'Simulation Mode', since:40},
@@ -3820,8 +3953,8 @@ const WHATS_NEW = [
    blurb:'Twenty patient scenarios — sepsis, DIC, ICP, OB, peds. Assess, intervene, and get debriefed on the critical actions you missed.'},
   {id:'aiscenario', icon:'🧑‍⚕️', title:'Live AI Patient',
    blurb:'Talk to the patient. They answer in character, deteriorate if you are slow, and you are graded on what you actually did.'},
-  {id:'medadmin', icon:'💉', title:'Med Admin Signoff',
-   blurb:'Practise the full checkoff against the real rubric until you pass it clean.'},
+  {id:'medadmin', icon:'💉', title:'Six Rights Trainer',
+   blurb:'Short MAR drills on the six rights and the three checks. No scenario, just reps.'},
   {id:'tutor', icon:'🎓', title:'AI Tutor',
    blurb:'Stuck at 1am? Ask. It works the steps with you instead of handing you 42 mL/hr.'},
   {id:'community', icon:'🌐', title:'Community',
@@ -4202,7 +4335,7 @@ function MethodSelector({ currentMethod, onSelect, customFormulas }) {
       onClick: () => onSelect(m.id),
       style: {
         padding:'8px 14px', borderRadius:8, border: currentMethod === m.id ? '2px solid var(--accent)' : '2px solid var(--border)',
-        background: currentMethod === m.id ? 'rgba(59,130,246,0.15)' : 'var(--surface)',
+        background: currentMethod === m.id ? 'rgba(var(--accent-rgb),0.15)' : 'var(--surface)',
         color: currentMethod === m.id ? 'var(--accent)' : 'var(--text2)',
         cursor:'pointer', fontSize:'0.82rem', fontWeight:600, transition:'all 0.2s', display:'flex', alignItems:'center', gap:6
       }
@@ -4953,7 +5086,7 @@ function ChallengePractice({ progress, setProgress }) {
             React.createElement('div', {className:'hint-content'},
               React.createElement('div', {style:{marginBottom:8, color:'var(--text2)', fontSize:'0.9rem'}}, '\uD83D\uDCA1 ', s.hint),
               !stepAnswers[i] && React.createElement('button', {className:'btn btn-outline btn-sm', onClick:()=>setStepAnswers(p=>({...p,[i]:true}))}, 'Show this step\'s answer'),
-              stepAnswers[i] && React.createElement('div', {style:{marginTop:6, padding:'8px 12px', background:'rgba(59,130,246,0.08)', borderRadius:8, fontWeight:700, color:'var(--accent)', fontSize:'0.95rem'}},
+              stepAnswers[i] && React.createElement('div', {style:{marginTop:6, padding:'8px 12px', background:'rgba(var(--accent-rgb),0.08)', borderRadius:8, fontWeight:700, color:'var(--accent)', fontSize:'0.95rem'}},
                 '\u2192 ' + s.answer + ' ' + s.unit
               )
             )
@@ -5906,7 +6039,7 @@ function PharmCards() {
         m.routes.map(r => React.createElement('span', {key:r, className:'med-tag med-tag-route'}, r)),
         React.createElement('span', {className:'med-tag med-tag-system'}, m.system)
       ),
-      m.nursing && React.createElement('div', {style:{marginTop:8, padding:'8px 12px', background:'rgba(59,130,246,0.08)', borderRadius:8, fontSize:'0.82rem', color:'var(--accent)', textAlign:'left'}},
+      m.nursing && React.createElement('div', {style:{marginTop:8, padding:'8px 12px', background:'rgba(var(--accent-rgb),0.08)', borderRadius:8, fontSize:'0.82rem', color:'var(--accent)', textAlign:'left'}},
         '\uD83D\uDC69\u200D\u2695\uFE0F ', m.nursing
       ),
       m.mnemonic && React.createElement('div', {style:{marginTop:8, padding:'8px 12px', background:'rgba(245,158,11,0.1)', borderRadius:8, fontSize:'0.82rem', color:'var(--orange)', textAlign:'center'}},
@@ -7839,8 +7972,17 @@ function SmartStudy({ progress, setProgress }) {
 // ============================
 // SETTINGS
 // ============================
+const ACCENT_SWATCH = {
+  blue:'#3b82f6', violet:'#8b5cf6', emerald:'#10b981', rose:'#f43f5e', amber:'#f59e0b'
+};
+
 function SettingsPage({ progress, setProgress, onSignOut, authUser, isAdmin }) {
   const settings = progress.settings || {};
+  // Mirrors of the theme controller's storage, so the picker re-renders on change.
+  const [themePref, setThemePref] = React.useState(
+    () => (window.MM_THEME ? window.MM_THEME.appearance : 'system'));
+  const [accentPref, setAccentPref] = React.useState(
+    () => (window.MM_THEME ? window.MM_THEME.accent : 'blue'));
 
   const update = (key, val) => {
     setProgress(p => ({...p, settings: {...(p.settings||{}), [key]: val}}));
@@ -7929,6 +8071,52 @@ function SettingsPage({ progress, setProgress, onSignOut, authUser, isAdmin }) {
           React.createElement('input', {type:'checkbox', checked:settings.autoProceed||false, onChange:()=>update('autoProceed', !settings.autoProceed)}),
           React.createElement('div', {className:'toggle-track'}),
           React.createElement('div', {className:'toggle-knob'})
+        )
+      )
+    ),
+
+    // Appearance
+    //
+    // Reads and writes window.MM_THEME (the inline controller in <head>) rather
+    // than `progress.settings`, deliberately: appearance is a per-device
+    // preference, and it has to resolve before first paint, which the synced
+    // progress blob cannot do. Matches the iOS ThemeStore, which is local for
+    // the same two reasons.
+    React.createElement('div', {className:'settings-section'},
+      React.createElement('h3', null, 'Appearance'),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Theme'),
+          React.createElement('div', {className:'setting-desc'}, 'System follows your device setting')
+        ),
+        React.createElement('select', {
+          className:'setting-select',
+          value: themePref,
+          onChange: e => { window.MM_THEME.setAppearance(e.target.value); setThemePref(e.target.value); }
+        }, (window.MM_THEME ? window.MM_THEME.APPEARANCES : ['system']).map(v =>
+          React.createElement('option', {key:v, value:v}, v.charAt(0).toUpperCase() + v.slice(1))
+        ))
+      ),
+      React.createElement('div', {className:'setting-row'},
+        React.createElement('div', null,
+          React.createElement('div', {className:'setting-label'}, 'Accent Color'),
+          React.createElement('div', {className:'setting-desc'}, 'Brand colour only — pass/fail colours never change')
+        ),
+        React.createElement('div', {style:{display:'flex', gap:'10px'}},
+          (window.MM_THEME ? window.MM_THEME.ACCENTS : []).map(name =>
+            React.createElement('button', {
+              key: name,
+              type: 'button',
+              'aria-label': name,
+              'aria-pressed': accentPref === name,
+              onClick: () => { window.MM_THEME.setAccent(name); setAccentPref(name); },
+              style: {
+                width:'30px', height:'30px', borderRadius:'50%', cursor:'pointer',
+                background: ACCENT_SWATCH[name],
+                border: accentPref === name ? '3px solid var(--text)' : '1px solid var(--border)'
+              }
+            })
+          )
         )
       )
     ),
@@ -11178,13 +11366,13 @@ function App() {
           display:'flex', alignItems:'center', gap:10,
           background: siteConfig.announcement.style === 'warning' ? 'rgba(245,158,11,0.15)' :
                      siteConfig.announcement.style === 'success' ? 'rgba(34,197,94,0.15)' :
-                     siteConfig.announcement.style === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.15)',
+                     siteConfig.announcement.style === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(var(--accent-rgb),0.15)',
           color: siteConfig.announcement.style === 'warning' ? 'var(--orange)' :
                  siteConfig.announcement.style === 'success' ? 'var(--green)' :
                  siteConfig.announcement.style === 'error' ? 'var(--red)' : 'var(--accent)',
           border: '1px solid ' + (siteConfig.announcement.style === 'warning' ? 'rgba(245,158,11,0.3)' :
                  siteConfig.announcement.style === 'success' ? 'rgba(34,197,94,0.3)' :
-                 siteConfig.announcement.style === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(59,130,246,0.3)')
+                 siteConfig.announcement.style === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(var(--accent-rgb),0.3)')
         }
       },
         React.createElement('span', {style:{fontSize:'1.1rem'}},
