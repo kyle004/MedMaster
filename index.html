@@ -380,6 +380,32 @@
     --tier-inst: #0d9488;
   }
 
+  /* ---------- SIMULATIONS HUB ---------- */
+  .simhub-group { margin-bottom:28px; }
+  .simhub-group-title { font-size:1rem; font-weight:700; color:var(--text); margin:0 0 2px; }
+  .simhub-group-blurb { font-size:0.82rem; color:var(--text3); margin-bottom:12px; }
+  .simhub-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; }
+  .simhub-card { position:relative; display:flex; background:var(--surface);
+                 border:1px solid var(--border); border-radius:14px; overflow:hidden;
+                 transition:border-color .15s, transform .1s; }
+  .simhub-card:hover { border-color:var(--accent); }
+  .simhub-open { flex:1 1 auto; display:flex; gap:12px; align-items:flex-start;
+                 padding:14px 44px 14px 14px; background:none; border:none;
+                 cursor:pointer; text-align:left; font:inherit; color:inherit; }
+  .simhub-icon { font-size:1.3rem; line-height:1.2; flex-shrink:0; }
+  .simhub-body { display:flex; flex-direction:column; gap:3px; min-width:0; }
+  .simhub-name { font-size:0.95rem; font-weight:600; color:var(--text); }
+  .simhub-when { font-size:0.78rem; font-weight:600; color:var(--accent-fg); }
+  .simhub-detail { font-size:0.78rem; color:var(--text3); }
+  /* The pin sits over the open button rather than inside it — nesting a button
+     in a button is invalid HTML and breaks keyboard activation. */
+  .simhub-pin { position:absolute; top:8px; right:8px; width:30px; height:30px;
+                display:flex; align-items:center; justify-content:center;
+                background:none; border:none; border-radius:8px; cursor:pointer;
+                font-size:0.95rem; opacity:0.35; transition:opacity .15s, background .15s; }
+  .simhub-pin:hover { opacity:1; background:var(--surface3); }
+  .simhub-pin.pinned { opacity:1; }
+
   /* ---------- ACCENTS ----------
      Brand ramp only. Semantic colours are deliberately NOT themeable: green
      has to keep meaning pass and red critical whichever accent is chosen. */
@@ -3892,24 +3918,20 @@ const NAV_SECTIONS = [
       {id:'smart',       icon:'🧠',   label:'Smart Study'},
       {id:'missed',      icon:'❌',   label:'Missed Questions', badge:'missed'},
       {id:'analyze',     icon:'🔬',   label:'Question Analyzer'} ]},
+  // ONE row for all eleven simulation modes.
+  //
+  // This used to be two sections and eleven rows — 'clinical' (7) plus
+  // 'simprep' (4) — three of them called some variant of "Med Admin", and the
+  // Sim Prep hub sat directly beside the three modes it contains. The sidebar
+  // read as a pile of near-duplicates.
+  //
+  // Now the sidebar has one "Simulations" row that opens SIM_CATALOG (below);
+  // every individual mode moved to NAV_EXTRA, so it is still routable, still
+  // bookmarkable, and still toggleable via siteConfig.features — it just isn't
+  // competing for space in the nav. Anything a student uses constantly can be
+  // pinned back with the pin control on the hub.
   { id:'clinical', label:'Clinical', items:[
-      {id:'simulations', icon:'🩺',   label:'Simulations', since:24},
-      {id:'ms2lab',      icon:'📋',   label:'MS2 Sim Lab', since:39},
-      {id:'aiscenario',  icon:'🧑‍⚕️', label:'Live AI Patient', since:24},
-      {id:'codeblue',    icon:'🚨', label:'Code Blue Team', since:32},
-      // These three were "Med Admin Signoff", "Med Admin Signoff Sim" and
-      // "Med Admin Simulation" — three near-identical names for genuinely
-      // different things, which is most of why the sidebar felt duplicated.
-      // Renamed to say what each one IS (same ids, so every route, alias and
-      // siteConfig.features key still works). Matches the iOS Med Admin hub.
-      {id:'signoff',     icon:'📋',   label:'Signoff Sim'},
-      {id:'medsim',      icon:'🎯',   label:'Med Admin Simulation'},
-      {id:'medadmin',    icon:'💉',   label:'Six Rights Trainer', since:24} ]},
-  { id:'simprep', label:'Clinical Simulation Prep', items:[
-      {id:'simprep',        icon:'📚', label:'Sim Prep Home', since:40},
-      {id:'simprepsim',     icon:'🎬', label:'Simulation Mode', since:40},
-      {id:'simprepcoach',   icon:'⏱️', label:'Checkoff Coach', since:40},
-      {id:'simpreppartner', icon:'👥', label:'Partner Practice', since:40} ]},
+      {id:'simhub',      icon:'🩺',   label:'Simulations', since:41} ]},
   { id:'exams', label:'Exams', items:[
       {id:'labday',      icon:'🧪',   label:'Lab Day Exam'},
       {id:'test',        icon:'📝',   label:'Test Mode'} ]},
@@ -3924,8 +3946,77 @@ const NAV_EXTRA  = [
   {id:'admin',    icon:'🔒', label:'Admin Panel'},
   // Reachable by route but not its own sidebar row: the Sim Prep hub is the
   // way in, and a per-topic lesson without a topic picked is a dead end.
-  {id:'simprepstudy', icon:'📖', label:'Sim Prep Study Guide'}
+  {id:'simprepstudy', icon:'📖', label:'Sim Prep Study Guide'},
+
+  // Every simulation mode. These are NOT dead — the Simulations hub lists them
+  // all, they keep working as direct routes/bookmarks, and any of them can be
+  // pinned back into the sidebar.
+  {id:'simulations',    icon:'🩺',   label:'Clinical Simulations', since:24},
+  {id:'ms2lab',         icon:'📋',   label:'MS2 Sim Lab', since:39},
+  {id:'aiscenario',     icon:'🧑‍⚕️', label:'Live AI Patient', since:24},
+  {id:'codeblue',       icon:'🚨',   label:'Code Blue Team', since:32},
+  {id:'signoff',        icon:'📋',   label:'Signoff Sim'},
+  {id:'medsim',         icon:'🎯',   label:'Med Admin Simulation'},
+  {id:'medadmin',       icon:'💉',   label:'Six Rights Trainer', since:24},
+  {id:'simprep',        icon:'📚',   label:'Sim Prep Home', since:40},
+  {id:'simprepsim',     icon:'🎬',   label:'Simulation Mode', since:40},
+  {id:'simprepcoach',   icon:'⏱️',   label:'Checkoff Coach', since:40},
+  {id:'simpreppartner', icon:'👥',   label:'Partner Practice', since:40}
 ];
+
+// ============================================================
+// SIMULATION CATALOG — the content of the Simulations hub.
+//
+// Grouped by what the student is actually trying to do, with a
+// "use this when" line for each, because the three Med Admin
+// modes and the four Sim Prep modes are genuinely similar and
+// picking between them was the confusing part.
+// ============================================================
+const SIM_CATALOG = [
+  { id:'cases', label:'Patient cases', blurb:'Full encounters — assess, intervene, get debriefed.', items:[
+      {id:'simulations', useWhen:'You want a complete scored patient case',
+       detail:'Twenty scenarios across med-surg, OB and peds.'},
+      {id:'aiscenario',  useWhen:'You want the patient to talk back',
+       detail:'Unscripted AI patient that deteriorates if you are slow.'},
+      {id:'codeblue',    useWhen:'You are running a mock code with classmates',
+       detail:'Live team roles, rhythm, cycle clock and a group debrief.'} ]},
+  { id:'medadmin', label:'Medication administration', blurb:'Three depths, same skill.', items:[
+      {id:'signoff',  useWhen:'You have a checkoff coming up',
+       detail:'Your exact signoff sheet, scored against the real rubric.'},
+      {id:'medsim',   useWhen:'You want to practise the whole encounter',
+       detail:'Free-form room — walk in, verify, give it, chart it.'},
+      {id:'medadmin', useWhen:'You want fast repetition on the basics',
+       detail:'Short MAR drills on the rights and the three checks.'} ]},
+  { id:'simprep', label:'Sim lab prep', blurb:'For NUR2212 checkoffs and sim days.', items:[
+      {id:'simprep',        useWhen:'Start here — pick your topic first',
+       detail:'12 topics; everything below opens on whichever you choose.'},
+      {id:'simprepsim',     useWhen:'You want a timed run-through',
+       detail:'20-minute virtual patient on the selected topic.'},
+      {id:'simprepcoach',   useWhen:'You are rehearsing with a mannequin',
+       detail:'Step prompts and timing while you practise out loud.'},
+      {id:'simpreppartner', useWhen:'A classmate is marking you',
+       detail:'Partner mode with the rubric on their screen.'},
+      {id:'ms2lab',         useWhen:'You want the NUR2212C checkoff packets',
+       detail:'The eight lab checkoffs with pearls and critical errors.'} ]}
+];
+
+// ---- Pinned sidebar items -------------------------------------------------
+// Any nav id can be pinned back into the sidebar. Stored per-browser rather
+// than in the synced progress blob: which shortcuts you want in the nav is a
+// property of the device you are sitting at, and it has to resolve before the
+// first render rather than after a network round trip.
+const PINS_KEY = 'mm.sidebar.pins';
+function readPins() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(PINS_KEY) || '[]');
+    // Drop anything that is no longer a real destination, so a renamed or
+    // removed feature cannot leave a dead row in the nav forever.
+    return Array.isArray(raw) ? raw.filter(id => !!NAV_INDEX[id]) : [];
+  } catch (e) { return []; }
+}
+function writePins(ids) {
+  try { window.localStorage.setItem(PINS_KEY, JSON.stringify(ids)); } catch (e) {}
+}
 const NAV_INDEX = {};
 NAV_SECTIONS.forEach(s => s.items.forEach(i => { NAV_INDEX[i.id] = i; }));
 NAV_FOOTER.forEach(i => { NAV_INDEX[i.id] = i; });
@@ -7976,6 +8067,57 @@ const ACCENT_SWATCH = {
   blue:'#3b82f6', violet:'#8b5cf6', emerald:'#10b981', rose:'#f43f5e', amber:'#f59e0b'
 };
 
+// ============================================================
+// SIMULATIONS HUB
+// One page listing every simulation mode, grouped by intent.
+// Replaces the eleven sidebar rows these modes used to occupy;
+// each row can be pinned back into the sidebar individually.
+// ============================================================
+function SimHubPage({ onNav, showFeature, pins, onTogglePin }) {
+  return React.createElement('div', {className:'page-wrap'},
+    React.createElement('h2', {className:'page-title'}, 'Simulations'),
+    React.createElement('p', {className:'page-sub'},
+      'Every simulation mode in one place. Pin the ones you use most and they appear in the sidebar.'),
+
+    SIM_CATALOG.map(group => {
+      const items = group.items.filter(it => showFeature(it.id));
+      if (!items.length) return null;
+      return React.createElement('div', {key:group.id, className:'simhub-group'},
+        React.createElement('h3', {className:'simhub-group-title'}, group.label),
+        React.createElement('div', {className:'simhub-group-blurb'}, group.blurb),
+        React.createElement('div', {className:'simhub-grid'},
+          items.map(it => {
+            const nav = NAV_INDEX[it.id] || {};
+            const pinned = pins.indexOf(it.id) !== -1;
+            return React.createElement('div', {key:it.id, className:'simhub-card'},
+              React.createElement('button', {
+                  type:'button', className:'simhub-open',
+                  onClick: () => onNav(it.id),
+                  'aria-label': 'Open ' + (nav.label || it.id)
+                },
+                React.createElement('span', {className:'simhub-icon', 'aria-hidden':'true'}, nav.icon),
+                React.createElement('span', {className:'simhub-body'},
+                  React.createElement('span', {className:'simhub-name'}, nav.label || it.id),
+                  React.createElement('span', {className:'simhub-when'}, it.useWhen),
+                  React.createElement('span', {className:'simhub-detail'}, it.detail)
+                )
+              ),
+              React.createElement('button', {
+                  type:'button',
+                  className:'simhub-pin' + (pinned ? ' pinned' : ''),
+                  'aria-pressed': pinned ? 'true' : 'false',
+                  title: pinned ? 'Unpin from sidebar' : 'Pin to sidebar',
+                  'aria-label': (pinned ? 'Unpin ' : 'Pin ') + (nav.label || it.id) + ' to sidebar',
+                  onClick: () => onTogglePin(it.id)
+                }, pinned ? '📌' : '📍')
+            );
+          })
+        )
+      );
+    })
+  );
+}
+
 function SettingsPage({ progress, setProgress, onSignOut, authUser, isAdmin }) {
   const settings = progress.settings || {};
   // Mirrors of the theme controller's storage, so the picker re-renders on change.
@@ -11205,6 +11347,8 @@ function App() {
       case 'flashcards': return React.createElement(FlashcardHub, {progress, setProgress});
       case 'formulas': return React.createElement(FormulaCreator, {progress, setProgress});
       case 'leaderboard': return React.createElement(Leaderboard, {authUser});
+      case 'simhub': return React.createElement(SimHubPage, {
+        onNav: navTo, showFeature, pins, onTogglePin: togglePin});
       case 'settings': return React.createElement(SettingsPage, {progress, setProgress, onSignOut: handleSignOut, authUser, isAdmin});
       case 'admin': return isSuperAdmin ? React.createElement(AdminPanel, {onlineUsers, sendMessage, myId}) : React.createElement(HomeScreen, {onNav: navTo, progress, setProgress, username, features: siteConfig.features, isAdmin});
       default: return React.createElement(HomeScreen, {onNav: navTo, progress, setProgress, username, features: siteConfig.features, isAdmin});
@@ -11255,6 +11399,17 @@ function App() {
     const m = document.querySelector('.app-main');
     if (m) { try { m.scrollTop = 0; } catch (e) {} }
     try { window.scrollTo(0, 0); } catch (e) {}
+  };
+
+  // Pinned sidebar shortcuts. Lazy initial read so the nav paints with the
+  // student's pins already in place rather than popping them in afterwards.
+  const [pins, setPins] = React.useState(readPins);
+  const togglePin = (id) => {
+    setPins(cur => {
+      const next = cur.indexOf(id) !== -1 ? cur.filter(x => x !== id) : cur.concat([id]);
+      writePins(next);
+      return next;
+    });
   };
 
   const sidebarItem = (it) => {
@@ -11326,7 +11481,20 @@ function App() {
             sec.label && React.createElement('div', {className:'sidebar-section'}, sec.label),
             items.map(sidebarItem)
           );
-        })
+        }),
+
+        // Pinned shortcuts, last so they never push the fixed nav around.
+        // Filtered through showFeature as well, so pinning cannot resurrect
+        // something an admin has switched off.
+        (function () {
+          const pinned = pins.map(id => NAV_INDEX[id])
+                             .filter(it => it && showFeature(it.id));
+          if (!pinned.length) return null;
+          return React.createElement(React.Fragment, {key:'pinned'},
+            React.createElement('div', {className:'sidebar-section'}, 'Pinned'),
+            pinned.map(sidebarItem)
+          );
+        })()
       ),
 
       // Bottom section — stats, the account row, settings, admin
