@@ -352,7 +352,11 @@
     --surface:     #ffffff;
     --surface2:    #f1f5f9;
     --surface3:    #e2e8f0;
-    --scrim:       rgba(15,23,42,0.72);
+    /* Lighter than the dark theme's scrim. The sign-in screen reuses
+       .modal-overlay as its page backdrop, so the dark-navy scrim left the whole
+       light-mode login looking like an unfinished dark page. Still dark enough to
+       separate a real modal from the content behind it. */
+    --scrim:       rgba(15,23,42,0.45);
 
     --border:      #e4e9f0;
     --border-str:  #cbd5e1;

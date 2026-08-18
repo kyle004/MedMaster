@@ -590,6 +590,10 @@
         });
       });
       var pct = Math.round(raw * SIGNOFF_RUBRIC.scoreMultiplier);
+      // NOTE: pct is zeroed below if a critical error fired, to match the iOS
+      // engine (SignoffModels.swift: "rawScore * 2.5, or 0 on critical fail").
+      // Without this the same run scored 70% here and 0% on the phone, and both
+      // write to the same synced signoffProgress history.
       var critList = [];
       SIGNOFF_RUBRIC.criticalErrors.forEach(function (c) {
         if (crits[c.id]) critList.push({ id: c.id, text: c.text });
@@ -620,6 +624,9 @@
       });
       if (starredFail) passed = false;
 
+      // A critical error is an automatic fail regardless of points earned.
+      if (critList.length) pct = 0;
+
       var attempt = {
         scenarioId: scenario.id,
         medKey: med.rxKey,
@@ -649,7 +656,9 @@
       return ce('div', { className: 'sg-card', style: { borderColor: result.passed ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)', borderWidth: 2 } },
         ce('h3', null, result.passed ? 'PASS' : 'FAIL'),
         ce('div', { className: 'sg-score ' + (result.passed ? 'sg-pass' : 'sg-fail') },
-          result.rawScore + ' / ' + result.maxScore + '  ( ' + result.percent + '% )'),
+          (result.criticalErrors && result.criticalErrors.length)
+            ? 'Points: ' + result.rawScore + ' / ' + result.maxScore + '  ·  scored 0% (critical error)'
+            : result.rawScore + ' / ' + result.maxScore + '  ( ' + result.percent + '% )'),
         result.criticalErrors.length ? ce('div', { className: 'sg-card', style: { background: 'rgba(239,68,68,0.08)', borderColor: 'var(--red,#ef4444)' } },
           ce('div', { style: { fontWeight: 700, color: 'var(--red,#ef4444)' } }, 'Critical Errors (automatic fail):'),
           result.criticalErrors.map(function (c, i) { return ce('div', { key: i, style: { marginTop: 4 } }, '- ' + c.text); })
