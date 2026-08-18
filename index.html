@@ -9233,6 +9233,50 @@ function UserDetailPanel({ user, onClose, onAction, myId }) {
         )
       ),
 
+      // ACCOUNT CARD — always visible, above the tabs.
+      // This is the "who is this person" the drawer was missing entirely: the
+      // list was built from presence + userStats, neither of which carries an
+      // email. Everything here comes from userMeta / userTiers.
+      React.createElement('div', {style:{background:'var(--surface)', border:'1px solid var(--border)', borderRadius:10, padding:12, marginBottom:16}},
+        [['Email', user.email || '\u2014'],
+         ['User ID', user.id || '\u2014'],
+         ['Signed up', user.signupAt ? new Date(user.signupAt).toLocaleDateString() : '\u2014'],
+         ['Provider', user.provider || 'password'],
+         ['Status', user.status || 'approved']
+        ].map(function (row, i) {
+          return React.createElement('div', {key:i, style:{display:'flex', justifyContent:'space-between', gap:12, padding:'3px 0', fontSize:'0.85rem'}},
+            React.createElement('span', {style:{color:'var(--text3)'}}, row[0]),
+            React.createElement('span', {style:{fontWeight:600, textAlign:'right', wordBreak:'break-all'}}, row[1])
+          );
+        }),
+        // Tier picker — userTiers/$uid is owner-writable, so this actually works.
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginTop:10, paddingTop:10, borderTop:'1px solid var(--border)'}},
+          React.createElement('span', {style:{color:'var(--text3)', fontSize:'0.85rem'}}, 'Tier'),
+          React.createElement('select', {
+            value: user.tier || 'free',
+            onChange: function (e) { onAction('tier:' + e.target.value, user); },
+            style:{background:'var(--surface2)', color:'var(--text)', border:'1px solid var(--border)', borderRadius:8, padding:'6px 10px', fontSize:'0.85rem'}
+          }, ['free','plus','pro','instructor'].map(function (t) {
+            return React.createElement('option', {key:t, value:t}, t);
+          }))
+        ),
+        // Admin flag is READ ONLY on purpose: firebase-rules.json sets
+        // `admins.".write": false`, so no client can grant it. A toggle here
+        // would look like it worked and silently do nothing.
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', gap:12, marginTop:8, fontSize:'0.85rem'}},
+          React.createElement('span', {style:{color:'var(--text3)'}}, 'Admin'),
+          React.createElement('span', {style:{fontWeight:600}},
+            (user.isAdmin ? 'Yes' : 'No') + ' \u00b7 set in Firebase console')
+        ),
+        // Approval controls, only where they mean something.
+        (user.status === 'pending' || user.status === 'rejected') && React.createElement('div', {style:{display:'flex', gap:8, marginTop:10}},
+          React.createElement('button', {type:'button', onClick:function(){ onAction('approve', user); },
+            style:{flex:1, padding:'8px', borderRadius:8, border:'none', background:'var(--green)', color:'white', fontWeight:600, cursor:'pointer'}}, 'Approve'),
+          React.createElement('button', {type:'button', onClick:function(){ onAction('reject', user); },
+            style:{flex:1, padding:'8px', borderRadius:8, border:'1px solid var(--border)', background:'transparent', color:'var(--text2)', fontWeight:600, cursor:'pointer'}}, 'Reject')
+        )
+      ),
+
       // OVERVIEW TAB
       activeTab === 'overview' && React.createElement('div', null,
         !userStats ? React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}}, 'No study data synced yet. Stats appear once this user answers questions.') :
@@ -9455,6 +9499,41 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
   const [userSearch, setUserSearch] = useState('');
   const [userSort, setUserSort] = useState('default'); // default | name | accuracy | activity | streak | lastSeen
 
+  // Account records — email, signup, approval status and tier.
+  //
+  // The user list used to be built purely from presence + userStats, so it had a
+  // username and a uid and nothing else: no email to search by, no way to see who
+  // someone actually is, and no tier to change. `userMeta` and `userTiers` are
+  // owner-only reads in firebase-rules.json, which is exactly who is looking at
+  // this screen.
+  const [accounts, setAccounts] = useState({});   // uid -> {email,status,signupAt,provider}
+  const [tiers, setTiers] = useState({});         // uid -> tier string
+  const [adminUids, setAdminUids] = useState({}); // uid -> true (READ ONLY, see note in the drawer)
+  const [accountsError, setAccountsError] = useState(null);
+
+  useEffect(() => {
+    if (!firebaseDb) return;
+    firebaseDb.ref('userMeta').once('value')
+      .then(snap => setAccounts(snap.val() || {}))
+      // Almost always "you are not the owner". Say so rather than rendering an
+      // empty list that looks like nobody has signed up.
+      .catch(e => setAccountsError((e && e.message) || 'Could not read accounts.'));
+    firebaseDb.ref('userTiers').once('value')
+      .then(snap => {
+        const raw = snap.val() || {};
+        const out = {};
+        Object.keys(raw).forEach(uid => {
+          const v = raw[uid];
+          out[uid] = (v && typeof v === 'object') ? (v.tier || v.plan || 'free') : (v || 'free');
+        });
+        setTiers(out);
+      })
+      .catch(() => {});
+    firebaseDb.ref('admins').once('value')
+      .then(snap => setAdminUids(snap.val() || {}))
+      .catch(() => {});
+  }, [tab]);
+
   // Load class-wide stats for admin analytics
   const [classStats, setClassStats] = useState(null);
   useEffect(() => {
@@ -9534,8 +9613,25 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
         }
       });
     }
+    // Anyone with a userMeta record belongs in this list even if they have no
+    // presence and no stats yet — a brand-new signup is exactly who an admin is
+    // most likely to be looking for.
+    Object.keys(accounts || {}).forEach(uid => {
+      if (!map.has(uid)) map.set(uid, {id: uid, username: (accounts[uid] || {}).username, online: false, lastSeen: 0});
+    });
+    // Decorate every row with the account record.
+    map.forEach((u, uid) => {
+      const meta = (accounts || {})[uid] || {};
+      u.email    = meta.email || '';
+      u.status   = meta.status || '';
+      u.signupAt = meta.signupAt || 0;
+      u.provider = meta.provider || '';
+      u.tier     = (tiers || {})[uid] || 'free';
+      u.isAdmin  = !!(adminUids || {})[uid];
+      if (!u.username && meta.username) u.username = meta.username;
+    });
     return Array.from(map.values());
-  }, [onlineUsers, classStats]);
+  }, [onlineUsers, classStats, accounts, tiers, adminUids]);
 
   const visibleUsers = useMemo(() => {
     let list = allUsers;
@@ -9543,6 +9639,9 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
     if (q) {
       list = list.filter(u =>
         (u.username || '').toLowerCase().includes(q) ||
+        (u.email || '').toLowerCase().includes(q) ||
+        (u.tier || '').toLowerCase().includes(q) ||
+        (u.status || '').toLowerCase().includes(q) ||
         (u.id || '').toLowerCase().includes(q)
       );
     }
@@ -9646,6 +9745,26 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
       setSelectedUser(null);
       setTab('message');
       setDirectTarget(user.id);
+    } else if (action.indexOf('tier:') === 0) {
+      // userTiers/$uid is owner-writable. Mirror the change into local state so
+      // the drawer and the list update without a refetch.
+      const next = action.slice(5);
+      firebaseDb.ref('userTiers/' + user.id).update({ tier: next })
+        .then(() => {
+          setTiers(prev => Object.assign({}, prev, { [user.id]: next }));
+          setSelectedUser(prev => (prev && prev.id === user.id) ? Object.assign({}, prev, { tier: next }) : prev);
+        })
+        .catch(e => setAccountsError('Could not change tier: ' + ((e && e.message) || 'write refused')));
+    } else if (action === 'approve' || action === 'reject') {
+      const status = action === 'approve' ? 'approved' : 'rejected';
+      firebaseDb.ref('userMeta/' + user.id).update({ status: status })
+        .then(() => {
+          setAccounts(prev => Object.assign({}, prev, {
+            [user.id]: Object.assign({}, prev[user.id] || {}, { status: status })
+          }));
+          setSelectedUser(prev => (prev && prev.id === user.id) ? Object.assign({}, prev, { status: status }) : prev);
+        })
+        .catch(e => setAccountsError('Could not update status: ' + ((e && e.message) || 'write refused')));
     }
   };
 
@@ -9900,7 +10019,7 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
       tab === 'users' && React.createElement('div', null,
         // Search + sort bar
         React.createElement('div', {style:{display:'flex', gap:8, marginBottom:12, flexWrap:'wrap'}},
-          React.createElement('input', {type:'text', placeholder:'\uD83D\uDD0D Search by name or ID...', value:userSearch,
+          React.createElement('input', {type:'text', placeholder:'\uD83D\uDD0D Search by name, email, tier or ID...', value:userSearch,
             onChange:e=>setUserSearch(e.target.value),
             style:{flex:'1 1 200px', minWidth:160, padding:'8px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--bg)', color:'var(--text)', fontSize:'0.9rem'}}),
           React.createElement('select', {value:userSort, onChange:e=>setUserSort(e.target.value),
@@ -9929,6 +10048,8 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
         // Unified user list
         visibleUsers.length === 0 && React.createElement('p', {style:{color:'var(--text3)', textAlign:'center', padding:20}},
           allUsers.length === 0 ? 'No users yet.' : 'No users match your search.'),
+        accountsError && React.createElement('div', {style:{background:'var(--tint-red)', border:'1px solid var(--red)', borderRadius:8, padding:10, marginBottom:10, fontSize:'0.8rem', color:'var(--red-fg)'}},
+          'Account details unavailable: ' + accountsError),
         visibleUsers.map(u => {
           const isOn = !!u.online;
           return React.createElement('button', {key:u.id, type:'button', className:'online-user online-user-clickable',
@@ -9941,7 +10062,9 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
                 React.createElement('span', {style:{fontWeight:600}}, u.username || 'Anonymous'),
                 u.id === myId && React.createElement('span', {style:{fontSize:'0.7rem', color:'var(--accent)', fontWeight:600, background:'var(--tint-accent)', padding:'2px 6px', borderRadius:4}}, 'you'),
                 u.banned && React.createElement('span', {style:{fontSize:'0.7rem', color:'var(--red)', fontWeight:600, background:'rgba(239,68,68,0.15)', padding:'2px 6px', borderRadius:4}}, '\uD83D\uDEAB banned'),
-                u.device === 'mobile' && React.createElement('span', {style:{fontSize:'0.75rem'}}, '\uD83D\uDCF1')
+                u.device === 'mobile' && React.createElement('span', {style:{fontSize:'0.75rem'}}, '\uD83D\uDCF1'),
+                u.tier && u.tier !== 'free' && React.createElement('span', {style:{fontSize:'0.7rem', color:'var(--accent2-fg)', fontWeight:600, background:'var(--tint-purple)', padding:'2px 6px', borderRadius:4}}, u.tier),
+                u.status === 'pending' && React.createElement('span', {style:{fontSize:'0.7rem', color:'var(--orange-fg)', fontWeight:600, background:'var(--tint-orange)', padding:'2px 6px', borderRadius:4}}, 'pending')
               ),
               React.createElement('span', {style:{fontSize:'0.75rem', color: isOn ? 'var(--green)' : 'var(--text3)', textAlign:'right', whiteSpace:'nowrap'}},
                 isOn
@@ -9949,6 +10072,7 @@ function AdminPanel({ onlineUsers, sendMessage, myId }) {
                   : (u.lastSeen ? 'last seen ' + new Date(u.lastSeen).toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + new Date(u.lastSeen).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : 'never connected')
               )
             ),
+            u.email && React.createElement('div', {style:{marginLeft:20, fontSize:'0.75rem', color:'var(--text3)', wordBreak:'break-all'}}, u.email),
             React.createElement('div', {style:{display:'flex', alignItems:'center', gap:10, marginLeft:20, flexWrap:'wrap', fontSize:'0.78rem'}},
               isOn && React.createElement('span', {style:{color:'var(--accent)'}},
                 '\uD83D\uDCCD ' + (pageLabels[u.page] || u.page || 'unknown')),
