@@ -11077,6 +11077,24 @@ function App() {
   // Derived values
   const username = authUser ? (authUser.displayName || 'Anonymous') : '';
 
+  // Pinned sidebar shortcuts. Lazy initial read so the nav paints with the
+  // student's pins already in place rather than popping them in afterwards.
+  //
+  // MUST stay above the authLoading / auth-gate / pending-approval early returns
+  // below. It was originally declared just before `sidebarItem`, i.e. *after*
+  // them: signed-out renders bailed early and never ran this hook, then the
+  // first signed-in render did — one more hook than the render before it, which
+  // is React error #310 ("Rendered more hooks than during the previous render")
+  // and took the whole app to the error boundary the moment anyone logged in.
+  const [pins, setPins] = useState(readPins);
+  const togglePin = (id) => {
+    setPins(cur => {
+      const next = cur.indexOf(id) !== -1 ? cur.filter(x => x !== id) : cur.concat([id]);
+      writePins(next);
+      return next;
+    });
+  };
+
   // Check admin status from Firebase /admins node
   const [isAdmin, setIsAdmin] = useState(false);
   // Super admin — only this email can see/access the Admin Panel
@@ -11403,17 +11421,6 @@ function App() {
     const m = document.querySelector('.app-main');
     if (m) { try { m.scrollTop = 0; } catch (e) {} }
     try { window.scrollTo(0, 0); } catch (e) {}
-  };
-
-  // Pinned sidebar shortcuts. Lazy initial read so the nav paints with the
-  // student's pins already in place rather than popping them in afterwards.
-  const [pins, setPins] = React.useState(readPins);
-  const togglePin = (id) => {
-    setPins(cur => {
-      const next = cur.indexOf(id) !== -1 ? cur.filter(x => x !== id) : cur.concat([id]);
-      writePins(next);
-      return next;
-    });
   };
 
   const sidebarItem = (it) => {
