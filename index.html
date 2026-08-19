@@ -168,6 +168,7 @@
 <script defer src="data/scenarios-ob.js"></script>
 <script defer src="data/scenarios-peds.js"></script>
 <script defer src="data/medadmin.js"></script>
+<script defer src="data/headtotoe.js"></script>
 <script defer src="data/signoff-drugs.js"></script>
 <script defer src="data/signoff-mars.js"></script>
 <!-- MedSim reads mar12/percocet out of the two signoff data files above, so it
@@ -184,6 +185,7 @@
 <script defer src="js/voice.js"></script>
 <script defer src="js/sim-engine.js"></script>
 <script defer src="js/medadmin-trainer.js"></script>
+<script defer src="js/headtotoe.js"></script>
 <script defer src="js/signoff.js"></script>
 <script defer src="js/medsim.js"></script>
 <script defer src="js/community.js"></script>
@@ -383,6 +385,70 @@
     --tier-pro:  #7c3aed;
     --tier-inst: #0d9488;
   }
+
+  /* ---------- HEAD-TO-TOE ---------- */
+  .h2t-modes { display:grid; gap:10px; margin:14px 0; }
+  .h2t-mode { display:flex; gap:12px; align-items:flex-start; text-align:left; padding:14px;
+              background:var(--surface); border:1px solid var(--border); border-radius:12px;
+              cursor:pointer; font:inherit; color:inherit; }
+  .h2t-mode.active { border-color:var(--accent); border-width:2px; }
+  .h2t-mode-icon { font-size:1.3rem; }
+  .h2t-mode-title { display:block; font-weight:600; color:var(--text); }
+  .h2t-mode-blurb { display:block; font-size:0.82rem; color:var(--text3); }
+  .h2t-cohort { display:flex; align-items:center; gap:10px; margin:12px 0 4px; }
+  .h2t-cohort select { background:var(--surface2); color:var(--text); border:1px solid var(--border);
+                       border-radius:8px; padding:6px 10px; }
+  .h2t-hint { font-size:0.8rem; color:var(--text3); }
+  .h2t-start { margin-top:14px; }
+
+  .h2t-bar { display:flex; align-items:center; justify-content:space-between; gap:12px;
+             background:var(--surface); border:1px solid var(--border); border-radius:12px;
+             padding:14px; margin-bottom:12px; }
+  .h2t-clock, .h2t-total { font-size:1.5rem; font-weight:700; font-variant-numeric:tabular-nums; }
+  .h2t-clock.over { color:var(--red-fg); }
+  .h2t-bar-sub { font-size:0.75rem; color:var(--text3); }
+  .h2t-over { color:var(--red-fg); font-size:0.8rem; margin:0 0 10px; }
+
+  .h2t-card { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+              padding:14px; margin-bottom:12px; }
+  .h2t-card h4 { margin:0 0 8px; font-size:0.78rem; letter-spacing:0.06em; text-transform:uppercase;
+                 color:var(--text3); }
+  .h2t-cat-head { display:flex; justify-content:space-between; align-items:center; }
+  .h2t-cat-score { font-weight:600; font-variant-numeric:tabular-nums; color:var(--text2); }
+
+  .h2t-item { display:flex; gap:10px; align-items:flex-start; width:100%; text-align:left;
+              background:none; border:none; padding:9px 0; cursor:pointer; font:inherit;
+              color:var(--text); border-top:1px solid var(--border); }
+  .h2t-item:first-of-type { border-top:none; }
+  .h2t-mark { width:18px; flex-shrink:0; color:var(--text3); }
+  .h2t-item.full .h2t-mark { color:var(--green-fg); }
+  .h2t-item.partial .h2t-mark { color:var(--orange-fg); }
+  .h2t-item-text { flex:1 1 auto; font-size:0.88rem; }
+  .h2t-item-pts { font-size:0.75rem; color:var(--text3); font-variant-numeric:tabular-nums; }
+
+  .h2t-nerves { margin-top:10px; }
+  .h2t-nerve-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:6px; margin-top:6px; }
+  .h2t-nerve { padding:5px 6px; font-size:0.72rem; border-radius:999px; cursor:pointer;
+               background:var(--surface2); color:var(--text2); border:1px solid var(--border); }
+  .h2t-nerve.on { background:var(--accent); color:var(--text-on-fill); border-color:var(--accent); }
+
+  .h2t-live { font-size:0.82rem; color:var(--text2); margin-top:8px; }
+  .h2t-typed { margin-top:10px; }
+  .h2t-typed summary { cursor:pointer; color:var(--accent-fg); font-size:0.82rem; }
+  .h2t-typed textarea { width:100%; margin-top:8px; background:var(--surface2); color:var(--text);
+                        border:1px solid var(--border); border-radius:8px; padding:10px; font:inherit; }
+  .h2t-error { color:var(--red-fg); font-size:0.8rem; margin-top:8px; }
+  .h2t-finish { width:100%; }
+
+  .h2t-result { border-radius:12px; padding:18px; margin-bottom:14px; border:1px solid var(--border);
+                background:var(--surface); }
+  .h2t-result-verdict { font-size:1.6rem; font-weight:800; }
+  .h2t-result.pass .h2t-result-verdict { color:var(--green-fg); }
+  .h2t-result.fail .h2t-result-verdict { color:var(--red-fg); }
+  .h2t-result-score { font-size:1.1rem; font-weight:600; }
+  .h2t-result-sub { font-size:0.8rem; color:var(--text3); }
+  .h2t-result-sub.over { color:var(--red-fg); }
+  .h2t-missed { margin:0; padding-left:18px; font-size:0.82rem; color:var(--text2); }
 
   /* ---------- SIMULATIONS HUB ---------- */
   .simhub-group { margin-bottom:28px; }
@@ -3962,6 +4028,7 @@ const NAV_EXTRA  = [
   {id:'signoff',        icon:'📋',   label:'Signoff Sim'},
   {id:'medsim',         icon:'🎯',   label:'Med Admin Simulation'},
   {id:'medadmin',       icon:'💉',   label:'Six Rights Trainer', since:24},
+  {id:'headtotoe',      icon:'🧍',   label:'Head-to-Toe Assessment', since:41},
   {id:'simprep',        icon:'📚',   label:'Sim Prep Home', since:40},
   {id:'simprepsim',     icon:'🎬',   label:'Simulation Mode', since:40},
   {id:'simprepcoach',   icon:'⏱️',   label:'Checkoff Coach', since:40},
@@ -4001,7 +4068,9 @@ const SIM_CATALOG = [
       {id:'simpreppartner', useWhen:'A classmate is marking you',
        detail:'Partner mode with the rubric on their screen.'},
       {id:'ms2lab',         useWhen:'You want the NUR2212C checkoff packets',
-       detail:'The eight lab checkoffs with pearls and critical errors.'} ]}
+       detail:'The eight lab checkoffs with pearls and critical errors.'},
+      {id:'headtotoe',      useWhen:'You have a head-to-toe checkoff',
+       detail:'The full 100-point ICHS rubric. Record yourself, or mark someone else.'} ]}
 ];
 
 // ---- Pinned sidebar items -------------------------------------------------
@@ -11476,6 +11545,7 @@ function App() {
       case 'simprepcoach': return modulePage('SimPrepCoachMode', 'Checkoff Coach', {progress, setProgress, authUser, isAdmin, isSuperAdmin, onNav: navTo});
       case 'simpreppartner': return modulePage('SimPrepPartner', 'Partner Practice', {progress, setProgress, authUser, isAdmin, isSuperAdmin, onNav: navTo});
       case 'medadmin': return modulePage('MedAdminTrainer', 'Med Admin Trainer', {progress, setProgress, authUser});
+      case 'headtotoe': return modulePage('HeadToToeTrainer', 'Head-to-Toe Assessment', {progress, setProgress, authUser});
       case 'signoff': return modulePage('SignoffTrainer', 'Med Admin Signoff Sim', {progress, setProgress, authUser});
       case 'medsim': return modulePage('MedSimTrainer', 'Med Admin Simulation', {progress, setProgress, authUser});
       case 'community': return modulePage('CommunityHub', 'Community', {progress, setProgress, authUser, isAdmin, isSuperAdmin});
