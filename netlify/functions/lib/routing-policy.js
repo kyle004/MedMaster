@@ -41,7 +41,11 @@ var CLASSES = {
     maxInPerM: 0.20,
     maxOutPerM: 0.60,
     maxBlendedPerM: 0.30,
-    // Cost dominates; a little quality signal breaks ties.
+    // A floor, not a preference. Structured work still has to produce clinically
+    // coherent prose for nursing students; without this the engine happily picked
+    // a 15%-quality model because it was $0.01/1M. Cheapest that CLEARS THE BAR.
+    minQuality: 0.35,
+    // Cost dominates above the floor; quality breaks ties.
     weights: { price: 0.70, speed: 0.20, quality: 0.10 }
   },
   reasoning: {
@@ -51,6 +55,8 @@ var CLASSES = {
     maxOutPerM: 0.50,
     maxBlendedPerM: 0.50,
     preferredBlendedPerM: 0.20,   // anything at or under this gets a bonus
+    // The tutor answers open clinical questions. Hold a real bar.
+    minQuality: 0.60,
     weights: { price: 0.35, speed: 0.15, quality: 0.50 }
   },
   image: {
@@ -131,21 +137,51 @@ function speedScore(model) {
   return Math.max(0, Math.min(1, s));
 }
 
+/* Observed range of artificial_analysis.intelligence_index in OpenRouter's
+ * catalog (415 models, 141 scored): ~5.5 to ~63. Normalising against a fixed
+ * span rather than the live min/max keeps a model's score stable when the
+ * catalog changes around it. */
+var INTEL_MIN = 5;
+var INTEL_MAX = 65;
+
 /**
- * Quality signal. `ranking` is an optional caller-supplied map of
- * slug -> 0..1 (e.g. a health-domain leaderboard). Without it we fall back to a
- * weak prior from the slug, which is honestly not much — hence the low weight
- * on `quality` for structured work, where it barely matters.
+ * Quality signal, preferring real data over guesswork, in this order:
+ *
+ *   1. `ranking[id]`      — an explicit 0..1 override you set by hand.
+ *   2. artificial_analysis.intelligence_index — OpenRouter ships this in the
+ *      /models catalog for ~1/3 of models. It is a general-intelligence score,
+ *      NOT a medical one.
+ *   3. a weak slug prior — only when the model carries no benchmark at all.
+ *
+ * WHY NOT A HEALTH RANKING: OpenRouter's public API exposes no health or
+ * medical category. Its `benchmarks` block carries `design_arena` (website,
+ * gamedev, dataviz, svg — all coding/design) and `artificial_analysis`
+ * (intelligence / coding / agentic). The "#1 in health" figure on the
+ * openrouter.ai rankings page is a *token-usage* leaderboard — how much traffic
+ * health-category apps send to each model — so it measures what other builders
+ * picked, largely on price, not clinical accuracy. It is not in the API and it
+ * is not a quality measure, so it is not used here.
  */
 function qualityScore(model, ranking) {
-  var id = String(model.id || '').toLowerCase();
   if (ranking && typeof ranking[model.id] === 'number') {
     return Math.max(0, Math.min(1, ranking[model.id]));
   }
-  var q = 0.5;
-  if (/ultra|opus|pro\b|max|large/.test(id)) q += 0.20;
-  if (/lite|mini|nano|tiny/.test(id)) q -= 0.10;
-  if (/:free/.test(id)) q -= 0.05;
+
+  var bench = model.benchmarks;
+  var aa = bench && bench.artificial_analysis;
+  var idx = aa && typeof aa.intelligence_index === 'number' ? aa.intelligence_index : null;
+  if (idx !== null) {
+    return Math.max(0, Math.min(1, (idx - INTEL_MIN) / (INTEL_MAX - INTEL_MIN)));
+  }
+
+  // No benchmark for this model. Start BELOW the midpoint on purpose: an
+  // unmeasured model should not outrank a measured one on a guess. (This bit us
+  // — "gryphe/mythomax-l2-13b" matched a bare /max/ and scored like a flagship,
+  // winning the Pro tutor slot from a properly benchmarked DeepSeek.)
+  var id = String(model.id || '').toLowerCase();
+  var q = 0.35;
+  if (/(^|[-\/])(ultra|opus|max|large)([-\/:.]|$)/.test(id)) q += 0.15;
+  if (/(^|[-\/])(lite|mini|nano|tiny)([-\/:.]|$)/.test(id)) q -= 0.10;
   return Math.max(0, Math.min(1, q));
 }
 
@@ -156,5 +192,7 @@ module.exports = {
   perMillion: perMillion,
   paramsB: paramsB,
   speedScore: speedScore,
-  qualityScore: qualityScore
+  qualityScore: qualityScore,
+  INTEL_MIN: INTEL_MIN,
+  INTEL_MAX: INTEL_MAX
 };

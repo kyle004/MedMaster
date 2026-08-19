@@ -28,7 +28,11 @@ function withinBudget(cls, priced) {
 function priceOf(model) {
   var inPerM = P.perMillion(model.prompt);
   var outPerM = P.perMillion(model.completion);
-  var imagePrice = model.imagePrice != null ? parseFloat(model.imagePrice) : null;
+  // `image_output` is the cost to GENERATE an image. `image` is the cost of an
+  // image supplied as INPUT (per-token), which is ~60x smaller — reading it made
+  // gemini-3-pro-image look like $0.0000/image.
+  var rawImg = model.imageOutputPrice != null ? model.imageOutputPrice : model.imagePrice;
+  var imagePrice = rawImg != null ? parseFloat(rawImg) : null;
   if (!isFinite(imagePrice)) imagePrice = null;
   return {
     inPerM: inPerM,
@@ -45,6 +49,7 @@ function priceOf(model) {
  */
 function scoreModel(model, cls, tierPolicy, ranking) {
   var priced = priceOf(model);
+  if (cls.maxImagePrice == null && !hasUsableTokenPrice(model, priced)) return null;
   if (!withinBudget(cls, priced)) return null;
 
   var priceScore;
@@ -61,6 +66,8 @@ function scoreModel(model, cls, tierPolicy, ranking) {
 
   var speed = P.speedScore(model);
   var quality = P.qualityScore(model, ranking);
+  // Hard floor — price can never buy its way past this.
+  if (cls.minQuality != null && quality < cls.minQuality) return null;
 
   var w = cls.weights;
   // Free tier leans on speed; paid tiers lean back toward quality.
@@ -103,13 +110,38 @@ function eligibleForTier(model, tierPolicy) {
   return true;
 }
 
-/** Text vs image capability, from OpenRouter's own architecture block. */
+/* Model families that are never right for clinical prose, however cheap. A
+ * code-completion or embedding model will happily win on price and then write a
+ * useless scenario. Matched on the slug because OpenRouter exposes no "purpose". */
+var SPECIALIST = /(^|[-\/])(code|coder|codestral|embed|embedding|rerank|reranker|guard|moderation|tts|stt|whisper|transcribe|speech|voice|music|lyria|video|veo|sora|image|imagen|flux|sd3|stable-diffusion)([-\/:]|$)/i;
+
+/** Capability check, from OpenRouter's own architecture block. */
 function supportsClass(model, className) {
   var out = Array.isArray(model.outputModalities) ? model.outputModalities : [];
+  var id = String(model.id || '');
+
   if (className === 'image') return out.indexOf('image') !== -1;
-  // A text feature must not be routed to an image-only model.
-  if (out.length && out.indexOf('text') === -1) return false;
+
+  // Text features. An undeclared modality list used to pass straight through,
+  // which is how a music model reached the tutor slot.
+  if (!out.length) return false;
+  if (out.indexOf('text') === -1) return false;
+  // Emits audio or video => it is a media model that also happens to narrate.
+  if (out.indexOf('audio') !== -1 || out.indexOf('video') !== -1) return false;
+  if (SPECIALIST.test(id)) return false;
   return true;
+}
+
+/**
+ * A non-free model quoting zero for both token rates is not cheap — it is
+ * billed on some other axis (per second of audio, per image, per request) that
+ * we cannot compare. Treated as unpriced and skipped, rather than scoring as
+ * the cheapest model in the catalog.
+ */
+function hasUsableTokenPrice(model, priced) {
+  var isFreeSlug = /:free$/.test(String(model.id || '')) || model.free === true;
+  if (isFreeSlug) return true;
+  return (priced.inPerM > 0) || (priced.outPerM > 0);
 }
 
 /**
