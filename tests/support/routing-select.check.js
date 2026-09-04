@@ -1,6 +1,6 @@
 /* Guardrail tests for the routing engine. Run: node lib/routing-select.test.js */
 'use strict';
-var { selectModels } = require('./routing-select');
+var { selectModels } = require('../../netlify/functions/lib/routing-select');
 
 var perTok = function (perM) { return String(perM / 1e6); };
 var catalog = [

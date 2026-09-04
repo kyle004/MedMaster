@@ -6,7 +6,7 @@
  */
 'use strict';
 var fs = require('fs');
-var selectModels = require('./routing-select').selectModels;
+var selectModels = require('../../netlify/functions/lib/routing-select').selectModels;
 
 var path = process.env.OR_CATALOG || '/tmp/or_models.json';
 var raw = JSON.parse(fs.readFileSync(path, 'utf8')).data;
