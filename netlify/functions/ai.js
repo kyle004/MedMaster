@@ -144,7 +144,11 @@ var DEFAULT_IMAGE_SIZE    = '512x512';
 var MAX_IMAGE_PROMPT_CHARS = 4000;
 // Stricter per-day cap, kept apart from the text dailyLimit. Overridable from
 // /appConfig/aiConfig/imageLimits. -1 = unlimited, 0 = not in this plan.
-var DEFAULT_IMAGE_LIMITS  = { free: 0, plus: 5, pro: 40, instructor: -1 };
+// PER MONTH (not per day — see monthKey). Modelled against real OpenRouter
+// prices at $0.03/image: plus 15/mo = $0.45, pro 50/mo = $1.50. Instructor is
+// capped rather than unlimited because -1 is unbounded financial exposure on a
+// single account.
+var DEFAULT_IMAGE_LIMITS  = { free: 0, plus: 15, pro: 50, instructor: 200 };
 // Image calls are counted at /aiUsage/<uid>/<YYYY-MM-DD>_img so they never eat
 // into the student's text allowance (and text calls never eat into images).
 var IMAGE_USAGE_SUFFIX    = '_img';
@@ -281,7 +285,9 @@ var DEFAULT_AI_CONFIG = {
         'nvidia/nemotron-3-super-120b-a12b:free',
         'google/gemma-4-31b-it:free'
       ],
-      dailyLimit: 5,
+      // Text is ~$0.000124 per call, so 15/day costs about $0.06/user/month —
+      // a far better free trial than 5 for effectively the same money.
+      dailyLimit: 15,
       maxTokens: 1024,
       featureModels: {
         tutor: 'nvidia/nemotron-3-ultra-550b-a55b:free',
@@ -328,7 +334,7 @@ var DEFAULT_AI_CONFIG = {
         'black-forest-labs/flux.2-klein-4b',
         'qwen/qwen-image-3'
       ],
-      dailyLimit: 600,
+      dailyLimit: 500,
       maxTokens: 4096,
       featureModels: {
         tutor: 'deepseek/deepseek-v4-flash-0731',
@@ -347,7 +353,10 @@ var DEFAULT_AI_CONFIG = {
     },
     instructor: {
       models: ['*'],
-      dailyLimit: -1,
+      // Was -1 (unlimited). A single compromised or runaway instructor account
+      // could then bill without bound; 2000/day is ~$7.44/mo at current prices
+      // and still far beyond any real teaching use.
+      dailyLimit: 2000,
       maxTokens: 8192,
       featureModels: {
         tutor: 'deepseek/deepseek-v4-flash-0731',
@@ -459,6 +468,18 @@ function fetchWithTimeout(url, opts, ms) {
 
 /* --------------------------------------------------------- date / quota keys */
 
+/* Images are metered per MONTH, not per day.
+ *
+ * WHY: one image costs about what 240 tutor messages cost, so the image cap is
+ * effectively the whole cost model. A *daily* image cap multiplies by 30 — the
+ * old plus tier (5 images/day) was a $4.50/mo liability against a $7.99 price,
+ * and pro (40/day) was $36/mo, which no sane price covers. A monthly bucket lets
+ * a student generate a burst when they actually need art without turning that
+ * burst into a recurring monthly floor. */
+function monthKey(date, tz) {
+  return dayKey(date, tz).slice(0, 7);   // YYYY-MM
+}
+
 function dayKey(date, tz) {
   try {
     // en-CA formats as YYYY-MM-DD
@@ -468,6 +489,21 @@ function dayKey(date, tz) {
   } catch (e) {
     return date.toISOString().slice(0, 10);
   }
+}
+
+/** Timestamp (ms) of the next MONTH rollover in QUOTA_TZ — the image reset. */
+function nextMonthResetMs(tz) {
+  var now = new Date();
+  var k = monthKey(now, tz);
+  var probe = new Date(now.getTime());
+  // Step a day at a time until the YYYY-MM label changes. Slower than date maths
+  // and immune to it: no month-length or DST special cases to get wrong.
+  for (var i = 0; i < 40; i++) {
+    probe = new Date(probe.getTime() + 86400000);
+    if (monthKey(probe, tz) !== k) break;
+  }
+  probe.setHours(0, 0, 0, 0);
+  return probe.getTime();
 }
 
 // Timestamp (ms) of the next local-midnight rollover in QUOTA_TZ.
@@ -1484,7 +1520,8 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
   var user = null, cfg = null, tier = 'free', rules = null, model = DEFAULT_MODEL;
   var isOwner = false, usedToday = 0, limit = 0, spent6 = 0;
   var key = dayKey(new Date(), QUOTA_TZ);
-  var imgKey = key + IMAGE_USAGE_SUFFIX;
+  // Monthly bucket — see monthKey(). Text quota stays daily.
+  var imgKey = monthKey(new Date(), QUOTA_TZ) + IMAGE_USAGE_SUFFIX;
   // Drives routing AND spend attribution, so the Spend tab breaks image cost out
   // per feature. An unrecognised tag files as 'image' rather than 'other'.
   var feature = normalizeFeature(body.feature, 'image');
@@ -1593,7 +1630,7 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
         httpStatus: 429, code: 'quota-exceeded',
         message: 'AI image generation is not part of the ' + tier + ' plan (0 images a day). ' +
                  'Everything else in MedMaster is unaffected.',
-        extra: { used: 0, limit: 0, kind: 'image', tier: tier, resetsAt: nextResetMs(QUOTA_TZ) }
+        extra: { used: 0, limit: 0, kind: 'image', tier: tier, resetsAt: nextMonthResetMs(QUOTA_TZ) }
       };
     }
     if (limit < 0) return 0; // unlimited — skip the read
@@ -1611,9 +1648,9 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
     if (limit >= 0 && usedToday + inflight >= limit) {
       throw {
         httpStatus: 429, code: 'quota-exceeded',
-        message: 'You have used all ' + limit + ' of your AI images for today (the daily image limit is ' +
-                 limit + ', separate from your AI messages). It resets at midnight Eastern.',
-        extra: { used: usedToday + inflight, limit: limit, kind: 'image', tier: tier, resetsAt: nextResetMs(QUOTA_TZ) }
+        message: 'You have used all ' + limit + ' of your AI images for this month (the monthly image ' +
+                 'limit is ' + limit + ', separate from your AI messages). It resets on the 1st.',
+        extra: { used: usedToday + inflight, limit: limit, kind: 'image', tier: tier, resetsAt: nextMonthResetMs(QUOTA_TZ) }
       };
     }
     holdCalls(holdKey, 1);
@@ -1631,7 +1668,7 @@ function handleGenerateImage(body, idToken, projectId, apiKey, origin) {
                    limit + ', separate from your AI messages). It resets at midnight Eastern.',
           extra: {
             used: afterIncrement - 1, limit: limit, kind: 'image', tier: tier,
-            reason: 'quota-race', resetsAt: nextResetMs(QUOTA_TZ)
+            reason: 'quota-race', resetsAt: nextMonthResetMs(QUOTA_TZ)
           }
         };
       });
